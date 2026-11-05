@@ -1,6 +1,6 @@
 {
-  "commit": "efe063af0e80e4750501c015736b54f1b351dfea",
-  "source": "tools/list at repo HEAD, not the deployed server",
+  "commit": "235138de62a2c5370110fd51126e7fc5c01d09ff",
+  "source": "tools/list at the commit deployed on 2026-11-06 (from the running image tag), run from source",
   "count": 35,
   "tools": [
     {
@@ -161,6 +161,70 @@
               "null"
             ],
             "description": "Reactive Resume resume ID"
+          },
+          "companySize": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "micro",
+                  "small",
+                  "mid",
+                  "large",
+                  "enterprise"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company size bucket; null clears an unknown size"
+          },
+          "salaryBandMentioned": {
+            "type": "boolean",
+            "description": "Whether the source explicitly mentions a salary band"
+          },
+          "triageQuality": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Triage priority 1-5; null clears the assessment (distinct from rating)"
+          },
+          "triageReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evidence, fit, blockers, and next step for the triage decision"
+          },
+          "incomingSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "linkedin",
+                  "email",
+                  "referral",
+                  "outbound"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original opportunity discovery channel"
           },
           "workMode": {
             "anyOf": [
@@ -553,6 +617,70 @@
             "type": "boolean",
             "default": false,
             "description": "Validate and preview without writing"
+          },
+          "companySize": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "micro",
+                  "small",
+                  "mid",
+                  "large",
+                  "enterprise"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company size bucket; null clears an unknown size"
+          },
+          "salaryBandMentioned": {
+            "type": "boolean",
+            "description": "Whether the source explicitly mentions a salary band"
+          },
+          "triageQuality": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Triage priority 1-5; null clears the assessment (distinct from rating)"
+          },
+          "triageReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evidence, fit, blockers, and next step for the triage decision"
+          },
+          "incomingSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "linkedin",
+                  "email",
+                  "referral",
+                  "outbound"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original opportunity discovery channel"
           },
           "workMode": {
             "anyOf": [
@@ -1552,6 +1680,70 @@
             "type": "boolean",
             "default": false
           },
+          "companySize": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "micro",
+                  "small",
+                  "mid",
+                  "large",
+                  "enterprise"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Company size bucket; null clears an unknown size"
+          },
+          "salaryBandMentioned": {
+            "type": "boolean",
+            "description": "Whether the source explicitly mentions a salary band"
+          },
+          "triageQuality": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Triage priority 1-5; null clears the assessment (distinct from rating)"
+          },
+          "triageReason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Evidence, fit, blockers, and next step for the triage decision"
+          },
+          "incomingSource": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "linkedin",
+                  "email",
+                  "referral",
+                  "outbound"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Original opportunity discovery channel"
+          },
           "workMode": {
             "anyOf": [
               {
@@ -1951,6 +2143,70 @@
                     "null"
                   ],
                   "description": "Reactive Resume resume ID"
+                },
+                "companySize": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "micro",
+                        "small",
+                        "mid",
+                        "large",
+                        "enterprise"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Company size bucket; null clears an unknown size"
+                },
+                "salaryBandMentioned": {
+                  "type": "boolean",
+                  "description": "Whether the source explicitly mentions a salary band"
+                },
+                "triageQuality": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 5
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Triage priority 1-5; null clears the assessment (distinct from rating)"
+                },
+                "triageReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Evidence, fit, blockers, and next step for the triage decision"
+                },
+                "incomingSource": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "linkedin",
+                        "email",
+                        "referral",
+                        "outbound"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Original opportunity discovery channel"
                 },
                 "workMode": {
                   "anyOf": [
