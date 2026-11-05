@@ -1,0 +1,14 @@
+/target/
+.env
+.env.*
+.envrc
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+/data/
+/blobs/
+/export/
+*.dump
+*.jsonl
+*.log

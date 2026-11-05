@@ -1,0 +1,3020 @@
+{
+  "commit": "efe063af0e80e4750501c015736b54f1b351dfea",
+  "source": "tools/list at repo HEAD, not the deployed server",
+  "count": 35,
+  "tools": [
+    {
+      "name": "list_applications",
+      "description": "List a compact, paginated application index. Heavy fields are available only when requested with fields.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fields to include. id is always included; heavy fields are opt-in."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50,
+            "description": "Max results to return (default: 50)"
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Application ID after which to continue"
+          },
+          "q": {
+            "type": "string",
+            "description": "Case-insensitive substring match on company and role"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_application",
+      "description": "Get a single application by ID",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "create_application",
+      "description": "Create a new job application. Supports linking a Reactive Resume via resumeId.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "company": {
+            "type": "string",
+            "description": "Company name"
+          },
+          "role": {
+            "type": "string",
+            "description": "Job role/title"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "applied",
+              "interview",
+              "offer",
+              "rejected"
+            ],
+            "description": "Application status (default: inbound)"
+          },
+          "appliedAt": {
+            "type": "string",
+            "description": "Date applied (ISO 8601)"
+          },
+          "lastContact": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Last contact timestamp"
+          },
+          "followUpAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Follow-up timestamp"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 10000,
+            "description": "Compact current-state summary"
+          },
+          "jobDescription": {
+            "type": "string",
+            "description": "Job description text"
+          },
+          "source": {
+            "type": "string",
+            "description": "Source (linkedin, referral, etc.)"
+          },
+          "remote": {
+            "type": "boolean",
+            "description": "Remote position?"
+          },
+          "salaryMin": {
+            "type": "number",
+            "description": "Minimum salary"
+          },
+          "salaryMax": {
+            "type": "number",
+            "description": "Maximum salary"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fit rating 1-5"
+          },
+          "jobUrl": {
+            "type": "string",
+            "description": "URL to job listing or opportunity page"
+          },
+          "resumeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reactive Resume resume ID"
+          },
+          "workMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "remote",
+                  "hybrid",
+                  "onsite",
+                  "flexible"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibleCountries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2
+            },
+            "maxItems": 50
+          },
+          "primaryLocations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 50
+          },
+          "officeDaysMin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 7
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "travelPercent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visaSponsorship": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rightToWorkRequired": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "timezoneOverlap": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryCurrency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryPeriod": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "year",
+                  "month",
+                  "day",
+                  "hour"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "base",
+                  "total",
+                  "contract_rate"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "atsName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requisitionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobCapturedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobVerifiedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobPostedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobClosedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobContentHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobLiveness": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "unknown",
+                  "live",
+                  "closed",
+                  "expired"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentStage": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextAction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "company",
+          "role"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "update_application",
+      "description": "Update non-lifecycle application fields. Use record_application_event for status, stage, contact, follow-up, and submission changes.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "company": {
+            "type": "string",
+            "description": "Company name"
+          },
+          "role": {
+            "type": "string",
+            "description": "Job role/title"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "applied",
+              "interview",
+              "offer",
+              "rejected"
+            ],
+            "description": "Application status"
+          },
+          "appliedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Date applied (ISO 8601)"
+          },
+          "lastContact": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last contact date"
+          },
+          "followUpAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Follow-up date"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Compact current-state summary"
+          },
+          "jobDescription": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Job description"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source"
+          },
+          "remote": {
+            "type": "boolean",
+            "description": "Remote position?"
+          },
+          "salaryMin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Minimum salary"
+          },
+          "salaryMax": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Maximum salary"
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Rating 1-5"
+          },
+          "jobUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL to job listing or opportunity page"
+          },
+          "resumeId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reactive Resume resume ID"
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optimistic concurrency timestamp"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false,
+            "description": "Validate and preview without writing"
+          },
+          "workMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "remote",
+                  "hybrid",
+                  "onsite",
+                  "flexible"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibleCountries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2
+            },
+            "maxItems": 50
+          },
+          "primaryLocations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 50
+          },
+          "officeDaysMin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 7
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "travelPercent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visaSponsorship": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rightToWorkRequired": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "timezoneOverlap": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryCurrency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryPeriod": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "year",
+                  "month",
+                  "day",
+                  "hour"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "base",
+                  "total",
+                  "contract_rate"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "atsName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requisitionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobCapturedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobVerifiedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobPostedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobClosedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobContentHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobLiveness": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "unknown",
+                  "live",
+                  "closed",
+                  "expired"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentStage": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextAction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "archive_application",
+      "description": "Hide an application from the active workspace without changing its lifecycle status or stage. Repeated calls are idempotent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Archive timestamp (ISO 8601); defaults to the current server time"
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optimistic concurrency timestamp"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false,
+            "description": "Validate and preview without writing"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "unarchive_application",
+      "description": "Restore an archived application to the active workspace without changing its lifecycle status or stage. Repeated calls are idempotent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optimistic concurrency timestamp"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false,
+            "description": "Validate and preview without writing"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "delete_application",
+      "description": "Delete an application and its contacts, submissions, and timeline events",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Application ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "record_application_submission",
+      "description": "Atomically preserve the exact submitted answers, required document versions, and application-integrity attestation; block duplicate/repeat/same-company conflicts unless a reasoned override applies; set the application to applied; append an event; and verify the stored package. Idempotency key and human review required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Application ID"
+          },
+          "submittedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Exact submission time as ISO 8601"
+          },
+          "followUpAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional follow-up time"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128,
+            "description": "Stable retry key for this submission"
+          },
+          "applicationUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "atsName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requisitionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "language": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "maxLength": 255
+                },
+                "question": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "answer": {
+                  "type": "string",
+                  "maxLength": 20000
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "text",
+                    "boolean",
+                    "number",
+                    "choice",
+                    "salary",
+                    "other"
+                  ]
+                },
+                "sensitive": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "question",
+                "answer"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 50,
+            "default": []
+          },
+          "policy": {
+            "description": "Required object for new submissions: humanReviewed, identityConsistent, factsVerified, profileConsistencyStatus, optional confirmedNoAnswers and audited override reasons. Omitted, null, or malformed values reach adapter replay resolution; invalid policy on a new submission is rejected there."
+          },
+          "candidateSalaryMin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateSalaryMax": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateSalaryCurrency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateSalaryPeriod": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "hour",
+                  "day",
+                  "month",
+                  "year"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateSalaryType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "base",
+                  "total",
+                  "contract_rate"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidateSalaryFlexible": {
+            "type": "boolean"
+          },
+          "documentIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 20,
+            "default": []
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Optimistic concurrency timestamp"
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "applicationId",
+          "submittedAt",
+          "idempotencyKey"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_application_submissions",
+      "description": "List submission summaries for one application. Answers are excluded by default because they may contain sensitive personal data.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "applicationId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_application_submission",
+      "description": "Get one owner-scoped submission including its exact answers and submitted documents. Treat the response as sensitive.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Submission ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "append_application_note",
+      "description": "Record an immutable note_added timeline event without changing the compact application summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 5000
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Stable event timestamp required for idempotent retries"
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "applicationId",
+          "note",
+          "occurredAt",
+          "idempotencyKey"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "record_application_event",
+      "description": "Atomically append a canonical immutable application event and update the current-state projection when the event changes lifecycle state. Metadata is a JSON object with event-specific keys: opportunity_discovered {channel?, nextAction?}; recruiter_contacted {contactId?, outcome?, nextAction?, channel?, followUpAt?, toStage?}; stage_changed {toStage: string, fromStage?, toStatus?}; interview_invited {contactId?, outcome?, nextAction?, interviewType?, scheduledAt?, durationMinutes?, followUpAt?, toStage?}; interview_scheduled {interviewType: string, scheduledAt: ISO 8601 date-time, contactId?, outcome?, nextAction?, durationMinutes?: integer 1..1440, toStage?}; interview_completed {contactId?, outcome?, nextAction?, interviewType?, followUpAt?, toStage?}; feedback_received {contactId?, outcome?, nextAction?, followUpAt?, toStage?}; follow_up_scheduled {followUpAt: ISO 8601 date-time, contactId?, nextAction?}; offer_received {contactId?, outcome?, nextAction?, followUpAt?}; application_rejected {contactId?, outcome?, reason?, fromStage?}; document_attached {documentId: string, documentType?}; note_added {note: string}. Unknown keys are rejected.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "opportunity_discovered",
+              "application_submitted",
+              "recruiter_contacted",
+              "outbound_contact_recorded",
+              "reply_received",
+              "stage_changed",
+              "interview_invited",
+              "interview_scheduled",
+              "interview_completed",
+              "feedback_received",
+              "follow_up_scheduled",
+              "offer_received",
+              "application_rejected",
+              "document_attached",
+              "note_added"
+            ]
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "applicationId",
+          "type"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_application_events",
+      "description": "List an owner-scoped immutable application timeline with deterministic cursor pagination.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "newest",
+              "oldest"
+            ],
+            "default": "newest"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          }
+        },
+        "required": [
+          "applicationId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_application_activity",
+      "description": "List the authenticated owner's application activity across all applications with canonical filters and deterministic cursor pagination.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "company": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "opportunity_discovered",
+                "application_submitted",
+                "recruiter_contacted",
+                "outbound_contact_recorded",
+                "reply_received",
+                "stage_changed",
+                "interview_invited",
+                "interview_scheduled",
+                "interview_completed",
+                "feedback_received",
+                "follow_up_scheduled",
+                "offer_received",
+                "application_rejected",
+                "document_attached",
+                "note_added"
+              ]
+            },
+            "maxItems": 15
+          },
+          "occurredAfter": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "occurredBefore": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "actor": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "contactId": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "outcome": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "newest",
+              "oldest"
+            ],
+            "default": "newest"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_interview_recall_package",
+      "description": "Return the job description, exact submitted answers, timeline, and submitted documents for interview preparation. Owner-scoped sensitive response.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "applicationId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "find_application_by_job_url",
+      "description": "Find an exact owner-scoped duplicate using a canonicalized job URL.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "jobUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "jobUrl"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "upsert_application_by_job_url",
+      "description": "Create or update one opportunity using an exact canonical job URL, avoiding duplicate records.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "company": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "jobUrl": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2000
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "applied",
+              "interview",
+              "offer",
+              "rejected"
+            ]
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobDescription": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 50000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remote": {
+            "type": "boolean"
+          },
+          "salaryMin": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryMax": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rating": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resumeId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dryRun": {
+            "type": "boolean",
+            "default": false
+          },
+          "workMode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "remote",
+                  "hybrid",
+                  "onsite",
+                  "flexible"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "eligibleCountries": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 2
+            },
+            "maxItems": 50
+          },
+          "primaryLocations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 50
+          },
+          "officeDaysMin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 7
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "travelPercent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "visaSponsorship": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rightToWorkRequired": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "timezoneOverlap": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryCurrency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryPeriod": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "year",
+                  "month",
+                  "day",
+                  "hour"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "salaryType": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "base",
+                  "total",
+                  "contract_rate"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "atsName": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "requisitionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobCapturedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobVerifiedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobPostedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobClosedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobContentHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobLiveness": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "unknown",
+                  "live",
+                  "closed",
+                  "expired"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "jobSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currentStage": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nextAction": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "company",
+          "role",
+          "jobUrl"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "pipeline_healthcheck",
+      "description": "Return deterministic pipeline data-quality findings without modifying records.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "batch_upsert_applications",
+      "description": "Create or update multiple applications in one call. If an item has an 'id' it is updated; otherwise a new application is created. Supports linking a Reactive Resume via resumeId. Max 50 items per call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Application ID (omit to create new)"
+                },
+                "company": {
+                  "type": "string",
+                  "description": "Company name (required for new)"
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Job role/title (required for new)"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "inbound",
+                    "applied",
+                    "interview",
+                    "offer",
+                    "rejected"
+                  ],
+                  "description": "Application status"
+                },
+                "appliedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Date applied (ISO 8601)"
+                },
+                "lastContact": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Last contact date"
+                },
+                "followUpAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Follow-up date"
+                },
+                "notes": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 10000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Compact current-state summary"
+                },
+                "jobDescription": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Job description"
+                },
+                "source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Source"
+                },
+                "remote": {
+                  "type": "boolean",
+                  "description": "Remote position?"
+                },
+                "salaryMin": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Minimum salary"
+                },
+                "salaryMax": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "Maximum salary"
+                },
+                "rating": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "minimum": 1,
+                      "maximum": 5
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Rating 1-5"
+                },
+                "jobUrl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "URL to job listing"
+                },
+                "resumeId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Reactive Resume resume ID"
+                },
+                "workMode": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "remote",
+                        "hybrid",
+                        "onsite",
+                        "flexible"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "eligibleCountries": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 2
+                  },
+                  "maxItems": 50
+                },
+                "primaryLocations": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "maxItems": 50
+                },
+                "officeDaysMin": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 7
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "travelPercent": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "visaSponsorship": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "rightToWorkRequired": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "timezoneOverlap": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 255
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "salaryCurrency": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 3
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "salaryPeriod": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "year",
+                        "month",
+                        "day",
+                        "hour"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "salaryType": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "base",
+                        "total",
+                        "contract_rate"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "atsName": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "requisitionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 255
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobCapturedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobVerifiedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobPostedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobClosedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobContentHash": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobLiveness": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "unknown",
+                        "live",
+                        "closed",
+                        "expired"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "jobSummary": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 10000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "currentStage": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 255
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "nextAction": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 2000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "description": "Array of applications to create or update (max 50)"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "batch_delete_applications",
+      "description": "Delete multiple applications and their contacts in one call. Max 50 IDs per call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "description": "Array of application IDs to delete (max 50)"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_applications_filtered",
+      "description": "Run an advanced application query with status, rating, remote, sorting, contact, and field controls. Defaults to all fields, no contacts; use list_applications for a compact index.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "inbound",
+                "applied",
+                "interview",
+                "offer",
+                "rejected"
+              ]
+            },
+            "description": "Filter by status(es)"
+          },
+          "rating_gte": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "Minimum rating (inclusive)"
+          },
+          "search": {
+            "type": "string",
+            "description": "Search in company, role, notes, jobDescription"
+          },
+          "remote": {
+            "type": "boolean",
+            "description": "Filter by remote flag"
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort field, prefix with - for descending. e.g. '-rating', 'company', '-salaryMax'"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fields to include in response (id is always included). e.g. ['company','role','status','rating','notes','salaryMin','salaryMax']. Omit jobDescription to save ~30k tokens."
+          },
+          "limit": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 200,
+            "description": "Max results to return"
+          },
+          "include_contacts": {
+            "type": "boolean",
+            "description": "Include nested contacts? (default: false)"
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "create_contact",
+      "description": "Add a contact to an application",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Contact name"
+          },
+          "email": {
+            "type": "string",
+            "description": "Contact email"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Phone number"
+          },
+          "role": {
+            "type": "string",
+            "description": "Contact's role (e.g. Recruiter)"
+          },
+          "linkedIn": {
+            "type": "string",
+            "description": "LinkedIn profile URL"
+          }
+        },
+        "required": [
+          "applicationId",
+          "name"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "batch_create_contacts",
+      "description": "Add multiple contacts to one application. Each contact is created independently, so valid contacts remain created if another item fails. Returns total, succeeded, failed, and one indexed result per contact. Max 50 contacts per call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "contacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Contact name"
+                },
+                "email": {
+                  "type": "string",
+                  "description": "Contact email"
+                },
+                "phone": {
+                  "type": "string",
+                  "description": "Phone number"
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Contact's role (e.g. Recruiter)"
+                },
+                "linkedIn": {
+                  "type": "string",
+                  "description": "LinkedIn profile URL"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "description": "Contacts to create (max 50)"
+          }
+        },
+        "required": [
+          "applicationId",
+          "contacts"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "update_contact",
+      "description": "Update a contact on an application",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Contact ID"
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "Application ID"
+          },
+          "name": {
+            "type": "string",
+            "description": "Contact name"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Contact email"
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Phone number"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Contact's role"
+          },
+          "linkedIn": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "LinkedIn URL"
+          }
+        },
+        "required": [
+          "contactId",
+          "applicationId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "delete_contact",
+      "description": "Delete a contact from an application",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "contactId": {
+            "type": "string",
+            "description": "Contact ID"
+          },
+          "applicationId": {
+            "type": "string",
+            "description": "Application ID"
+          }
+        },
+        "required": [
+          "contactId",
+          "applicationId"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_documents",
+      "description": "List uploaded documents with optional application, lifecycle, submission, orphan, pagination, and field-selection filters.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string"
+          },
+          "documentType": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "current",
+              "submitted",
+              "superseded",
+              "historical",
+              "orphaned"
+            ]
+          },
+          "submissionId": {
+            "type": "string"
+          },
+          "orphaned": {
+            "type": "boolean"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 30
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_document",
+      "description": "Get a single document by ID",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "upload_document_content",
+      "description": "Upload a document from base64 content. Supports PDF, JPEG, PNG, and WEBP files up to 10MB. Optionally links the uploaded document to applications owned by the authenticated user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "Original filename to display, e.g. resume.pdf"
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/jpeg",
+              "image/png",
+              "image/webp"
+            ],
+            "description": "MIME type of the uploaded file"
+          },
+          "contentBase64": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 13981020,
+            "description": "Raw file bytes encoded as standard base64"
+          },
+          "applicationIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Application IDs to link"
+          }
+        },
+        "required": [
+          "filename",
+          "mimeType",
+          "contentBase64"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "download_document_content",
+      "description": "Download the binary content of a document. For files <=1MB the content is returned inline as base64. For larger files, a short-lived signed URL is returned instead when object storage is available (falls back to inline base64 otherwise).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "update_document_links",
+      "description": "Update which applications a document is linked to",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          },
+          "applicationIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Application IDs to link"
+          }
+        },
+        "required": [
+          "id",
+          "applicationIds"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "update_document_metadata",
+      "description": "Classify an owned document and update lifecycle metadata. Submitted document content remains immutable.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          },
+          "documentType": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "current",
+              "submitted",
+              "superseded",
+              "historical",
+              "orphaned"
+            ]
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "contentHash": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "submittedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "delete_document",
+      "description": "Delete a document",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_cv_profile",
+      "description": "Get the master CV profile for the authenticated user. Returns all experience entries, skill categories, projects, and education — use these IDs/names when calling generate_tailored_cv.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "upsert_cv_profile",
+      "description": "Create or update the master CV profile. This stores your base CV data that tailored CVs are generated from.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Full name"
+          },
+          "contact": {
+            "type": "object",
+            "properties": {
+              "email": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              },
+              "linkedin": {
+                "type": "string"
+              },
+              "github": {
+                "type": "string"
+              },
+              "location": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Contact information"
+          },
+          "profile": {
+            "type": "string",
+            "description": "Professional summary"
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "category": {
+                  "type": "string",
+                  "description": "Skill category name"
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Skills in this category"
+                }
+              },
+              "required": [
+                "category",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Skill categories"
+          },
+          "experience": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Unique identifier for this entry (e.g. company-date slug)"
+                },
+                "company": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string",
+                  "description": "Date range, e.g. 'Jan 2023 -- Present'"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "tier": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 3,
+                  "description": "1=detailed with bullets, 2=bullets, 3=compact no bullets"
+                },
+                "bullets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Achievement bullets"
+                }
+              },
+              "required": [
+                "id",
+                "company",
+                "title",
+                "date",
+                "location",
+                "tier",
+                "bullets"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Work experience entries"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "stack": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "stack",
+                "description"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Side projects"
+          },
+          "education": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "institution": {
+                  "type": "string"
+                },
+                "degree": {
+                  "type": "string"
+                },
+                "date": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "details": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "institution",
+                "degree",
+                "date",
+                "location"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Education entries"
+          }
+        },
+        "required": [
+          "name",
+          "contact",
+          "profile",
+          "skills",
+          "experience"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "generate_tailored_cv",
+      "description": "Generate a tailored CV PDF for a specific application. Selects experience entries and skill categories from the master CV profile, renders a PDF, and stores it as a document linked to the application. Requires a CV profile to exist first (use upsert_cv_profile).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "applicationId": {
+            "type": "string",
+            "description": "Application ID to generate CV for"
+          },
+          "profileOverride": {
+            "type": "string",
+            "description": "Custom professional summary for this application (omit to use master)"
+          },
+          "experienceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered list of experience entry IDs to include"
+          },
+          "skillCategories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ordered list of skill category names to include"
+          },
+          "includeProjects": {
+            "type": "boolean",
+            "default": false,
+            "description": "Include projects section?"
+          },
+          "includeEducation": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include education section?"
+          }
+        },
+        "required": [
+          "applicationId",
+          "experienceIds",
+          "skillCategories"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}
