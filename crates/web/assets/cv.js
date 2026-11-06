@@ -67,10 +67,10 @@
     let fresh;
     try {
       const response = await fetch(base);
-      if (!response.ok) return;
+      if (!response.ok) return false;
       fresh = new DOMParser().parseFromString(await response.text(), "text/html");
     } catch {
-      return;
+      return false;
     }
     for (const id of ["cv-revisions", "cv-approval", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
       const next = fresh.getElementById(id);
@@ -92,6 +92,7 @@
         );
       }
     }
+    return true;
   }
 
   function arrived(revision, note) {
@@ -102,13 +103,26 @@
     followHead(revision, note);
   }
 
-  // The owner approved what is on screen, here or on another device: the stamp goes, in place.
-  function approved(revision) {
+  // The owner approved what is on screen, here or on another device: the stamp goes, in place. Only
+  // counted once the page shows it, so that a failed fetch is tried again at the next word of it.
+  async function approved(revision) {
     if (revision !== shown || shownState === "approved") return;
+    const followed = await followHead(revision, `Revision ${revision} is approved.`);
+    if (!followed || revision !== shown) return;
     shownState = "approved";
     root.dataset.state = shownState;
     loadPreview(revision);
-    followHead(revision, `Revision ${revision} is approved.`);
+  }
+
+  // What the head is now, heard after a gap: a poll, or a stream that has just opened.
+  function headIs(revision, state) {
+    arrived(revision, `Revision ${revision} landed.`);
+    if (state === "approved") {
+      approved(revision);
+    } else if (revision === shown) {
+      shownState = state;
+      root.dataset.state = state;
+    }
   }
 
   async function poll() {
@@ -116,8 +130,7 @@
       const response = await fetch(`/api/cv/${encodeURIComponent(variant)}/head`);
       if (response.ok) {
         const { revision, state } = await response.json();
-        arrived(revision, `Revision ${revision} landed.`);
-        if (state === "approved") approved(revision);
+        headIs(revision, state);
       }
     } catch {
       // Still offline: the next round tries again.
@@ -137,8 +150,8 @@
     stream = new EventSource(`/api/cv/${encodeURIComponent(variant)}/events`);
     stream.addEventListener("open", stopPolling);
     stream.addEventListener("head", (event) => {
-      const { revision } = JSON.parse(event.data);
-      arrived(revision, `Revision ${revision} landed.`);
+      const { revision, state } = JSON.parse(event.data);
+      headIs(revision, state);
     });
     stream.addEventListener("revision", (event) => {
       const { revision, origin, summary, state } = JSON.parse(event.data);
