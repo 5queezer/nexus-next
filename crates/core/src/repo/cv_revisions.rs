@@ -40,6 +40,28 @@ pub async fn get_variant(conn: &mut SqliteConnection, name: &str) -> Result<Opti
     .await?)
 }
 
+/// A variant with its head, for the workspace's list. `head_number` is 0 with nothing stored.
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct VariantSummary {
+    pub name: String,
+    pub application_id: Option<i64>,
+    pub head_number: i64,
+    pub head_origin: Option<String>,
+    pub head_created_at: Option<Timestamp>,
+}
+
+/// `default` first, then the others by name.
+pub async fn list_variants(conn: &mut SqliteConnection) -> Result<Vec<VariantSummary>> {
+    Ok(sqlx::query_as(
+        "SELECT v.name, v.application_id, coalesce(r.number, 0) AS head_number,
+             r.origin AS head_origin, r.created_at AS head_created_at
+         FROM cv_variants v LEFT JOIN cv_revisions r ON r.id = v.head_revision_id
+         ORDER BY v.name <> 'default', v.name",
+    )
+    .fetch_all(conn)
+    .await?)
+}
+
 pub async fn create_variant(
     conn: &mut SqliteConnection,
     name: &str,

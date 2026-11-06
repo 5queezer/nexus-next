@@ -26,7 +26,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
-use nexus_mcp::{McpState, Renderer};
+use nexus_mcp::McpState;
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -292,7 +292,7 @@ fn is_local_request(headers: &HeaderMap, path: &str, bind: IpAddr) -> bool {
             .is_ok_and(|authority| is_local_name(authority.host(), bind))
     });
     let origin_ok = value(ORIGIN).is_none_or(|origin| {
-        (origin == "null" && path.starts_with("/applications/"))
+        (origin == "null" && (path.starts_with("/applications/") || path.starts_with("/cv/")))
             || origin
                 .parse::<Uri>()
                 .ok()
@@ -328,16 +328,25 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         .clone()
         .zip(config.owner_email.clone())
         .context("the owner is not resolved")?;
-    let state = McpState::new(db.clone(), owner_id, owner_email, Renderer::current_exe());
+    let state = McpState::new(db.clone(), owner_id, owner_email, config.renderer.clone());
     let mcp = nexus_mcp::router(state.clone());
     let mcp = harden_mcp(
         Router::new()
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp),
     );
+    // Outside the owner pool: an open stream is neither a request in flight nor bound by its
+    // deadline. It still sits behind the session check.
+    let streams = nexus_web::cv_events_router(state.clone(), config.stream_shutdown.subscribe());
     let humans = harden(
-        nexus_web::dashboard_router(state, config.timezone)
-            .merge(nexus_web::api_router(db.clone())),
+        nexus_web::dashboard_router(state.clone(), config.timezone)
+            .merge(nexus_web::api_router(db.clone()))
+            .merge(nexus_web::cv_router(
+                state,
+                config.timezone,
+                config.voice.clone(),
+                &config.data_dir,
+            )),
         OWNER,
     );
     let slashes = Router::new()
@@ -349,6 +358,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             let auth = AuthState::new(db.clone(), auth.clone())?;
             let routes = harden(public.merge(nexus_auth::router(auth.clone())), PUBLIC)
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(streams.layer(from_fn_with_state(auth.clone(), require_owner_session)))
                 .merge(
                     mcp.layer(from_fn_with_state(auth, require_mcp_auth))
                         .merge(slashes)
@@ -362,6 +372,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         }
         Access::InsecureLocalOnly => harden(public, PUBLIC)
             .merge(humans)
+            .merge(streams)
             .merge(
                 mcp.layer(Extension(AuthContext {
                     auth_type: AuthType::ApiToken,
@@ -448,11 +459,17 @@ pub async fn run(
         }
     };
     let app = build_app(&db, &config)?;
+    let streams = config.stream_shutdown.clone();
+    let shutdown = async move {
+        shutdown.await;
+        streams.send_replace(true);
+    };
     tracing::info!(
         addr = %listener.local_addr()?,
         base_url,
         timezone = %config.timezone,
         calendar = config.calendar_token.is_some(),
+        voice = config.voice.is_some(),
         "listening"
     );
     let result = serve(listener, app, shutdown, DRAIN_TIMEOUT).await;

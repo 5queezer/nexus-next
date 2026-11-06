@@ -1,5 +1,6 @@
 //! Server-rendered HTML. Leptos escapes every text node and attribute, and no view uses
-//! `inner_html`, so stored text cannot become markup.
+//! `inner_html`, so stored text cannot become markup. `<textarea>` is the exception: Leptos writes
+//! its children as they are, so every one goes through `textarea_text`.
 
 use chrono_tz::Tz;
 use leptos::prelude::*;
@@ -20,10 +21,26 @@ use crate::queue::{self, Clock, Group};
 pub enum Nav {
     Pipeline,
     FollowUps,
+    Cv,
     None,
 }
 
 pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> String {
+    page_with_scripts(title, nav, overdue, body, &[])
+}
+
+/// `scripts` are further files under `/assets/`, for the page that needs them.
+pub fn page_with_scripts(
+    title: &str,
+    nav: Nav,
+    overdue: usize,
+    body: impl IntoView,
+    scripts: &[&str],
+) -> String {
+    let scripts: Vec<_> = scripts
+        .iter()
+        .map(|name| view! { <script src=format!("/assets/{name}?v={}", *VERSION) defer></script> })
+        .collect();
     let current = |tab: Nav| (nav == tab).then_some("page");
     let html = view! {
         <html lang="en">
@@ -39,6 +56,7 @@ pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> Strin
                 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
                 <link rel="stylesheet" href=format!("/assets/app.css?v={}", *VERSION) />
                 <script src=format!("/assets/app.js?v={}", *VERSION) defer></script>
+                {scripts}
             </head>
             <body>
                 <header class="top">
@@ -50,6 +68,7 @@ pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> Strin
                                 "Follow-ups"
                                 {(overdue > 0).then(|| view! { <span class="count">{overdue}</span> })}
                             </a>
+                            <a href="/cv" aria-current=current(Nav::Cv)>"CV"</a>
                         </nav>
                     </div>
                 </header>
@@ -58,6 +77,12 @@ pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> Strin
         </html>
     };
     format!("<!DOCTYPE html>{}", html.to_html())
+}
+
+/// A textarea's content, safe to write unescaped. The leading newline is there for the HTML parser
+/// to eat, so that a value starting with its own newline keeps it.
+pub fn textarea_text(value: &str) -> String {
+    format!("\n{}", value.replace('&', "&amp;").replace('<', "&lt;"))
 }
 
 pub fn message(heading: &str, text: &str) -> impl IntoView {

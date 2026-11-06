@@ -629,6 +629,20 @@ async fn hostile_stored_values_are_escaped_in_every_new_place() {
 }
 
 #[tokio::test]
+async fn a_note_sent_back_to_its_editor_cannot_close_the_textarea() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Careful Co", "applied").await;
+    let note = format!("</textarea>{EVIL}{}", "x".repeat(5001));
+    let (status, _, page) = submit(&f, id, "note", &[("note", &note)]).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!page.contains("<script>"), "{page}");
+    assert!(
+        page.contains("&lt;/textarea&gt;") || page.contains("&lt;/textarea>"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
 async fn the_manifest_icons_and_offline_page_are_public_and_personal_data_free() {
     let f = fixture().await;
     add_app(&f.db, "Private Corp", "applied").await;

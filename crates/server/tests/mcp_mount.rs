@@ -32,6 +32,9 @@ async fn start(access: Access) -> Running {
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
+        voice: None,
+        renderer: nexus_mcp::Renderer::current_exe(),
+        stream_shutdown: tokio::sync::watch::Sender::new(false),
     };
     let app = serve::build_app(&db, &config).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -116,6 +119,9 @@ fn config_with(
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
+        voice: None,
+        renderer: nexus_mcp::Renderer::current_exe(),
+        stream_shutdown: tokio::sync::watch::Sender::new(false),
     }
 }
 

@@ -1,0 +1,804 @@
+//! The CV workspace against a real SQLite file and real compiles, with invented data.
+
+use std::time::Duration;
+
+use axum::Extension;
+use axum::Router;
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode};
+use http_body_util::BodyExt;
+use nexus_core::Db;
+use nexus_core::auth::{FormToken, SCOPE_TOOLS};
+use nexus_core::repo::cv_facts;
+use nexus_mcp::McpState;
+use nexus_web::{OPENAI_BASE_URL, VoiceConfig, VoiceKey};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+const TOKEN: &str = "test-form-token";
+
+struct Fixture {
+    dir: TempDir,
+    db: Db,
+    state: McpState,
+    app: Router,
+}
+
+fn voice() -> VoiceConfig {
+    VoiceConfig {
+        key: VoiceKey::new("sk-synthetic-never-sent-0123456789".to_owned()),
+        model: "model-x".to_owned(),
+        voice: "marin".to_owned(),
+        base_url: OPENAI_BASE_URL.to_owned(),
+        lifetime: Duration::from_secs(900),
+    }
+}
+
+fn profile() -> Value {
+    json!({
+        "name": "Mara Example",
+        "contact": {"email": "mara@example.test", "location": "Hamburg"},
+        "profile": "Backend engineer building freight software.",
+        "skills": [{"category": "Languages", "items": ["Rust", "Go"]}],
+        "experience": [
+            {"id": "brightpath", "company": "Brightpath Logistics", "title": "Software Engineer",
+             "date": "03/2019 – 12/2022", "location": "Hamburg", "tier": 1,
+             "bullets": ["Cut invoice errors by 40% across 3 depots.", "Built the routing service."]},
+        ],
+        "education": [{"institution": "Nordsee University", "degree": "BSc Computer Science",
+            "date": "2015 – 2018", "location": "Kiel"}],
+    })
+}
+
+fn build(state: &McpState, dir: &TempDir, voice: Option<VoiceConfig>) -> Router {
+    nexus_web::cv_router(
+        state.clone(),
+        "Europe/Madrid".parse().unwrap(),
+        voice,
+        dir.path(),
+    )
+    .layer(Extension(FormToken(TOKEN.to_owned())))
+}
+
+async fn fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    let state = McpState::new(
+        db.clone(),
+        "owner-1".to_owned(),
+        "owner@example.com".to_owned(),
+        nexus_mcp::Renderer::InProcess,
+    );
+    let result = nexus_mcp::call_tool(
+        std::sync::Arc::new(state.clone()),
+        &[SCOPE_TOOLS],
+        "test",
+        "upsert_cv_profile",
+        profile(),
+    )
+    .await;
+    assert_ne!(result.is_error, Some(true));
+    let app = build(&state, &dir, None);
+    Fixture {
+        dir,
+        db,
+        state,
+        app,
+    }
+}
+
+async fn lock(db: &Db) {
+    let mut tx = db.begin_write().await.unwrap();
+    cv_facts::lock(&mut tx, "test").await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn locked() -> Fixture {
+    let f = fixture().await;
+    lock(&f.db).await;
+    f
+}
+
+async fn send(app: &Router, request: Request<Body>) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let response = app.clone().oneshot(request).await.unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, body.to_vec())
+}
+
+async fn get(app: &Router, uri: &str) -> (StatusCode, HeaderMap, String) {
+    let request = Request::get(uri).body(Body::empty()).unwrap();
+    let (status, headers, body) = send(app, request).await;
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+fn encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+async fn post(app: &Router, uri: &str, fields: &[(&str, &str)]) -> (StatusCode, HeaderMap, String) {
+    let body = fields
+        .iter()
+        .map(|(key, value)| format!("{key}={}", encode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = Request::post(uri)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap();
+    let (status, headers, bytes) = send(app, request).await;
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// What a browser would hold in the source editor: the parser eats one leading newline.
+fn editor_text(page: &str) -> String {
+    let at = page.find("id=\"cv-source\"").expect("the editor");
+    let start = at + page[at..].find('>').unwrap() + 1;
+    let end = start + page[start..].find("</textarea>").unwrap();
+    let raw = &page[start..end];
+    unescape(raw.strip_prefix('\n').unwrap_or(raw))
+}
+
+fn hidden(page: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" ");
+    let at = page.find(&marker).unwrap_or_else(|| panic!("{name}"));
+    let tag_end = at + page[at..].find('>').unwrap();
+    let tag = &page[at..tag_end];
+    tag.split("value=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+const VARIANT: &str = "/cv/variants/default";
+
+async fn head_of(f: &Fixture) -> (i64, String) {
+    let (status, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(status, StatusCode::OK);
+    (
+        hidden(&page, "expected").parse().unwrap(),
+        editor_text(&page),
+    )
+}
+
+async fn save(f: &Fixture, expected: i64, source: &str) -> (StatusCode, HeaderMap, String) {
+    post(
+        &f.app,
+        &format!("{VARIANT}/save"),
+        &[
+            ("csrf", TOKEN),
+            ("expected", &expected.to_string()),
+            ("source", source),
+            ("summary", "A human edit"),
+        ],
+    )
+    .await
+}
+
+async fn revision_rows(db: &Db) -> Vec<(i64, String, String, String)> {
+    sqlx::query_as("SELECT number, source, origin, summary FROM cv_revisions ORDER BY number")
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_list_names_the_variants_and_the_facts_state() {
+    let f = fixture().await;
+    let (status, _, page) = get(&f.app, "/cv").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("href=\"/cv/variants/default\""), "{page}");
+    assert!(page.contains("Nothing stored yet"));
+    assert!(page.contains("aren&#x27;t locked") || page.contains("aren't locked"));
+    assert!(page.contains("href=\"/cv/facts\""));
+    assert!(page.contains("aria-current=\"page\""));
+}
+
+#[tokio::test]
+async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
+    let f = locked().await;
+    let (expected, source) = head_of(&f).await;
+    assert_eq!(expected, 0);
+    let changed = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_ne!(changed, source);
+    // As a browser sends a textarea.
+    let (status, headers, _) = save(&f, 0, &changed.replace('\n', "\r\n")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers["location"],
+        "/cv/variants/default?done=saved#cv-workspace"
+    );
+
+    let rows = revision_rows(&f.db).await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!((rows[0].0, rows[0].1.as_str()), (1, changed.as_str()));
+    assert_eq!(
+        (rows[0].2.as_str(), rows[0].3.as_str()),
+        ("dashboard", "A human edit")
+    );
+
+    let (_, _, page) = get(&f.app, "/cv/variants/default?done=saved").await;
+    assert!(page.contains("Saved as a new revision."), "{page}");
+    assert_eq!(editor_text(&page), changed, "the editor holds the head");
+    assert_eq!(hidden(&page, "expected"), "1");
+    assert!(page.contains("class=\"da\""), "added lines are marked");
+
+    // Only the one line moves in the second revision's diff.
+    let next = changed.replace("Built the routing engine.", "Built the routing core.");
+    assert_eq!(
+        save(&f, 1, &next.replace('\n', "\r\n")).await.0,
+        StatusCode::SEE_OTHER
+    );
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let diff_of_head = page.split("Revision 1").next().unwrap();
+    assert_eq!(
+        diff_of_head.matches("class=\"da\"").count(),
+        1,
+        "one added line"
+    );
+    assert_eq!(
+        diff_of_head.matches("class=\"dd\"").count(),
+        1,
+        "one removed line"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_compile_keeps_the_text_and_names_the_line() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let broken = format!("{source}\n#nonexistent-function()\n");
+    let (status, _, page) = save(&f, 0, &broken).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(editor_text(&page), broken);
+    let line = broken.lines().count();
+    assert!(page.contains(&format!("Line {line}, column")), "{page}");
+    assert!(page.contains("doesn&#x27;t compile") || page.contains("doesn't compile"));
+    assert!(!page.contains("cv_compile_failed"), "no raw codes");
+    assert!(revision_rows(&f.db).await.is_empty(), "nothing stored");
+    assert_eq!(hidden(&page, "expected"), "0");
+}
+
+#[tokio::test]
+async fn the_integrity_check_applies_to_a_person_and_shows_the_token_marked() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let inflated = source.replace("Built the routing service.", "Built 77 routing services.");
+    let (status, _, page) = save(&f, 0, &inflated).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(editor_text(&page), inflated);
+    assert!(page.contains("<mark>77</mark>"), "{page}");
+    assert!(page.contains("isn&#x27;t in your facts") || page.contains("isn't in your facts"));
+    assert!(!page.contains("cv_fact_violation"));
+    assert!(revision_rows(&f.db).await.is_empty());
+}
+
+#[tokio::test]
+async fn new_capitalized_words_are_saved_and_shown_to_check() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let named = source.replace("Built the routing service.", "Built the Zanzibar service.");
+    assert_eq!(save(&f, 0, &named).await.0, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains("<mark>Zanzibar</mark>"), "{page}");
+    assert!(page.contains("can&#x27;t judge") || page.contains("can't judge"));
+}
+
+#[tokio::test]
+async fn a_stale_base_is_a_conflict_that_keeps_the_text_and_then_lets_the_person_decide() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let first = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_eq!(save(&f, 0, &first).await.0, StatusCode::SEE_OTHER);
+
+    let mine = source.replace("Built the routing service.", "Built the routing core.");
+    let (status, _, page) = save(&f, 0, &mine).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(editor_text(&page), mine);
+    assert!(page.contains("Revision 1 landed"), "{page}");
+    assert_eq!(revision_rows(&f.db).await.len(), 1);
+    assert_eq!(
+        hidden(&page, "expected"),
+        "1",
+        "the page names the new head"
+    );
+    assert_eq!(save(&f, 1, &mine).await.0, StatusCode::SEE_OTHER);
+    assert_eq!(revision_rows(&f.db).await[1].1, mine);
+}
+
+#[tokio::test]
+async fn saving_the_same_text_or_with_unlocked_facts_stores_nothing_and_says_why() {
+    let f = fixture().await;
+    let (_, source) = head_of(&f).await;
+    let edited = format!("{source}\n");
+    let (status, _, page) = save(&f, 0, &edited).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("Facts page"), "{page}");
+    assert_eq!(editor_text(&page), edited);
+    lock(&f.db).await;
+    let (status, _, page) = save(&f, 0, &source).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("nothing to save"), "{page}");
+    assert!(revision_rows(&f.db).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_form_without_the_token_changes_nothing_on_any_route() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let changed = source.replace("Built", "Made");
+    for csrf in ["", "wrong"] {
+        let fields = [
+            ("csrf", csrf),
+            ("expected", "0"),
+            ("source", changed.as_str()),
+            ("to", "1"),
+            ("confirm", "1"),
+            ("languages", "Latin: fluent"),
+        ];
+        for route in [
+            "/cv/variants/default/save",
+            "/cv/variants/default/revert",
+            "/cv/facts",
+            "/cv/facts/lock",
+            "/cv/facts/unlock",
+        ] {
+            let (status, _, _) = post(&f.app, route, &fields).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{route}");
+        }
+    }
+    assert!(revision_rows(&f.db).await.is_empty());
+    let state = cv_facts::get(&mut f.db.conn().await.unwrap())
+        .await
+        .unwrap();
+    assert!(state.is_locked());
+    assert!(state.facts.languages.is_empty());
+}
+
+#[tokio::test]
+async fn text_with_markup_stays_text_and_a_leading_newline_survives_the_editor() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let tricky = format!("\n\n{source}\n// </textarea><script>alert(1)</script> & \"quotes\"\n");
+    assert_eq!(save(&f, 0, &tricky).await.0, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("<script>alert(1)"), "escaped everywhere");
+    assert_eq!(editor_text(&page), tricky);
+}
+
+#[tokio::test]
+async fn markup_in_the_facts_stays_text_in_their_editors() {
+    let f = locked().await;
+    let state = facts_row(&f.db).await;
+    let version = state.version.to_string();
+    let evil = "</textarea><script>alert(1)</script>";
+    let (status, _, page) = post(
+        &f.app,
+        "/cv/facts",
+        &[
+            ("csrf", TOKEN),
+            ("expected", version.as_str()),
+            ("vocabulary", evil),
+            ("bannedPhrases", evil),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!page.contains("<script>alert(1)"), "{page}");
+    assert_eq!(facts_row(&f.db).await.facts.vocabulary, [evil]);
+}
+
+#[tokio::test]
+async fn revert_adds_a_revision_with_the_old_text_and_refuses_a_stale_head() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let first = source.replace("Built the routing service.", "Built the routing engine.");
+    let second = source.replace("Built the routing service.", "Built the routing core.");
+    assert_eq!(save(&f, 0, &first).await.0, StatusCode::SEE_OTHER);
+    assert_eq!(save(&f, 1, &second).await.0, StatusCode::SEE_OTHER);
+
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains("Revert to 1"), "{page}");
+    assert!(!page.contains("Revert to 2"), "not to the head itself");
+
+    let revert = "/cv/variants/default/revert";
+    let (status, _, page) = post(
+        &f.app,
+        revert,
+        &[("csrf", TOKEN), ("expected", "1"), ("to", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{page}");
+    assert_eq!(revision_rows(&f.db).await.len(), 2);
+
+    let (status, headers, _) = post(
+        &f.app,
+        revert,
+        &[("csrf", TOKEN), ("expected", "2"), ("to", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers["location"], "/cv/variants/default?done=reverted");
+    let rows = revision_rows(&f.db).await;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        (rows[2].1.as_str(), rows[2].2.as_str()),
+        (first.as_str(), "revert")
+    );
+}
+
+fn is_png(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+}
+
+async fn image(f: &Fixture, query: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let request = Request::get(format!("{VARIANT}/preview.png?{query}"))
+        .body(Body::empty())
+        .unwrap();
+    send(&f.app, request).await
+}
+
+fn cache_entries(f: &Fixture) -> Vec<String> {
+    std::fs::read_dir(f.dir.path().join("cache/renders"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn previews_come_from_the_cache_until_the_source_or_the_facts_change() {
+    let f = locked().await;
+    let (status, headers, png) = image(&f, "revision=0&page=1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(headers["cache-control"], "no-store");
+    assert!(is_png(&png));
+    let entries = cache_entries(&f);
+    assert_eq!(entries.len(), 1);
+
+    // Served from the entry even if it is altered, which only a cache hit can do.
+    let entry = f.dir.path().join("cache/renders").join(&entries[0]);
+    let altered = [&5u32.to_le_bytes()[..], b"fake!"].concat();
+    std::fs::write(&entry, altered).unwrap();
+    let (status, _, again) = image(&f, "revision=0&page=1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again, b"fake!");
+    std::fs::remove_file(&entry).unwrap();
+    assert_eq!(
+        image(&f, "revision=0&page=1").await.2,
+        png,
+        "anything may delete it"
+    );
+
+    let (status, _, _) = image(&f, "revision=0&page=9").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, _, json) = get(&f.app, &format!("{VARIANT}/preview.json?revision=0")).await;
+    assert_eq!(serde_json::from_str::<Value>(&json).unwrap()["pages"], 1);
+
+    let (expected, source) = head_of(&f).await;
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_eq!(save(&f, expected, &edited).await.0, StatusCode::SEE_OTHER);
+    let (status, _, next) = image(&f, "revision=1&page=1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(next, png, "another source, another image");
+    assert_eq!(cache_entries(&f).len(), 2);
+
+    // A changed facts version renders again rather than trusting the old check.
+    let mut tx = f.db.begin_write().await.unwrap();
+    cv_facts::set_owner_facts(&mut tx, &Default::default(), "test")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(image(&f, "revision=1&page=1").await.0, StatusCode::OK);
+    assert_eq!(cache_entries(&f).len(), 3);
+}
+
+#[tokio::test]
+async fn a_revision_that_stops_passing_shows_no_preview_and_no_pdf() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let extra = source.replace("Built the routing service.", "Built 77 routing services.");
+    let mut tx = f.db.begin_write().await.unwrap();
+    let allowed = cv_facts::get(&mut tx).await.unwrap().facts.allowed_tokens;
+    let with_77 = cv_facts::OwnerFacts {
+        allowed_tokens: Some(allowed.iter().cloned().chain(["77".to_owned()]).collect()),
+        ..Default::default()
+    };
+    cv_facts::set_owner_facts(&mut tx, &with_77, "test")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(save(&f, 0, &extra).await.0, StatusCode::SEE_OTHER);
+    assert_eq!(image(&f, "revision=1&page=1").await.0, StatusCode::OK);
+
+    let mut tx = f.db.begin_write().await.unwrap();
+    let without = cv_facts::OwnerFacts {
+        allowed_tokens: Some(allowed),
+        ..Default::default()
+    };
+    cv_facts::set_owner_facts(&mut tx, &without, "test")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, _, _) = image(&f, "revision=1&page=1").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _, json) = get(&f.app, &format!("{VARIANT}/preview.json?revision=1")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let body: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(body["tokens"][0], "77");
+    let (status, _, page) = get(&f.app, &format!("{VARIANT}/cv.pdf?revision=1")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("No PDF for this revision"), "{page}");
+}
+
+#[tokio::test]
+async fn an_absurd_page_number_is_only_an_empty_page() {
+    let f = locked().await;
+    let (status, _, _) = get(&f.app, "/cv/variants/default?page=9223372036854775807").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_pdf_downloads_as_an_attachment() {
+    let f = locked().await;
+    let request = Request::get(format!("{VARIANT}/cv.pdf?revision=0"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, bytes) = send(&f.app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/pdf");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"cv-default-0.pdf\""
+    );
+    assert!(bytes.starts_with(b"%PDF-"));
+    assert_eq!(
+        get(&f.app, "/cv/variants/nope/cv.pdf").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&f.app, "/cv/variants/nope").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&f.app, "/api/cv/nope/head").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _, head) = get(&f.app, "/api/cv/default/head").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_str::<Value>(&head).unwrap()["revision"], 0);
+}
+
+#[tokio::test]
+async fn every_writer_announces_its_revision_after_commit() {
+    let f = locked().await;
+    let mut events = f.state.cv_events.subscribe();
+    let (_, source) = head_of(&f).await;
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_eq!(save(&f, 0, &edited).await.0, StatusCode::SEE_OTHER);
+    let event = events.recv().await.unwrap();
+    assert_eq!((event.variant.as_str(), event.revision), ("default", 1));
+    assert_eq!(event.origin, "dashboard");
+
+    // At the moment of the announcement the revision can be read back.
+    assert_eq!(revision_rows(&f.db).await.len(), 1);
+    let revert = "/cv/variants/default/revert";
+    let refused = save(&f, 0, &source).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT);
+    assert!(events.try_recv().is_err(), "a refused write is silent");
+    assert_eq!(
+        post(
+            &f.app,
+            revert,
+            &[("csrf", TOKEN), ("expected", "1"), ("to", "1")]
+        )
+        .await
+        .0,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(events.recv().await.unwrap().origin, "revert");
+}
+
+#[tokio::test]
+async fn the_microphone_and_openai_are_allowed_only_on_a_variant_page_with_voice_on() {
+    let f = locked().await;
+    let on = build(&f.state, &f.dir, Some(voice()));
+
+    let (_, headers, page) = get(&on, VARIANT).await;
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(
+        csp.contains("connect-src 'self' https://api.openai.com"),
+        "{csp}"
+    );
+    assert!(csp.contains("media-src 'self'"), "{csp}");
+    assert!(
+        csp.contains("script-src 'self'") && !csp.contains("unsafe"),
+        "{csp}"
+    );
+    assert_eq!(headers["permissions-policy"], "microphone=(self)");
+    assert!(page.contains("/assets/voice.js"));
+    assert!(page.contains("/assets/cv.js"));
+    assert!(!page.contains("sk-synthetic"), "the key isn't in the page");
+
+    for path in ["/cv", "/cv/facts"] {
+        let (_, headers, page) = get(&on, path).await;
+        let csp = headers["content-security-policy"].to_str().unwrap();
+        assert!(!csp.contains("connect-src"), "{path}: {csp}");
+        assert_eq!(headers["permissions-policy"], "microphone=()", "{path}");
+        assert!(!page.contains("voice.js"), "{path}");
+    }
+
+    let (_, headers, page) = get(&f.app, VARIANT).await;
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(csp.contains("connect-src 'self';"), "{csp}");
+    assert!(
+        !csp.contains("openai") && !csp.contains("media-src"),
+        "{csp}"
+    );
+    assert_eq!(headers["permissions-policy"], "microphone=()");
+    assert!(page.contains("id=\"voice-off\""), "{page}");
+    assert!(!page.contains("voice.js"), "voice isn't loaded when off");
+    assert!(page.contains("/assets/cv.js"));
+}
+
+#[tokio::test]
+async fn no_page_has_inline_script_or_style() {
+    let f = locked().await;
+    let on = build(&f.state, &f.dir, Some(voice()));
+    for path in ["/cv", VARIANT, "/cv/facts"] {
+        let (_, _, page) = get(&on, path).await;
+        assert!(!page.contains(" style="), "{path}");
+        assert!(!page.contains(" onclick"), "{path}");
+        for script in page.split("<script").skip(1) {
+            assert!(script.trim_start().starts_with("src="), "{path}: {script}");
+        }
+    }
+}
+
+async fn facts_row(db: &Db) -> cv_facts::FactsState {
+    cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap()
+}
+
+async fn history(db: &Db) -> Vec<(String, String)> {
+    sqlx::query_as("SELECT change, changed_by FROM cv_facts_history ORDER BY rowid")
+        .fetch_all(db.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn locking_on_the_page_confirms_the_profiles_numbers_and_records_who() {
+    let f = fixture().await;
+    let (_, _, page) = get(&f.app, "/cv/facts").await;
+    assert!(page.contains("Mara Example") && page.contains("Brightpath Logistics"));
+    assert!(page.contains("Lock the facts"));
+    let (status, _, page) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("<mark>40%</mark>"), "{page}");
+    assert!(page.contains("Unlock"));
+    assert!(facts_row(&f.db).await.is_locked());
+    assert_eq!(
+        history(&f.db).await,
+        [("lock".to_owned(), "dashboard".to_owned())]
+    );
+
+    let (status, _, page) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("already locked"), "{page}");
+}
+
+#[tokio::test]
+async fn locking_with_no_name_is_refused_in_words() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    let state = McpState::new(
+        db.clone(),
+        "o".to_owned(),
+        "o@example.test".to_owned(),
+        nexus_mcp::Renderer::InProcess,
+    );
+    let app = build(&state, &dir, None);
+    let (_, _, page) = post(&app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    assert!(page.contains("nothing to lock"), "{page}");
+    assert!(!facts_row(&db).await.is_locked());
+}
+
+#[tokio::test]
+async fn unlocking_asks_first() {
+    let f = locked().await;
+    let (status, _, page) = post(&f.app, "/cv/facts/unlock", &[("csrf", TOKEN)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("Unlock the facts?"), "{page}");
+    assert!(page.contains("name=\"confirm\""));
+    assert!(facts_row(&f.db).await.is_locked(), "not yet");
+
+    let (status, _, page) = post(
+        &f.app,
+        "/cv/facts/unlock",
+        &[("csrf", TOKEN), ("confirm", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("are unlocked"), "{page}");
+    assert!(!facts_row(&f.db).await.is_locked());
+    assert_eq!(history(&f.db).await.last().unwrap().0, "unlock");
+}
+
+#[tokio::test]
+async fn editing_sets_only_what_nexus_cv_facts_set_can_and_keeps_typing_on_a_refusal() {
+    let f = locked().await;
+    let before = facts_row(&f.db).await;
+    let version = before.version.to_string();
+    let good = [
+        ("csrf", TOKEN),
+        ("expected", version.as_str()),
+        ("languages", "German: C1\r\nEnglish: native\r\n"),
+        ("metrics", "invoices: Cut invoice errors: by 40%"),
+        ("allowedTokens", "40%\n3\n2015\n"),
+        ("vocabulary", "Kubernetes"),
+        ("bannedPhrases", "team player"),
+        // Not fields of this form: a crafted post must not reach them.
+        ("name", "Someone Else"),
+        ("employment", "[]"),
+        ("lockedAt", ""),
+    ];
+    let (status, _, page) = post(&f.app, "/cv/facts", &good).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("Facts saved."), "{page}");
+
+    let after = facts_row(&f.db).await;
+    assert_eq!(after.version, before.version + 1);
+    assert_eq!(after.facts.name, "Mara Example");
+    assert_eq!(after.facts.employment, before.facts.employment);
+    assert!(after.is_locked());
+    assert_eq!(after.facts.languages.len(), 2);
+    assert_eq!(after.facts.languages[1].name, "English");
+    assert_eq!(after.facts.metrics[0].key, "invoices");
+    assert_eq!(after.facts.metrics[0].text, "Cut invoice errors: by 40%");
+    assert_eq!(after.facts.allowed_tokens, ["40%", "3", "2015"]);
+    assert_eq!(after.facts.banned_phrases, ["team player"]);
+    assert_eq!(history(&f.db).await.last().unwrap().1, "dashboard");
+
+    let (status, _, page) = post(&f.app, "/cv/facts", &good).await;
+    assert_eq!(status, StatusCode::CONFLICT, "the old version");
+    assert!(page.contains("changed since you opened"), "{page}");
+    assert_eq!(facts_row(&f.db).await.version, after.version);
+
+    let current = after.version.to_string();
+    let bad = [
+        ("csrf", TOKEN),
+        ("expected", current.as_str()),
+        ("languages", "German without a level"),
+        ("vocabulary", "Keep me"),
+    ];
+    let (status, _, page) = post(&f.app, "/cv/facts", &bad).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("German without a level"));
+    assert!(page.contains("Keep me"), "what was typed stays");
+    assert_eq!(facts_row(&f.db).await.version, after.version);
+}

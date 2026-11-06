@@ -9,6 +9,7 @@ Files here:
 | `nexus.service` | `/etc/systemd/system/` |
 | `nexus-backup.service`, `nexus-backup.timer` | `/etc/systemd/system/` |
 | `nexus.sysusers` | `/etc/sysusers.d/nexus.conf` |
+| `voice.conf` | Only to turn voice on: `/etc/systemd/system/nexus.service.d/`. See [Voice](#voice) |
 
 ## What this build serves
 
@@ -16,7 +17,7 @@ Files here:
 |---|---|
 | `/healthz` | Open |
 | `/calendar.ics` | The secret token in its URL. Not served without a token file |
-| `/`, `/queue`, `/applications/*`, `/api/*` | The owner, logged in at `/login` |
+| `/`, `/queue`, `/applications/*`, `/cv`, `/cv/*`, `/api/*` | The owner, logged in at `/login` |
 | `/.well-known/oauth-*`, `/api/mcp/{register,authorize,token}` | OAuth 2.1 for MCP clients |
 | `/api/mcp`, `/mcp` | MCP tools: an OAuth access token or the API token |
 
@@ -283,6 +284,45 @@ Moving a whole document is expensive: the transport holds several copies, about 
 A large upload has 300 s, so 14 MB needs about 373 kbit/s, and must not stall for more than 30 s at a time. Anything slower gets a 408. **The ingress may be stricter:** check that it allows an upload this long.
 
 Connections: at most 256 at once, and past that a new one is closed at once. Headers must arrive within 10 s and fit in 64 KiB. An idle keep-alive connection is closed after 10 s too, which a reverse proxy handles by opening another.
+
+## Voice
+
+Off by default. A default install has no key, makes no outbound call, and the CV page says voice is off. Everything else in the workspace works without it.
+
+**Turning it on**, on the board:
+
+```sh
+sudo install -m 0600 /dev/stdin /etc/nexus/openai-api-key   # paste the key, then Ctrl-D
+sudo install -d /etc/systemd/system/nexus.service.d
+sudo install -m 0644 voice.conf /etc/systemd/system/nexus.service.d/voice.conf
+sudo systemctl daemon-reload && sudo systemctl restart nexus
+journalctl -u nexus -n 5 | grep voice=true
+```
+
+Use a key from an OpenAI project made for this, with a budget limit set on the project. To turn voice off, delete `voice.conf` and the key file, then run the last line but one again. That also brings the outbound filter back.
+
+**What `voice.conf` gives up.** The unit's `IPAddressDeny=any` stops anything inside Nexus from sending data out. OpenAI's addresses aren't stable enough to list, so the drop-in lifts that filter for every destination. The microphone needs HTTPS: phones refuse it on a plain-HTTP origin.
+
+**What goes to OpenAI**, once you press Connect:
+
+| Goes | Stays |
+|---|---|
+| Your voice while the button is held, or all the time in hands-free, and its transcript | The API key, which never reaches the browser |
+| The CV source, and the facts it renders: name, contact, jobs, dates, education, languages, metrics, allowed tokens and vocabulary | Banned phrases |
+| What `list_applications_filtered`, `get_application` and `list_application_events` return when the model asks: **job descriptions, notes, salaries, event text** | Documents, PDFs, preview images and the answers in submission records |
+
+The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass through Nexus. A tool result is cut at 32 KiB, with a marker the model can read.
+
+**Cost.** OpenAI bills Realtime by audio and text tokens of the model in use, and a long conversation costs more per turn, because earlier turns are sent again. Check its current pricing page, as this file doesn't quote prices that change. What Nexus does to bound it:
+
+- A session lasts at most 15 minutes (`NEXUS_VOICE_SESSION_SECONDS`, at most 3600). After that Nexus refuses its tool calls and the page closes the connection.
+- The page disconnects after 5 quiet minutes, and stops the microphone whenever a session ends.
+- 12 sessions an hour can be started, failed attempts included, so a page bug can't run up costs. A restart resets this count and ends every session.
+- `render_cv_pdf` sends the model a summary only: no images.
+
+**The limit Nexus can't enforce.** Only the page can close a live connection. A browser that ignores the page's timers (altered, or a debugger) could keep talking to OpenAI past the limit, until OpenAI ends the session itself, though its tool calls stop working. The project budget limit is the backstop for that.
+
+**What a voice session can do.** Eight tools and no others, enforced on the server: `get_cv_source`, `patch_cv`, `render_cv_pdf` (no saving), `list_cv_revisions`, `revert_cv`, `list_applications_filtered`, `get_application`, `list_application_events`. It can't change an application or mark one applied, and its edits pass the same integrity check as any other. The log names the tools called, never their arguments.
 
 ## 8. Upgrade and rollback
 

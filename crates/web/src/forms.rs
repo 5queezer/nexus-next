@@ -288,7 +288,12 @@ fn confirm_page(application: &Application, kind: &str, form: &Typed, token: &str
     Html(views::page("Confirm", Nav::None, 0, body)).into_response()
 }
 
-fn notice_page(status: StatusCode, heading: &str, text: &str) -> Response {
+/// In constant time, since a form token is a secret.
+pub(crate) fn csrf_ok(sent: Option<&str>, token: &str) -> bool {
+    sent.is_some_and(|sent| sent.as_bytes().ct_eq(token.as_bytes()).into())
+}
+
+pub(crate) fn notice_page(status: StatusCode, heading: &str, text: &str) -> Response {
     let body = views::page(heading, Nav::None, 0, views::message(heading, text));
     (status, Html(body)).into_response()
 }
@@ -305,10 +310,7 @@ pub(crate) async fn submit(
         .copied()
         .ok_or(PageError(StatusCode::NOT_FOUND))?;
     let id: i64 = id.parse().map_err(|_| PageError(StatusCode::NOT_FOUND))?;
-    let valid = form
-        .get("csrf")
-        .is_some_and(|sent| sent.as_bytes().ct_eq(token.as_bytes()).into());
-    if !valid {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
         return Ok(notice_page(
             StatusCode::FORBIDDEN,
             "This form has expired",
@@ -430,7 +432,7 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
                 <form method="post" action=action("note") class="act">
                     {hidden(x, a, true)}
                     <label>"Note"
-                        <textarea name="note" rows="4" maxlength="5000" required>{value(x, "note", "")}</textarea>
+                        <textarea name="note" rows="4" maxlength="5000" required>{views::textarea_text(&value(x, "note", ""))}</textarea>
                     </label>
                     <button type="submit">"Add note"</button>
                 </form>

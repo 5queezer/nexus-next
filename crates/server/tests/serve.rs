@@ -49,6 +49,9 @@ fn config(dir: &std::path::Path, calendar: bool, insecure: bool) -> ServeConfig 
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: calendar.then(|| TOKEN.to_owned()),
         log_level: tracing::Level::INFO,
+        voice: None,
+        renderer: nexus_mcp::Renderer::current_exe(),
+        stream_shutdown: tokio::sync::watch::Sender::new(false),
     }
 }
 

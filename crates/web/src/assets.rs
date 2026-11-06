@@ -17,6 +17,8 @@ use crate::views::{self, Nav};
 
 const CSS: &str = include_str!("style.css");
 const JS: &str = include_str!("../assets/app.js");
+const CV_JS: &str = include_str!("../assets/cv.js");
+const VOICE_JS: &str = include_str!("../assets/voice.js");
 const SW: &str = include_str!("../assets/sw.js");
 const MANIFEST: &str = r##"{
   "name": "Nexus",
@@ -50,7 +52,7 @@ const ICONS: [(&str, &[u8]); 4] = [
 /// Names a build of the static files: pages link to `?v=` URLs and the worker caches by it, so a
 /// changed file replaces the old cache.
 pub(crate) static VERSION: LazyLock<String> = LazyLock::new(|| {
-    let hash = [CSS, JS, SW, MANIFEST]
+    let hash = [CSS, JS, CV_JS, VOICE_JS, SW, MANIFEST]
         .iter()
         .flat_map(|part| part.bytes())
         .chain(ICONS.iter().flat_map(|(_, bytes)| bytes.iter().copied()))
@@ -65,6 +67,8 @@ pub fn static_router() -> Router {
     Router::new()
         .route("/assets/app.css", get(stylesheet))
         .route("/assets/app.js", get(script))
+        .route("/assets/cv.js", get(cv_script))
+        .route("/assets/voice.js", get(voice_script))
         .route("/sw.js", get(service_worker))
         .route("/manifest.webmanifest", get(manifest))
         .route("/icons/{name}", get(icon))
@@ -83,6 +87,14 @@ async fn stylesheet(query: Query<Versioned>) -> Response {
 
 async fn script(query: Query<Versioned>) -> Response {
     file(query, "text/javascript; charset=utf-8", JS)
+}
+
+async fn cv_script(query: Query<Versioned>) -> Response {
+    file(query, "text/javascript; charset=utf-8", CV_JS)
+}
+
+async fn voice_script(query: Query<Versioned>) -> Response {
+    file(query, "text/javascript; charset=utf-8", VOICE_JS)
 }
 
 /// A `?v=` URL naming this build never changes; any other URL must be revalidated.

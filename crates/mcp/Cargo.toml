@@ -13,10 +13,11 @@ chrono.workspace = true
 nexus-core.workspace = true
 nexus-tailor.workspace = true
 rmcp.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
 sqlx.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tokio-util.workspace = true
 url.workspace = true
 uuid.workspace = true

@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::cv_source::{
     application_variant, compile, content_of, error_with, facts_changed_error, facts_moved,
-    violation_error,
+    publish, violation_error,
 };
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{
@@ -193,7 +193,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             None => revisions::create_variant(&mut tx, &name, Some(application.id)).await?,
         };
         let parent_id = variant.head_revision_id;
-        revisions::append(
+        let revision = revisions::append(
             &mut tx,
             variant.id,
             &NewRevision {
@@ -233,9 +233,9 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         let document = documents_repo::create(&mut tx, &new).await?;
         repo::set_patch_document_id(&mut tx, tracked.id, Some(document.id)).await?;
         tx.commit().await?;
-        Ok(Some((document, replaced_blob)))
+        Ok(Some((document, replaced_blob, name, revision)))
     };
-    let (document, replaced_blob) = match stored.await {
+    let (document, replaced_blob, variant, revision) = match stored.await {
         Ok(Some(done)) => done,
         Ok(None) => {
             let _ = remove_blob_if_unreferenced(db, sha256).await;
@@ -247,6 +247,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             return Ok(text_error(&format!("Failed to generate CV: {message}")));
         }
     };
+    publish(ctx, &variant, &revision, &report.review_tokens);
     if let Some(replaced) = replaced_blob {
         let _ = remove_blob_if_unreferenced(db, replaced).await;
     }
