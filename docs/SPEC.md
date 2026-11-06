@@ -13,7 +13,7 @@ Replace the Next.js Nexus with one Rust binary on a ROCK 4 SE: an MCP tool serve
 |---|---|---|
 | CV rendering in M1 | Minimal Typst renderer behind `generate_tailored_cv` | Replaces `@react-pdf/renderer` (the tool's current renderer, not Reactive Resume). New PDFs will look different. |
 | Auth | Keep OAuth 2.1 in v1, alongside API tokens | Port the authorization server, consent flow and a login page to Rust. Needs a public endpoint. |
-| Scope | Single user. Drop email scanning, assistant tables, share links, demo workspace | `ScannedEmail` is archived in the export, not imported. |
+| Scope | Single user. Drop email scanning, assistant tables, share links, demo workspace | `ScannedEmail` has no rows in production, so there is nothing to archive or import. |
 | Hosting of this repo | Private, on Forgejo | Spec and integrity rules stay off public hosts. |
 
 Reactive Resume stays usable for real applications until M2 **[handoff]**. Typst source editing (`patch_cv` and friends) also stays in M2.
@@ -87,7 +87,7 @@ SQLite (WAL, foreign keys on) with blobs on the filesystem.
 | `_ApplicationToDocument` | `application_documents` | Explicit join table |
 | `ApplicationSubmission` | `application_submissions` | Drop `userId` |
 | `CvProfile` / `CvPatch` | `cv_profile` / `cv_patches` | Profile becomes a single row |
-| `UserApiToken` | `api_tokens` | Keep hashes, so `jt_` tokens keep working |
+| `UserApiToken` | `api_tokens` | Starts empty: production has no tokens, so every current client uses OAuth |
 | `McpOAuthClient`, `McpAuthCode`, `McpAccessToken`, `McpRefreshToken` | `oauth_*` | Start empty. Arrays become JSON text. |
 
 Rules:
@@ -112,9 +112,36 @@ Dropped: `User`, `Session`, `Account`, `Verification`, `ShareLink`, `DemoWorkspa
 
 **Export, from the live system (read-only):**
 1. **Live data location, read from the running container on 2026-11-06:** Nexus runs on `hetzner-hel` (Coolify). `DB_PROVIDER` is unset, so it uses Prisma. `DATABASE_URL` points at a Coolify `postgres:17-alpine` container on the same host, not Neon or Firestore. `GCS_BUCKET` is set and credentials are configured, so document blobs are in GCS. Neon's role, if any, is unconfirmed: check it before relying on the Neon project.
-2. Run `pg_dump` inside that container with a **table allowlist**: the models in section 5 plus `ScannedEmail`. Never dump `LlmCredential`, `EmailIntegration`, `Session` or `Account`, which hold secrets.
-3. Fetch blobs from GCS, or through `download_document_content`. Confirm with `Document` rows that every blob is in the bucket, since older rows may predate it.
+2. Run `pg_dump` inside that container with a **table allowlist**: `Application`, `ApplicationEvent`, `ApplicationSubmission`, `Contact`, `Document`, `_ApplicationToDocument`, `CvProfile`, `CvPatch`, `ScannedEmail`. Never dump credential tables (`LlmCredential`, `EmailIntegration`, `Session`, `Account`, `UserApiToken`, `Mcp*`).
+3. Fetch blobs from GCS with the app container's own client, so its service-account key stays on the server.
 4. Store outside any repo, in a mode 700 directory.
+
+**First export, 2026-11-06 (from `235138d`):**
+
+| Table | Rows |
+|---|---|
+| `Application` | 190 |
+| `ApplicationEvent` | 205 |
+| `Contact` | 36 |
+| `Document` | 81 |
+| `_ApplicationToDocument` | 56 |
+| `ApplicationSubmission` | 1 |
+| `CvProfile`, `CvPatch`, `ScannedEmail`, `UserApiToken`, `DemoWorkspace` | 0 |
+
+All rows belong to the owner, and none are demo rows. The other 11 `User` rows own nothing.
+
+**Known data gap: this export is not complete.**
+- 49 of 81 documents have their file; every stored `contentHash` among them matched.
+- 32 documents (uploaded 2026-06-23 to 2026-07-10, all PDFs, type `other`, none linked to a submission, 15 linked to applications) have no file in the bucket, its pre-deploy backups, other visible buckets, GCS versions, or the `hetzner-hel` disks searched.
+- Likely cause, inferred and not proven: commit `4624b87` added a fallback to local disk when GCS credentials are missing, and the container has no uploads volume, so a redeploy would have erased them. Found files start the day the missing ones end.
+- Candidates recovered from Hermes data into quarantine: 21 match on size and name, 5 on size only, 6 have none. These rows have no stored hash, so identity can't be proven. They need human confirmation before import, and they stay out of `blobs/`.
+
+**Importer rules from this data:**
+- `contentHash` is null on 35 rows, including 3 with files: compute it from the blob and record that it was computed at import.
+- Unconfirmed rows import with a `blob_missing` state, not as if the file exists.
+- `get_document` and `download_document_content` must return a clear error for them. Compare with old Nexus's behaviour in the parity tests.
+
+**Old Nexus backups.** The bucket also holds `_nexus-backups/pre-deploy/` (62 snapshots, 53 objects) and 14 unreferenced root objects. Review these for retention and secrets when decommissioning.
 
 **Import:**
 - One idempotent command that loads the owner's rows only and skips `isDemo` and `demoProvenance` rows.
@@ -160,10 +187,11 @@ M2 note: `CvProfile.experience` mixes hard facts (dates, company) with wording (
 | Item | Blocks | Owner |
 |---|---|---|
 | Should Nexus data sit on unencrypted root, or on LUKS with manual unlock after reboot? | Deployment | Christian |
-| Approve the allowlisted `pg_dump` on `hetzner-hel` and read access to the GCS bucket | Export | Christian |
+| Review the 26 recovered document candidates and decide what to do about the 6 with none | Importer | Christian |
+| Keep Typst in M1? `CvProfile` and `CvPatch` are empty and no stored CV came from `generate_tailored_cv`, so the tool currently only returns "No CV profile found" | M1 scope | Christian |
 | Is the Neon project still used for anything? Live Nexus doesn't point at it | Local notes, cleanup | Christian |
 | Live `tools/list`, to confirm the snapshot | Freezing the contract | Agent, with connector access |
-| Does the board's Ethernet drop recur? Why did it drop on 2026-11-06? | Choosing the board as host | Christian, watch logs |
+| Does the board's Ethernet drop recur? Why did it drop on 2026-11-06? The board stays the chosen host; check `journalctl -b \| grep 'end0'` before cutover | Cutover | Christian, watch logs |
 | Ingress choice | M1 gate | Test both, then decide |
 | Do any workflows rely on old Nexus's `/resume` and `/tailor` routes, which call Reactive Resume? They disappear at M1 cutover. | Cutover | Check the skills |
 | Did the Typst/Reactive Resume memory update land? (Hindsight was down) | Nothing | Check later |
