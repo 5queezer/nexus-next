@@ -7,6 +7,7 @@
 
 use std::path::Path as FilePath;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -47,6 +48,9 @@ const FACTS_ACTOR: &str = "dashboard";
 const MAX_LISTED_ITEMS: usize = 200;
 /// Unchanged lines kept around a change in the diff, so that it reads in place.
 const DIFF_CONTEXT_LINES: usize = 1;
+/// How long a preview waits for another's compile, holding an owner slot: well under the 10 s any
+/// other page will queue for one, so that misses can't take the slots from them.
+const PREVIEW_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct Cv {
@@ -1197,7 +1201,11 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
             pages,
         };
     }
-    let _rendering = cv.rendering.lock().await;
+    let Ok(_rendering) = tokio::time::timeout(PREVIEW_WAIT, cv.rendering.lock()).await else {
+        let mut busy = CallToolResult::error(Vec::new());
+        busy.structured_content = Some(json!({"error": {"code": "cv_render_busy"}}));
+        return Preview::Refused(Box::new(told(busy)));
+    };
     if let Ok(Some(pages)) = cached().await {
         return Preview::Ready {
             revision: number,
