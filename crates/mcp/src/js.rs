@@ -31,6 +31,55 @@ pub fn trim(value: &str) -> &str {
     value.trim_matches(|c: char| c == '\u{FEFF}' || (c != '\u{85}' && c.is_whitespace()))
 }
 
+/// What Prisma's `contains: term, mode: "insensitive"` does in Postgres: `ILIKE '%term%'` with the
+/// term unescaped, so `%` and `_` stay wildcards and a backslash escapes.
+pub fn ilike_contains(text: &str, term: &str) -> bool {
+    enum Token {
+        Any,
+        One,
+        Char(char),
+    }
+    let mut tokens = vec![Token::Any];
+    let pattern = format!("{term}%").to_lowercase();
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        tokens.push(match c {
+            '%' => Token::Any,
+            '_' => Token::One,
+            '\\' => Token::Char(chars.next().unwrap_or('\\')),
+            c => Token::Char(c),
+        });
+    }
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+    let (mut t, mut p) = (0, 0);
+    let mut backtrack = None;
+    while t < text.len() {
+        match tokens.get(p) {
+            Some(Token::Any) => {
+                backtrack = Some((p + 1, t));
+                p += 1;
+            }
+            Some(Token::One) => {
+                t += 1;
+                p += 1;
+            }
+            Some(Token::Char(c)) if *c == text[t] => {
+                t += 1;
+                p += 1;
+            }
+            _ => match backtrack {
+                Some((after_any, start)) => {
+                    p = after_any;
+                    t = start + 1;
+                    backtrack = Some((after_any, start + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    tokens[p..].iter().all(|token| matches!(token, Token::Any))
+}
+
 /// JSON numbers as JavaScript sees them: `5.0` is the integer `5`.
 pub fn normalize_numbers(value: &mut Value) {
     match value {
@@ -89,11 +138,20 @@ pub fn parse_date(value: &str) -> Option<Timestamp> {
             .map(|parsed| parsed.and_utc())
         })
         .or_else(|| {
-            ["%Y/%m/%d", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"]
-                .iter()
-                .find_map(|format| NaiveDate::parse_from_str(value, format).ok())
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .map(|parsed| parsed.and_utc())
+            [
+                "%Y/%m/%d",
+                "%m/%d/%Y",
+                "%b %d, %Y",
+                "%B %d, %Y",
+                "%b %d %Y",
+                "%B %d %Y",
+                "%d %b %Y",
+                "%d %B %Y",
+            ]
+            .iter()
+            .find_map(|format| NaiveDate::parse_from_str(value, format).ok())
+            .and_then(|date| date.and_hms_opt(0, 0, 0))
+            .map(|parsed| parsed.and_utc())
         })
         .and_then(|parsed| {
             let stamp = Timestamp::from_datetime(parsed);
@@ -137,7 +195,9 @@ fn parse_iso(value: &str) -> Option<DateTime<Utc>> {
         None => (0, 0),
         Some(field) => {
             let (seconds, fraction) = field.split_once('.').unwrap_or((field, ""));
-            if field.contains('.') && (fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit())) {
+            if field.contains('.')
+                && (fraction.is_empty() || !fraction.bytes().all(|b| b.is_ascii_digit()))
+            {
                 return None;
             }
             let padded = format!("{fraction:0<3}");
@@ -157,7 +217,7 @@ fn parse_iso(value: &str) -> Option<DateTime<Utc>> {
 }
 
 fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn two(value: &str) -> Option<u32> {
@@ -193,7 +253,11 @@ pub fn is_zod_datetime(value: &str, offset: bool) -> bool {
             let zone = &zone[1..];
             let valid = match zone.len() {
                 4 => digits(zone, 4).is_some(),
-                5 => zone.as_bytes()[2] == b':' && two(&zone[..2]).is_some() && two(&zone[3..]).is_some(),
+                5 => {
+                    zone.as_bytes()[2] == b':'
+                        && two(&zone[..2]).is_some()
+                        && two(&zone[3..]).is_some()
+                }
                 _ => false,
             };
             if !valid {
@@ -236,7 +300,13 @@ fn stable_serialize(value: &Value) -> String {
             keys.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
             let fields: Vec<String> = keys
                 .into_iter()
-                .map(|key| format!("{}:{}", Value::from(key.as_str()), stable_serialize(&map[key])))
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        Value::from(key.as_str()),
+                        stable_serialize(&map[key])
+                    )
+                })
                 .collect();
             format!("{{{}}}", fields.join(","))
         }
@@ -249,7 +319,9 @@ pub fn request_hash(value: &Value) -> String {
     sha256_hex(stable_serialize(value).as_bytes())
 }
 
-const TRACKING_PARAMS: [&str; 7] = ["ref", "source", "campaign", "mc_cid", "mc_eid", "gclid", "fbclid"];
+const TRACKING_PARAMS: [&str; 7] = [
+    "ref", "source", "campaign", "mc_cid", "mc_eid", "gclid", "fbclid",
+];
 
 /// Port of `canonicalizeJobUrl`. The errors are the messages old Nexus throws.
 pub fn canonicalize_job_url(raw: &str) -> Result<Option<String>, String> {
@@ -303,8 +375,14 @@ mod tests {
             ("2026-01-02", Some("2026-01-02T00:00:00.000Z")),
             ("2026-01", Some("2026-01-01T00:00:00.000Z")),
             ("2026-01-02T03:04Z", Some("2026-01-02T03:04:00.000Z")),
-            ("2026-01-02T03:04:05.123456Z", Some("2026-01-02T03:04:05.123Z")),
-            ("2026-01-02T03:04:05.5+02:00", Some("2026-01-02T01:04:05.500Z")),
+            (
+                "2026-01-02T03:04:05.123456Z",
+                Some("2026-01-02T03:04:05.123Z"),
+            ),
+            (
+                "2026-01-02T03:04:05.5+02:00",
+                Some("2026-01-02T01:04:05.500Z"),
+            ),
             ("2026-01-02T03:04:05+0200", Some("2026-01-02T01:04:05.000Z")),
             ("2026-02-30", Some("2026-03-02T00:00:00.000Z")),
             ("Jan 5, 2026", Some("2026-01-05T00:00:00.000Z")),
@@ -312,13 +390,21 @@ mod tests {
             ("soon", None),
             ("", None),
         ] {
-            assert_eq!(parse_date(input).as_ref().map(Timestamp::as_str), expected, "{input}");
+            assert_eq!(
+                parse_date(input).as_ref().map(Timestamp::as_str),
+                expected,
+                "{input}"
+            );
         }
     }
 
     #[test]
     fn zod_datetime_matches_the_v3_regex() {
-        for value in ["2026-01-02T03:04:05Z", "2026-01-02T03:04Z", "2024-02-29T00:00:00.123456Z"] {
+        for value in [
+            "2026-01-02T03:04:05Z",
+            "2026-01-02T03:04Z",
+            "2024-02-29T00:00:00.123456Z",
+        ] {
             assert!(is_zod_datetime(value, false), "{value}");
         }
         for value in [
@@ -340,13 +426,20 @@ mod tests {
     #[test]
     fn canonical_urls_match_old_nexus() {
         for (input, expected) in [
-            ("https://Jobs.Example.com/a/b/?utm_source=x&b=2&a=1#frag", "https://jobs.example.com/a/b?a=1&b=2"),
+            (
+                "https://Jobs.Example.com/a/b/?utm_source=x&b=2&a=1#frag",
+                "https://jobs.example.com/a/b?a=1&b=2",
+            ),
             ("https://example.com/", "https://example.com/"),
             ("https://example.com/?", "https://example.com/"),
             ("https://example.com/x?ref=1", "https://example.com/x"),
             ("http://example.com/x?q=a b", "http://example.com/x?q=a+b"),
         ] {
-            assert_eq!(canonicalize_job_url(input).unwrap().as_deref(), Some(expected), "{input}");
+            assert_eq!(
+                canonicalize_job_url(input).unwrap().as_deref(),
+                Some(expected),
+                "{input}"
+            );
         }
         assert_eq!(canonicalize_job_url("  ").unwrap(), None);
         assert!(canonicalize_job_url("ftp://example.com").is_err());
@@ -355,8 +448,23 @@ mod tests {
 
     #[test]
     fn hashing_sorts_keys_and_keeps_nulls() {
-        let serialized = stable_serialize(&serde_json::json!({"b": [1, {"d": null, "c": "é"}], "a": true}));
+        let serialized =
+            stable_serialize(&serde_json::json!({"b": [1, {"d": null, "c": "é"}], "a": true}));
         assert_eq!(serialized, r#"{"a":true,"b":[1,{"c":"é","d":null}]}"#);
+    }
+
+    #[test]
+    fn ilike_is_unicode_insensitive_with_wildcards() {
+        assert!(ilike_contains("München GmbH", "MÜNCHEN"));
+        assert!(ilike_contains("abc", ""));
+        assert!(ilike_contains("Acme 50% off", "50%"));
+        assert!(ilike_contains("Acme 50 off", "50%off"));
+        assert!(ilike_contains("a1c", "a_c"));
+        assert!(!ilike_contains("ac", "a_c"));
+        assert!(ilike_contains("100%", "0\\%"));
+        assert!(!ilike_contains("100x", "0\\%"));
+        assert!(!ilike_contains("Acme", "Beta"));
+        assert!(ilike_contains("aab", "ab"));
     }
 
     #[test]

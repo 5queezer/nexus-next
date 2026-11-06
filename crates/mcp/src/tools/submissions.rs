@@ -1,13 +1,18 @@
 use std::collections::BTreeSet;
 
 use nexus_core::Timestamp;
-use nexus_core::repo::applications::{self as apps_repo, ApplicationFields, ApplicationIdentity, Guard};
+use nexus_core::repo::applications::{
+    self as apps_repo, ApplicationFields, ApplicationIdentity, Guard,
+};
 use nexus_core::repo::documents::{self as documents_repo, Document};
 use nexus_core::repo::events::{self as events_repo, NewEvent};
 use nexus_core::repo::submissions::{self as repo, NewSubmission};
 use serde_json::{Map, Value, json};
 
-use super::{Args, Ctx, Thrown, ToolResult, bool_arg, code_error, find_application, json_result, req_str, str_arg, text_error};
+use super::{
+    Args, Ctx, Thrown, ToolResult, bool_arg, code_error, find_application, json_result, req_str,
+    str_arg, text_error,
+};
 use crate::js::{nid, parse_date, request_hash, trim, utf16_len};
 
 const ERROR_CODES: [&str; 21] = [
@@ -46,7 +51,11 @@ fn validate_answers(answers: &[Value]) -> Result<Vec<Value>, Thrown> {
         if question.is_empty() {
             return Err(Thrown(format!("Answer {} requires a question", index + 1)));
         }
-        let key = raw.get("key").and_then(Value::as_str).map(trim).filter(|key| !key.is_empty());
+        let key = raw
+            .get("key")
+            .and_then(Value::as_str)
+            .map(trim)
+            .filter(|key| !key.is_empty());
         if key.is_some_and(|key| utf16_len(key) > 100) {
             return fail("Answer keys must be at most 100 characters");
         }
@@ -86,8 +95,16 @@ fn normalize_reason(value: Option<&Value>) -> Result<Option<String>, Thrown> {
 }
 
 /// Port of `validateSubmissionPolicy`. A policy that is not an object has none of its fields.
-fn validate_policy(policy: Option<&Value>, answers: &[Value], document_ids: &[Value]) -> Result<Map<String, Value>, Thrown> {
-    let field = |key: &str| policy.and_then(|policy| policy.as_object()).and_then(|policy| policy.get(key));
+fn validate_policy(
+    policy: Option<&Value>,
+    answers: &[Value],
+    document_ids: &[Value],
+) -> Result<Map<String, Value>, Thrown> {
+    let field = |key: &str| {
+        policy
+            .and_then(|policy| policy.as_object())
+            .and_then(|policy| policy.get(key))
+    };
     if field("humanReviewed") != Some(&Value::Bool(true)) {
         return fail("human_review_required");
     }
@@ -143,11 +160,17 @@ fn validate_document_ids(ids: &[Value]) -> Result<Vec<String>, Thrown> {
 }
 
 fn normalize_company(value: &str) -> String {
-    trim(value).split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    trim(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 fn normalize_identifier(value: Option<&str>) -> Option<String> {
-    value.map(|value| trim(value).to_lowercase()).filter(|value| !value.is_empty())
+    value
+        .map(|value| trim(value).to_lowercase())
+        .filter(|value| !value.is_empty())
 }
 
 /// Port of `validateSubmissionConflicts`.
@@ -184,7 +207,9 @@ fn validate_conflicts(
         }
     }
     if !policy.contains_key("sameCompanyOverrideReason")
-        && same_company.iter().any(|other| matches!(other.status.as_str(), "applied" | "interview" | "offer"))
+        && same_company
+            .iter()
+            .any(|other| matches!(other.status.as_str(), "applied" | "interview" | "offer"))
     {
         return fail("same_company_active_application");
     }
@@ -222,14 +247,22 @@ fn submission_result(
     event: Value,
     outcome: Outcome,
 ) -> Value {
+    // The handler sanitizes only the top-level `documents`, so those nested in `submission` keep
+    // their raw association fields.
+    let mut submission = ctx.submission_json(submission, documents);
+    submission["documents"] = documents
+        .iter()
+        .map(|d| ctx.raw_doc_json(d))
+        .collect::<Vec<_>>()
+        .into();
     json!({
         "replayed": outcome.replayed,
         "dryRun": false,
         "verified": outcome.verified,
         "application": application,
-        "submission": ctx.submission_json(submission, documents),
+        "submission": submission,
         "event": event,
-        "documents": documents.iter().map(|d| ctx.raw_doc_json(d)).collect::<Vec<_>>(),
+        "documents": documents.iter().map(|d| ctx.doc_json(d)).collect::<Vec<_>>(),
     })
 }
 
@@ -263,11 +296,15 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
     }
     let answers = validate_answers(args["answers"].as_array().map_or(&[], Vec::as_slice))?;
     let raw_document_ids = args["documentIds"].as_array().cloned().unwrap_or_default();
-    let submitted_at = parse_date(req_str(args, "submittedAt")).ok_or_else(|| Thrown("Invalid Date".to_owned()))?;
-    let follow_up_at = args.get("followUpAt").map(|value| value.as_str().and_then(parse_date));
+    let submitted_at = parse_date(req_str(args, "submittedAt"))
+        .ok_or_else(|| Thrown("Invalid Date".to_owned()))?;
+    let follow_up_at = args
+        .get("followUpAt")
+        .map(|value| value.as_str().and_then(parse_date));
     let expected = str_arg(args, "expectedUpdatedAt").and_then(parse_date);
     let idempotency_key = req_str(args, "idempotencyKey");
-    let currency = nullable_str(args, "candidateSalaryCurrency").map(|value| value.map(|c| c.to_uppercase()));
+    let currency =
+        nullable_str(args, "candidateSalaryCurrency").map(|value| value.map(|c| c.to_uppercase()));
     let policy_arg = args.get("policy");
 
     // The fields the request hash covers, with `undefined` absent as in `stableSerialize`.
@@ -275,7 +312,10 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
     input.insert("applicationId".to_owned(), application_id_arg.into());
     input.insert("submittedAt".to_owned(), submitted_at.as_str().into());
     if let Some(follow_up_at) = &follow_up_at {
-        input.insert("followUpAt".to_owned(), follow_up_at.as_ref().map(Timestamp::as_str).into());
+        input.insert(
+            "followUpAt".to_owned(),
+            follow_up_at.as_ref().map(Timestamp::as_str).into(),
+        );
     }
     for key in ["applicationUrl", "atsName", "requisitionId", "language"] {
         if let Some(value) = args.get(key) {
@@ -286,15 +326,27 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
     if let Some(policy) = policy_arg {
         input.insert("policy".to_owned(), policy.clone());
     }
-    for key in ["candidateSalaryMin", "candidateSalaryMax", "candidateSalaryPeriod", "candidateSalaryType", "candidateSalaryFlexible"] {
+    for key in [
+        "candidateSalaryMin",
+        "candidateSalaryMax",
+        "candidateSalaryPeriod",
+        "candidateSalaryType",
+        "candidateSalaryFlexible",
+    ] {
         if let Some(value) = args.get(key) {
             input.insert(key.to_owned(), value.clone());
         }
     }
     if let Some(currency) = &currency {
-        input.insert("candidateSalaryCurrency".to_owned(), currency.clone().into());
+        input.insert(
+            "candidateSalaryCurrency".to_owned(),
+            currency.clone().into(),
+        );
     }
-    input.insert("documentIds".to_owned(), Value::Array(raw_document_ids.clone()));
+    input.insert(
+        "documentIds".to_owned(),
+        Value::Array(raw_document_ids.clone()),
+    );
 
     let policy_result = validate_policy(policy_arg, &answers, &raw_document_ids);
     let raw_hash = request_hash(&Value::Object(input.clone()));
@@ -319,11 +371,27 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
         let event = events_repo::find_by_idempotency_key(&mut tx, &event_key).await?;
         let documents = ctx.submission_docs(&mut tx, replay.id).await?;
         let verified = application.status == "applied"
-            && replay.document_ids.0.as_array().is_some_and(|ids| ids.len() == documents.len());
+            && replay
+                .document_ids
+                .0
+                .as_array()
+                .is_some_and(|ids| ids.len() == documents.len());
         let application = ctx.app_with_contacts(&mut tx, &application).await?;
-        let event = event.as_ref().map_or(Value::Null, |event| ctx.event_json(event));
-        let outcome = Outcome { replayed: true, verified };
-        return Ok(submission_result(ctx, &replay, &documents, application, event, outcome));
+        let event = event
+            .as_ref()
+            .map_or(Value::Null, |event| ctx.event_json(event));
+        let outcome = Outcome {
+            replayed: true,
+            verified,
+        };
+        return Ok(submission_result(
+            ctx,
+            &replay,
+            &documents,
+            application,
+            event,
+            outcome,
+        ));
     }
     let policy = policy_result?;
     let document_ids = validate_document_ids(&raw_document_ids)?;
@@ -331,13 +399,20 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
     let Some(application) = apps_repo::get(&mut tx, application_id).await? else {
         return fail("not_found");
     };
-    if expected.as_ref().is_some_and(|expected| *expected != application.updated_at) {
+    if expected
+        .as_ref()
+        .is_some_and(|expected| *expected != application.updated_at)
+    {
         return fail("conflict");
     }
     let ats_name = nullable_str(args, "atsName");
     let requisition_id = nullable_str(args, "requisitionId");
-    let effective_ats = ats_name.clone().unwrap_or_else(|| application.ats_name.clone());
-    let effective_requisition = requisition_id.clone().unwrap_or_else(|| application.requisition_id.clone());
+    let effective_ats = ats_name
+        .clone()
+        .unwrap_or_else(|| application.ats_name.clone());
+    let effective_requisition = requisition_id
+        .clone()
+        .unwrap_or_else(|| application.requisition_id.clone());
     let existing_submissions = repo::count_for_application(&mut tx, application_id).await?;
     let identities = apps_repo::list_identities(&mut tx).await?;
     validate_conflicts(
@@ -350,7 +425,10 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
         &identities,
     )?;
 
-    let numeric_ids = document_ids.iter().map(|id| nid(id)).collect::<Result<Vec<_>, _>>()?;
+    let numeric_ids = document_ids
+        .iter()
+        .map(|id| nid(id))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut documents = Vec::with_capacity(numeric_ids.len());
     for id in &numeric_ids {
         match documents_repo::get(&mut tx, *id).await? {
@@ -411,10 +489,10 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
                 "candidateSalaryFlexible": candidate_flexible,
                 "documentIds": document_ids,
                 "createdAt": submitted_at.as_str(),
-                "documents": clean_documents,
+                "documents": raw_documents,
             },
             "event": null,
-            "documents": raw_documents,
+            "documents": clean_documents,
         }));
     }
 
@@ -480,7 +558,10 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
         && stored.len() == document_ids.len();
     let application = ctx.app_with_contacts(&mut tx, &updated).await?;
     let event = ctx.event_json(&event);
-    let outcome = Outcome { replayed: false, verified };
+    let outcome = Outcome {
+        replayed: false,
+        verified,
+    };
     let result = submission_result(ctx, &created, &stored, application, event, outcome);
     tx.commit().await.map_err(nexus_core::Error::from)?;
     Ok(result)
@@ -492,8 +573,12 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
     }
     let run = async {
         let mut conn = ctx.state.db.conn().await.ok()?;
-        let application = find_application(&mut conn, req_str(args, "applicationId")).await.ok()??;
-        let rows = repo::list_for_application(&mut conn, application.id, false).await.ok()?;
+        let application = find_application(&mut conn, req_str(args, "applicationId"))
+            .await
+            .ok()??;
+        let rows = repo::list_for_application(&mut conn, application.id, false)
+            .await
+            .ok()?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
             let documents = ctx.submission_docs(&mut conn, row.id).await.ok()?;
@@ -517,7 +602,10 @@ pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
         return Ok(text_error("Submission not found"));
     };
     let documents = ctx.submission_docs(&mut conn, submission.id).await?;
-    Ok(json_result(ctx.submission_json(&submission, &documents), false))
+    Ok(json_result(
+        ctx.submission_json(&submission, &documents),
+        false,
+    ))
 }
 
 pub async fn recall_package(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -525,7 +613,8 @@ pub async fn recall_package(ctx: &Ctx, args: &Args) -> ToolResult {
         return Ok(error);
     }
     let mut conn = ctx.state.db.conn().await?;
-    let Some(application) = find_application(&mut conn, req_str(args, "applicationId")).await? else {
+    let Some(application) = find_application(&mut conn, req_str(args, "applicationId")).await?
+    else {
         return Ok(text_error("Application not found"));
     };
     let rows = repo::list_for_application(&mut conn, application.id, true).await?;

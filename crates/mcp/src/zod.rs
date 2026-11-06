@@ -103,11 +103,15 @@ impl Walker<'_> {
             .collect();
         let expected = quoted.join(" | ");
         match value {
-            Some(Value::String(text)) if options.iter().any(|o| o == text.as_str()) => value.cloned(),
+            Some(Value::String(text)) if options.iter().any(|o| o == text.as_str()) => {
+                value.cloned()
+            }
             Some(Value::String(text)) => {
                 self.push(
                     issue! {"received": text, "code": "invalid_enum_value", "options": options},
-                    Some(format!("Invalid enum value. Expected {expected}, received '{text}'")),
+                    Some(format!(
+                        "Invalid enum value. Expected {expected}, received '{text}'"
+                    )),
                 );
                 None
             }
@@ -156,36 +160,58 @@ impl Walker<'_> {
             text
         };
         let length = utf16_len(text) as u64;
-        let exact = schema.get("minLength").is_some() && schema.get("minLength") == schema.get("maxLength");
+        let exact =
+            schema.get("minLength").is_some() && schema.get("minLength") == schema.get("maxLength");
         // zod-to-json-schema writes checks in declaration order, and zod runs them in that order.
         for (keyword, bound) in schema {
             match keyword.as_str() {
                 "minLength" if exact => {
                     let n = bound.as_u64()?;
                     if length < n {
-                        self.too_small("string", bound, true, format!("String must contain exactly {n} character(s)"));
+                        self.too_small(
+                            "string",
+                            bound,
+                            true,
+                            format!("String must contain exactly {n} character(s)"),
+                        );
                     }
                 }
                 "maxLength" if exact => {
                     let n = bound.as_u64()?;
                     if length > n {
-                        self.too_big("string", bound, true, format!("String must contain exactly {n} character(s)"));
+                        self.too_big(
+                            "string",
+                            bound,
+                            true,
+                            format!("String must contain exactly {n} character(s)"),
+                        );
                     }
                 }
                 "minLength" => {
                     let n = bound.as_u64()?;
                     if length < n {
-                        self.too_small("string", bound, false, format!("String must contain at least {n} character(s)"));
+                        self.too_small(
+                            "string",
+                            bound,
+                            false,
+                            format!("String must contain at least {n} character(s)"),
+                        );
                     }
                 }
                 "maxLength" => {
                     let n = bound.as_u64()?;
                     if length > n {
-                        self.too_big("string", bound, false, format!("String must contain at most {n} character(s)"));
+                        self.too_big(
+                            "string",
+                            bound,
+                            false,
+                            format!("String must contain at most {n} character(s)"),
+                        );
                     }
                 }
                 "format" if bound == "date-time" => {
-                    let offset = matches!(self.tool, "archive_application" | "unarchive_application");
+                    let offset =
+                        matches!(self.tool, "archive_application" | "unarchive_application");
                     if !is_zod_datetime(text, offset) {
                         self.push(
                             issue! {"code": "invalid_string", "validation": "datetime", "message": "Invalid datetime"},
@@ -227,10 +253,20 @@ impl Walker<'_> {
                     );
                 }
                 "minimum" if n < bound.as_f64()? => {
-                    self.too_small("number", bound, false, format!("Number must be greater than or equal to {bound}"));
+                    self.too_small(
+                        "number",
+                        bound,
+                        false,
+                        format!("Number must be greater than or equal to {bound}"),
+                    );
                 }
                 "maximum" if n > bound.as_f64()? => {
-                    self.too_big("number", bound, false, format!("Number must be less than or equal to {bound}"));
+                    self.too_big(
+                        "number",
+                        bound,
+                        false,
+                        format!("Number must be less than or equal to {bound}"),
+                    );
                 }
                 _ => {}
             }
@@ -246,12 +282,22 @@ impl Walker<'_> {
         if let Some(bound) = schema.get("minItems")
             && (items.len() as u64) < bound.as_u64()?
         {
-            self.too_small("array", bound, false, format!("Array must contain at least {bound} element(s)"));
+            self.too_small(
+                "array",
+                bound,
+                false,
+                format!("Array must contain at least {bound} element(s)"),
+            );
         }
         if let Some(bound) = schema.get("maxItems")
             && items.len() as u64 > bound.as_u64()?
         {
-            self.too_big("array", bound, false, format!("Array must contain at most {bound} element(s)"));
+            self.too_big(
+                "array",
+                bound,
+                false,
+                format!("Array must contain at most {bound} element(s)"),
+            );
         }
         let item_schema = schema.get("items").and_then(Value::as_object);
         let mut out = Vec::with_capacity(items.len());
@@ -298,13 +344,19 @@ impl Walker<'_> {
 }
 
 /// The parsed arguments, or the text of zod's error: `JSON.stringify(issues, null, 2)`.
-pub fn parse(tool: &str, schema: &Value, args: Option<&Value>) -> Result<Map<String, Value>, String> {
+pub fn parse(
+    tool: &str,
+    schema: &Value,
+    args: Option<&Value>,
+) -> Result<Map<String, Value>, String> {
     let mut walker = Walker {
         tool,
         path: Vec::new(),
         issues: Vec::new(),
     };
-    let parsed = schema.as_object().and_then(|schema| walker.walk(schema, args));
+    let parsed = schema
+        .as_object()
+        .and_then(|schema| walker.walk(schema, args));
     if !walker.issues.is_empty() {
         return Err(serde_json::to_string_pretty(&walker.issues).expect("issues serialize"));
     }
@@ -336,8 +388,16 @@ mod tests {
 
     #[test]
     fn strips_unknown_keys_and_applies_defaults() {
-        let parsed = parse("t", &schema(), Some(&json!({"id": "x", "extra": 1, "any": null}))).unwrap();
-        assert_eq!(Value::Object(parsed), json!({"id": "x", "limit": 50, "any": null}));
+        let parsed = parse(
+            "t",
+            &schema(),
+            Some(&json!({"id": "x", "extra": 1, "any": null})),
+        )
+        .unwrap();
+        assert_eq!(
+            Value::Object(parsed),
+            json!({"id": "x", "limit": 50, "any": null})
+        );
     }
 
     #[test]
@@ -360,9 +420,20 @@ mod tests {
 
     #[test]
     fn exact_length_and_enums_use_zod_messages() {
-        let err = parse("t", &schema(), Some(&json!({"id": "x", "code": "abc", "kind": "c"}))).unwrap_err();
-        assert!(err.contains("String must contain exactly 2 character(s)"), "{err}");
-        assert!(err.contains("Invalid enum value. Expected 'a' | 'b', received 'c'"), "{err}");
+        let err = parse(
+            "t",
+            &schema(),
+            Some(&json!({"id": "x", "code": "abc", "kind": "c"})),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("String must contain exactly 2 character(s)"),
+            "{err}"
+        );
+        assert!(
+            err.contains("Invalid enum value. Expected 'a' | 'b', received 'c'"),
+            "{err}"
+        );
     }
 
     #[test]

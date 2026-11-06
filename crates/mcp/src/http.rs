@@ -8,7 +8,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::header::{ACCEPT, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOST};
+use axum::http::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONNECTION, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, Response, StatusCode};
 use axum::routing::get;
 use nexus_core::auth::AuthContext;
@@ -22,8 +22,13 @@ use crate::{Handler, McpState, frozen_tools};
 /// inside it while bounding what one request can make the board hold in memory.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-const SUPPORTED_PROTOCOL_VERSIONS: [&str; 5] =
-    ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+const SUPPORTED_PROTOCOL_VERSIONS: [&str; 5] = [
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+    "2024-10-07",
+];
 
 type Rmcp = StreamableHttpService<Handler, LocalSessionManager>;
 
@@ -44,7 +49,13 @@ pub fn router(state: McpState) -> Router {
         config,
     );
     Router::new()
-        .route("/", get(handle_get).post(handle_post).delete(handle_delete))
+        .route(
+            "/",
+            get(handle_get)
+                .post(handle_post)
+                .delete(handle_delete)
+                .options(handle_options),
+        )
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(service)
 }
@@ -71,8 +82,11 @@ fn empty(status: StatusCode) -> Response<Body> {
         .expect("valid response")
 }
 
-fn header<'a>(headers: &'a HeaderMap, name: impl axum::http::header::AsHeaderName) -> &'a str {
-    headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
+fn header(headers: &HeaderMap, name: impl axum::http::header::AsHeaderName) -> &str {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
 }
 
 fn protocol_error(headers: &HeaderMap) -> Option<Response<Body>> {
@@ -117,6 +131,15 @@ async fn handle_get(request: Request) -> Response<Body> {
         .header(CONTENT_TYPE, "text/event-stream")
         .header(CACHE_CONTROL, "no-cache, no-transform")
         .header(CONNECTION, "keep-alive")
+        .body(Body::empty())
+        .expect("valid response")
+}
+
+/// Next.js answered OPTIONS itself for any route that exports handlers.
+async fn handle_options() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header(ALLOW, "DELETE, GET, HEAD, OPTIONS, POST")
         .body(Body::empty())
         .expect("valid response")
 }
@@ -170,11 +193,114 @@ fn is_request(message: &Value) -> bool {
     method(message).is_some() && message.get("id").is_some()
 }
 
-async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, message: Value) -> Result<Value, Response<Body>> {
+fn zod4_received(value: Option<&Value>) -> &'static str {
+    match value {
+        None => "undefined",
+        Some(Value::Null) => "null",
+        Some(Value::Bool(_)) => "boolean",
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+    }
+}
+
+/// An issue of the SDK's request schemas, which use zod 4 and so differ from the tool schemas'.
+fn zod4_issue(path: &[&str], expected: &str, value: Option<&Value>) -> Value {
+    json!({
+        "expected": expected,
+        "code": "invalid_type",
+        "path": path,
+        "message": format!("Invalid input: expected {expected}, received {}", zod4_received(value)),
+    })
+}
+
+/// What the SDK's request schemas reject before a handler runs. It reports them as internal errors.
+fn params_issues(method: &str, params: Option<&Value>) -> Vec<Value> {
+    if !matches!(method, "initialize" | "tools/call") {
+        return Vec::new();
+    }
+    let Some(params) = params else {
+        return vec![zod4_issue(&["params"], "object", None)];
+    };
+    let field = |key| params.get(key);
+    let mut issues = Vec::new();
+    let mut expect = |path: &[&str], expected: &str, value: Option<&Value>, ok: bool| {
+        if !ok {
+            issues.push(zod4_issue(path, expected, value));
+        }
+    };
+    if method == "initialize" {
+        let version = field("protocolVersion");
+        expect(
+            &["params", "protocolVersion"],
+            "string",
+            version,
+            version.is_some_and(Value::is_string),
+        );
+        let capabilities = field("capabilities");
+        expect(
+            &["params", "capabilities"],
+            "object",
+            capabilities,
+            capabilities.is_some_and(Value::is_object),
+        );
+        let info = field("clientInfo");
+        match info.filter(|info| info.is_object()) {
+            None => expect(&["params", "clientInfo"], "object", info, false),
+            Some(info) => {
+                for key in ["version", "name"] {
+                    let value = info.get(key);
+                    expect(
+                        &["params", "clientInfo", key],
+                        "string",
+                        value,
+                        value.is_some_and(Value::is_string),
+                    );
+                }
+            }
+        }
+    } else {
+        let name = field("name");
+        expect(
+            &["params", "name"],
+            "string",
+            name,
+            name.is_some_and(Value::is_string),
+        );
+        let arguments = field("arguments");
+        expect(
+            &["params", "arguments"],
+            "record",
+            arguments,
+            arguments.is_none_or(Value::is_object),
+        );
+    }
+    issues
+}
+
+fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, message: Value) -> Value {
     let id = message["id"].clone();
+    let name = method(&message).unwrap_or_default();
+    let issues = params_issues(name, message.get("params"));
+    if !issues.is_empty() {
+        let text = serde_json::to_string_pretty(&issues).expect("issues serialize");
+        return rpc_error(&id, -32603, &text);
+    }
+    if name == "tools/call" && message["params"].get("task").is_some() {
+        return rpc_error(
+            &id,
+            -32603,
+            "Server does not support task creation (required for tools/call)",
+        );
+    }
     match method(&message) {
         Some("tools/list") => {
-            Ok(json!({"result": {"tools": frozen_tools()}, "jsonrpc": "2.0", "id": id}))
+            json!({"result": {"tools": frozen_tools()}, "jsonrpc": "2.0", "id": id})
         }
         Some("initialize" | "ping" | "tools/call") => {
             let mut inner = Request::post("/")
@@ -185,23 +311,13 @@ async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, message: Val
                 .expect("valid request");
             *inner.extensions_mut() = parts.extensions.clone();
             let response = service.handle(inner).await;
-            let status = response.status();
             let body = to_bytes(Body::new(response.into_body()), MAX_BODY_BYTES)
                 .await
                 .unwrap_or_else(|_| Bytes::new());
-            match serde_json::from_slice(&body) {
-                Ok(value) => Ok(value),
-                Err(_) => Err(Response::builder()
-                    .status(status)
-                    .body(Body::from(body))
-                    .expect("valid response")),
-            }
+            serde_json::from_slice(&body)
+                .unwrap_or_else(|_| rpc_error(&id, -32603, "Internal error"))
         }
-        _ => Ok(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {"code": -32601, "message": "Method not found"},
-        })),
+        _ => rpc_error(&id, -32601, "Method not found"),
     }
 }
 
@@ -262,10 +378,7 @@ async fn handle_post(State(service): State<Rmcp>, request: Request) -> Response<
     }
     let mut responses = Vec::with_capacity(requests.len());
     for message in requests {
-        match answer(&service, &parts, message).await {
-            Ok(value) => responses.push(value),
-            Err(response) => return response,
-        }
+        responses.push(answer(&service, &parts, message).await);
     }
     if responses.len() == 1 {
         json_response(StatusCode::OK, &responses[0])

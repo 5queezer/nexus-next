@@ -64,7 +64,8 @@ impl ServerHandler for Handler {
     }
 
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
-        std::borrow::Cow::Borrowed(&[
+        std::borrow::Cow::Owned(vec![
+            serde_json::from_value(Value::from("2024-10-07")).expect("a version string"),
             ProtocolVersion::V_2024_11_05,
             ProtocolVersion::V_2025_03_26,
             ProtocolVersion::V_2025_06_18,
@@ -84,7 +85,9 @@ impl ServerHandler for Handler {
             .cloned()
             .ok_or_else(|| ErrorData::internal_error("missing auth context", None))?;
         let args = request.arguments.map(Value::Object);
-        Ok(tools::call(self.state.clone(), &auth, &request.name, args).await.into())
+        Ok(tools::call(self.state.clone(), &auth, &request.name, args)
+            .await
+            .into())
     }
 }
 

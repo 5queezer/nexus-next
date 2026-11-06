@@ -8,7 +8,7 @@ use nexus_core::repo::events::{self as repo, EventFilter, NewEvent};
 use serde_json::{Map, Value, json};
 
 use super::{Args, Ctx, ToolResult, find_application, json_result, req_str, str_arg};
-use crate::js::{nid, parse_date, request_hash, trim, utf16_len};
+use crate::js::{ilike_contains, nid, parse_date, request_hash, trim, utf16_len};
 
 const ERROR_CODES: [&str; 17] = [
     "event_type_invalid",
@@ -40,10 +40,16 @@ fn event_keys(event_type: &str) -> Vec<&'static str> {
         "outbound_contact_recorded" => with_common(&["channel"]),
         "reply_received" => with_common(&["channel", "responseKind", "replyDateKnown"]),
         "stage_changed" => vec!["fromStage", "toStage", "toStatus"],
-        "interview_invited" => {
-            with_common(&["interviewType", "scheduledAt", "durationMinutes", "followUpAt", "toStage"])
+        "interview_invited" => with_common(&[
+            "interviewType",
+            "scheduledAt",
+            "durationMinutes",
+            "followUpAt",
+            "toStage",
+        ]),
+        "interview_scheduled" => {
+            with_common(&["interviewType", "scheduledAt", "durationMinutes", "toStage"])
         }
-        "interview_scheduled" => with_common(&["interviewType", "scheduledAt", "durationMinutes", "toStage"]),
         "interview_completed" => with_common(&["interviewType", "followUpAt", "toStage"]),
         "feedback_received" => with_common(&["followUpAt", "toStage"]),
         "follow_up_scheduled" => vec!["contactId", "followUpAt", "nextAction"],
@@ -70,7 +76,11 @@ fn required_keys(event_type: &str) -> &'static [&'static str] {
 #[derive(Debug)]
 pub(crate) enum EventError {
     Code(String),
-    Metadata { path: String, expected: String, reason: String },
+    Metadata {
+        path: String,
+        expected: String,
+        reason: String,
+    },
 }
 
 impl EventError {
@@ -78,8 +88,16 @@ impl EventError {
         Self::Code(code.to_owned())
     }
 
-    fn metadata(path: impl Into<String>, expected: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::Metadata { path: path.into(), expected: expected.into(), reason: reason.into() }
+    fn metadata(
+        path: impl Into<String>,
+        expected: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::Metadata {
+            path: path.into(),
+            expected: expected.into(),
+            reason: reason.into(),
+        }
     }
 }
 
@@ -104,10 +122,18 @@ impl From<super::Thrown> for EventError {
 fn error_result(error: EventError, fallback: &str) -> rmcp::model::CallToolResult {
     match error {
         EventError::Code(code) => {
-            let code = if ERROR_CODES.contains(&code.as_str()) { code.as_str() } else { fallback };
+            let code = if ERROR_CODES.contains(&code.as_str()) {
+                code.as_str()
+            } else {
+                fallback
+            };
             json_result(json!({"error": {"code": code}}), true)
         }
-        EventError::Metadata { path, expected, reason } => json_result(
+        EventError::Metadata {
+            path,
+            expected,
+            reason,
+        } => json_result(
             json!({"error": {"code": "event_metadata_invalid", "path": path, "expected": expected, "reason": reason}}),
             true,
         ),
@@ -118,7 +144,11 @@ fn optional_string(value: &Value, max: usize, path: &str) -> Result<Option<Strin
     let expected = || format!("string with 1 to {max} characters");
     let name = path.rsplit('.').next().unwrap_or(path);
     let Some(text) = value.as_str() else {
-        return Err(EventError::metadata(path, expected(), format!("{name} must be a string")));
+        return Err(EventError::metadata(
+            path,
+            expected(),
+            format!("{name} must be a string"),
+        ));
     };
     let normalized = trim(text);
     if normalized.is_empty() || utf16_len(normalized) > max {
@@ -133,7 +163,10 @@ fn optional_string(value: &Value, max: usize, path: &str) -> Result<Option<Strin
 
 /// Port of `parseMetadata`. Keys that only `application_submitted` allows can't reach it, because
 /// that type is rejected first.
-fn parse_metadata(event_type: &str, raw: Option<&Map<String, Value>>) -> Result<Map<String, Value>, EventError> {
+fn parse_metadata(
+    event_type: &str,
+    raw: Option<&Map<String, Value>>,
+) -> Result<Map<String, Value>, EventError> {
     let empty = Map::new();
     let raw = raw.unwrap_or(&empty);
     if raw.len() > 100 {
@@ -143,16 +176,27 @@ fn parse_metadata(event_type: &str, raw: Option<&Map<String, Value>>) -> Result<
             "metadata must have at most 100 keys",
         ));
     }
-    if let Some(key) = raw.keys().find(|key| key.is_empty() || utf16_len(key) > 100) {
+    if let Some(key) = raw
+        .keys()
+        .find(|key| key.is_empty() || utf16_len(key) > 100)
+    {
         return Err(EventError::metadata(
-            if key.is_empty() { "metadata".to_owned() } else { format!("metadata.{key}") },
+            if key.is_empty() {
+                "metadata".to_owned()
+            } else {
+                format!("metadata.{key}")
+            },
             "key with 1 to 100 characters",
             "metadata keys must contain 1 to 100 characters",
         ));
     }
     let allowed = event_keys(event_type);
     if let Some(key) = raw.keys().find(|key| !allowed.contains(&key.as_str())) {
-        let expected = if allowed.is_empty() { "no metadata keys".to_owned() } else { allowed.join(", ") };
+        let expected = if allowed.is_empty() {
+            "no metadata keys".to_owned()
+        } else {
+            allowed.join(", ")
+        };
         return Err(EventError::metadata(
             format!("metadata.{key}"),
             format!("one of: {expected}"),
@@ -191,7 +235,11 @@ fn parse_metadata(event_type: &str, raw: Option<&Map<String, Value>>) -> Result<
             },
             "replyDateKnown" => {
                 if !item.is_boolean() {
-                    return Err(EventError::metadata(path, "boolean", "replyDateKnown must be a boolean"));
+                    return Err(EventError::metadata(
+                        path,
+                        "boolean",
+                        "replyDateKnown must be a boolean",
+                    ));
                 }
                 metadata.insert(key.clone(), item.clone());
             }
@@ -217,7 +265,10 @@ fn parse_metadata(event_type: &str, raw: Option<&Map<String, Value>>) -> Result<
             }
             "toStatus" => {
                 let status = optional_string(item, 255, &path)?;
-                if !matches!(status.as_deref(), Some("inbound" | "applied" | "interview" | "offer" | "rejected")) {
+                if !matches!(
+                    status.as_deref(),
+                    Some("inbound" | "applied" | "interview" | "offer" | "rejected")
+                ) {
                     return Err(EventError::metadata(
                         path,
                         "one of: inbound, applied, interview, offer, rejected",
@@ -239,7 +290,10 @@ fn parse_metadata(event_type: &str, raw: Option<&Map<String, Value>>) -> Result<
         }
     }
 
-    if let Some(key) = required_keys(event_type).iter().find(|key| !metadata.contains_key(**key)) {
+    if let Some(key) = required_keys(event_type)
+        .iter()
+        .find(|key| !metadata.contains_key(**key))
+    {
         return Err(EventError::metadata(
             format!("metadata.{key}"),
             "required value",
@@ -273,7 +327,9 @@ fn parse_command(
 ) -> Result<EventCommand, EventError> {
     let event_type = trim(event_type);
     if event_type == "application_submitted" {
-        return Err(EventError::code("submission_event_requires_submission_workflow"));
+        return Err(EventError::code(
+            "submission_event_requires_submission_workflow",
+        ));
     }
     let idempotency_key = str_arg(args, "idempotencyKey").map(trim).map(str::to_owned);
     if let Some(key) = &idempotency_key
@@ -287,7 +343,9 @@ fn parse_command(
     }
     let occurred_at = match occurred_at {
         None => Timestamp::now(),
-        Some(text) => parse_date(text).ok_or_else(|| EventError::code("event_occurred_at_invalid"))?,
+        Some(text) => {
+            parse_date(text).ok_or_else(|| EventError::code("event_occurred_at_invalid"))?
+        }
     };
     let expected_updated_at = str_arg(args, "expectedUpdatedAt")
         .map(|text| parse_date(text).ok_or_else(|| EventError::code("invalid_expected_updated_at")))
@@ -307,7 +365,10 @@ fn parse_command(
 }
 
 fn stamp(metadata: &Map<String, Value>, key: &str) -> Option<Timestamp> {
-    metadata.get(key).and_then(Value::as_str).and_then(parse_date)
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .and_then(parse_date)
 }
 
 /// Port of `deriveEventProjection`.
@@ -333,7 +394,11 @@ fn derive_projection(
         metadata.insert("fromStatus".to_owned(), status.into());
         metadata.insert("toStatus".to_owned(), new_status.into());
     };
-    let to_stage = command.metadata.get("toStage").and_then(Value::as_str).map(str::to_owned);
+    let to_stage = command
+        .metadata
+        .get("toStage")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     match command.event_type.as_str() {
         "stage_changed" => {
             patch.current_stage = Some(to_stage);
@@ -344,13 +409,21 @@ fn derive_projection(
             }
         }
         kind @ ("interview_invited" | "interview_completed") => {
-            transition(&mut patch, "interview", to_stage.unwrap_or_else(|| kind.to_owned()));
+            transition(
+                &mut patch,
+                "interview",
+                to_stage.unwrap_or_else(|| kind.to_owned()),
+            );
             if follow_up.is_some() {
                 patch.follow_up_at = Some(follow_up);
             }
         }
         "interview_scheduled" => {
-            transition(&mut patch, "interview", to_stage.unwrap_or_else(|| "interview_scheduled".to_owned()));
+            transition(
+                &mut patch,
+                "interview",
+                to_stage.unwrap_or_else(|| "interview_scheduled".to_owned()),
+            );
             patch.follow_up_at = Some(stamp(&command.metadata, "scheduledAt"));
         }
         "outbound_contact_recorded" => {
@@ -388,7 +461,11 @@ fn derive_projection(
 
 /// Port of `recordApplicationEvent`, with replay and write under one lock in place of its
 /// optimistic retry.
-async fn record_event(ctx: &Ctx, application_id: i64, command: EventCommand) -> Result<Value, EventError> {
+async fn record_event(
+    ctx: &Ctx,
+    application_id: i64,
+    command: EventCommand,
+) -> Result<Value, EventError> {
     let application_ref = application_id.to_string();
     let occurred_at = command.occurred_at.as_str();
     let metadata_value = Value::Object(command.metadata.clone());
@@ -422,13 +499,19 @@ async fn record_event(ctx: &Ctx, application_id: i64, command: EventCommand) -> 
             .await?
             .ok_or_else(|| EventError::code("not_found"))?;
         let application = ctx.app_with_contacts(&mut tx, &application).await?;
-        return Ok(json!({"event": ctx.event_json(&event), "application": application, "replayed": true}));
+        return Ok(
+            json!({"event": ctx.event_json(&event), "application": application, "replayed": true}),
+        );
     }
 
     let application = apps_repo::get(&mut tx, application_id)
         .await?
         .ok_or_else(|| EventError::code("not_found"))?;
-    if command.expected_updated_at.as_ref().is_some_and(|expected| *expected != application.updated_at) {
+    if command
+        .expected_updated_at
+        .as_ref()
+        .is_some_and(|expected| *expected != application.updated_at)
+    {
         return Err(EventError::code("conflict"));
     }
     if let Some(contact_id) = &command.contact_id {
@@ -442,14 +525,29 @@ async fn record_event(ctx: &Ctx, application_id: i64, command: EventCommand) -> 
         let id = nid(document_id).map_err(|_| EventError::code("document_not_found"))?;
         let linked = documents_repo::get(&mut tx, id)
             .await?
-            .is_some_and(|document| document.applications.iter().any(|parent| parent.id == application_id));
+            .is_some_and(|document| {
+                document
+                    .applications
+                    .iter()
+                    .any(|parent| parent.id == application_id)
+            });
         if !linked {
             return Err(EventError::code("document_not_found"));
         }
     }
 
-    let (patch, metadata) = derive_projection(&command, &application.status, application.current_stage.as_deref());
-    let updated = apps_repo::update(&mut tx, application_id, patch, Guard::EventVersion(application.event_version)).await?;
+    let (patch, metadata) = derive_projection(
+        &command,
+        &application.status,
+        application.current_stage.as_deref(),
+    );
+    let updated = apps_repo::update(
+        &mut tx,
+        application_id,
+        patch,
+        Guard::EventVersion(application.event_version),
+    )
+    .await?;
     let event = repo::insert(
         &mut tx,
         &NewEvent {
@@ -489,7 +587,9 @@ pub async fn append_note(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     Ok(match run.await {
         Ok(value) => json_result(value, false),
-        Err(EventError::Metadata { .. }) => error_result(EventError::code("event_metadata_invalid"), "append_failed"),
+        Err(EventError::Metadata { .. }) => {
+            error_result(EventError::code("event_metadata_invalid"), "append_failed")
+        }
         Err(error) => error_result(error, "append_failed"),
     })
 }
@@ -497,7 +597,12 @@ pub async fn append_note(ctx: &Ctx, args: &Args) -> ToolResult {
 pub async fn record(ctx: &Ctx, args: &Args) -> ToolResult {
     let run = async {
         let id = require_application(ctx, req_str(args, "applicationId")).await?;
-        let command = parse_command(ctx, req_str(args, "type"), args, args.get("metadata").and_then(Value::as_object))?;
+        let command = parse_command(
+            ctx,
+            req_str(args, "type"),
+            args,
+            args.get("metadata").and_then(Value::as_object),
+        )?;
         record_event(ctx, id, command).await
     };
     Ok(match run.await {
@@ -521,13 +626,21 @@ fn query_string(args: &Args, key: &str) -> Result<Option<String>, EventError> {
 
 fn decode_cursor(value: &str) -> Result<(Timestamp, String), EventError> {
     let invalid = || EventError::code("event_query_invalid");
-    let bytes = URL_SAFE_NO_PAD.decode(value.trim_end_matches('=')).map_err(|_| invalid())?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value.trim_end_matches('='))
+        .map_err(|_| invalid())?;
     let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     if parsed["version"] != 1 {
         return Err(invalid());
     }
-    let id = parsed["id"].as_str().filter(|id| !id.is_empty()).ok_or_else(invalid)?;
-    let occurred_at = parsed["occurredAt"].as_str().and_then(parse_date).ok_or_else(invalid)?;
+    let id = parsed["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(invalid)?;
+    let occurred_at = parsed["occurredAt"]
+        .as_str()
+        .and_then(parse_date)
+        .ok_or_else(invalid)?;
     Ok((occurred_at, id.to_owned()))
 }
 
@@ -546,7 +659,11 @@ fn parse_query(args: &Args) -> Result<EventFilter, EventError> {
             }
         }
     }
-    let date = |key| str_arg(args, key).map(|text| parse_date(text).ok_or_else(invalid)).transpose();
+    let date = |key| {
+        str_arg(args, key)
+            .map(|text| parse_date(text).ok_or_else(invalid))
+            .transpose()
+    };
     let occurred_after = date("occurredAfter")?;
     let occurred_before = date("occurredBefore")?;
     if let (Some(after), Some(before)) = (&occurred_after, &occurred_before)
@@ -560,10 +677,14 @@ fn parse_query(args: &Args) -> Result<EventFilter, EventError> {
     let actor = query_string(args, "actor")?;
     let contact_id = query_string(args, "contactId")?;
     let outcome = query_string(args, "outcome")?;
-    let cursor = str_arg(args, "cursor").filter(|c| !c.is_empty()).map(decode_cursor).transpose()?;
+    let cursor = str_arg(args, "cursor")
+        .filter(|c| !c.is_empty())
+        .map(decode_cursor)
+        .transpose()?;
     let adapter_id = |id: &str| nid(id).map_err(EventError::Code);
     Ok(EventFilter {
         application_id: application_id.as_deref().map(adapter_id).transpose()?,
+        application_ids: None,
         company,
         types,
         occurred_after,
@@ -572,14 +693,31 @@ fn parse_query(args: &Args) -> Result<EventFilter, EventError> {
         actor,
         contact_id,
         outcome,
-        cursor: cursor.map(|(at, id)| adapter_id(&id).map(|id| (at, id))).transpose()?,
+        cursor: cursor
+            .map(|(at, id)| adapter_id(&id).map(|id| (at, id)))
+            .transpose()?,
         oldest_first: str_arg(args, "order") == Some("oldest"),
-        limit: args.get("limit").and_then(Value::as_i64).unwrap_or(50).min(100),
+        limit: args
+            .get("limit")
+            .and_then(Value::as_i64)
+            .unwrap_or(50)
+            .min(100),
     })
 }
 
-async fn event_page(ctx: &Ctx, filter: EventFilter) -> Result<Value, EventError> {
+async fn event_page(ctx: &Ctx, mut filter: EventFilter) -> Result<Value, EventError> {
     let mut conn = ctx.state.db.conn().await?;
+    // SQLite can't reproduce the `ILIKE` old Nexus matched companies with.
+    if let Some(company) = filter.company.take() {
+        let matching = apps_repo::list_identities(&mut conn).await?;
+        filter.application_ids = Some(
+            matching
+                .iter()
+                .filter(|application| ilike_contains(&application.company, &company))
+                .map(|application| application.id)
+                .collect(),
+        );
+    }
     let page = repo::list_filtered(&mut conn, &filter).await?;
     let next_cursor = match page.items.last() {
         Some(last) if page.has_more => {
@@ -588,7 +726,11 @@ async fn event_page(ctx: &Ctx, filter: EventFilter) -> Result<Value, EventError>
         }
         _ => Value::Null,
     };
-    let items: Vec<Value> = page.items.iter().map(|event| ctx.event_json(event)).collect();
+    let items: Vec<Value> = page
+        .items
+        .iter()
+        .map(|event| ctx.event_json(event))
+        .collect();
     Ok(json!({"items": items, "nextCursor": next_cursor}))
 }
 

@@ -13,10 +13,14 @@ use super::{
     Args, Ctx, Thrown, ToolResult, bool_arg, code_error, find_application, json_result, req_str,
     str_arg, text_error, text_result,
 };
-use crate::js::{canonicalize_job_url, nid, parse_date, slice16, trim, utf16_len};
+use crate::js::{canonicalize_job_url, ilike_contains, nid, parse_date, slice16, trim, utf16_len};
 
-const UPDATE_ERROR_CODES: [&str; 4] =
-    ["not_found", "conflict", "canonical_job_url_conflict", "application_deleting"];
+const UPDATE_ERROR_CODES: [&str; 4] = [
+    "not_found",
+    "conflict",
+    "canonical_job_url_conflict",
+    "application_deleting",
+];
 
 fn update_error(message: &str) -> rmcp::model::CallToolResult {
     if UPDATE_ERROR_CODES.contains(&message) {
@@ -29,7 +33,10 @@ fn update_error(message: &str) -> rmcp::model::CallToolResult {
 /// `optionalString`: `undefined` stays absent, and empty after trimming is null.
 fn optional_string(input: &Args, key: &str, max: usize, out: &mut Args) {
     let Some(value) = input.get(key) else { return };
-    let text = value.as_str().map(|text| slice16(trim(text), max)).filter(|text| !text.is_empty());
+    let text = value
+        .as_str()
+        .map(|text| slice16(trim(text), max))
+        .filter(|text| !text.is_empty());
     out.insert(key.to_owned(), text.map_or(Value::Null, Value::String));
 }
 
@@ -70,7 +77,12 @@ fn parse_metadata(input: &Args) -> Result<Args, String> {
         out.insert("primaryLocations".to_owned(), locations);
     }
     optional_string(input, "workMode", 100, &mut out);
-    for key in ["officeDaysMin", "travelPercent", "visaSponsorship", "rightToWorkRequired"] {
+    for key in [
+        "officeDaysMin",
+        "travelPercent",
+        "visaSponsorship",
+        "rightToWorkRequired",
+    ] {
         if let Some(value) = input.get(key) {
             out.insert(key.to_owned(), value.clone());
         }
@@ -88,20 +100,31 @@ fn parse_metadata(input: &Args) -> Result<Args, String> {
     optional_string(input, "salaryType", 100, &mut out);
     optional_string(input, "atsName", 100, &mut out);
     optional_string(input, "requisitionId", 255, &mut out);
-    for key in ["jobCapturedAt", "jobVerifiedAt", "jobPostedAt", "jobClosedAt"] {
-        let Some(value) = input.get(key) else { continue };
+    for key in [
+        "jobCapturedAt",
+        "jobVerifiedAt",
+        "jobPostedAt",
+        "jobClosedAt",
+    ] {
+        let Some(value) = input.get(key) else {
+            continue;
+        };
         let date = match value.as_str().filter(|text| !text.is_empty()) {
             None => Value::Null,
-            Some(text) => {
-                parse_date(text).ok_or_else(|| format!("{key}_invalid"))?.as_str().into()
-            }
+            Some(text) => parse_date(text)
+                .ok_or_else(|| format!("{key}_invalid"))?
+                .as_str()
+                .into(),
         };
         out.insert(key.to_owned(), date);
     }
     optional_string(input, "jobContentHash", 64, &mut out);
     if let Some(hash) = out.get("jobContentHash").and_then(Value::as_str) {
         let lower = hash.to_lowercase();
-        let valid = lower.len() == 64 && lower.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+        let valid = lower.len() == 64
+            && lower
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
         if !valid {
             return Err("jobContentHash_invalid".to_owned());
         }
@@ -115,7 +138,10 @@ fn parse_metadata(input: &Args) -> Result<Args, String> {
         if text.is_some_and(|text| utf16_len(text) > 2_000) {
             return Err("nextAction_too_long".to_owned());
         }
-        out.insert("nextAction".to_owned(), text.map_or(Value::Null, Value::from));
+        out.insert(
+            "nextAction".to_owned(),
+            text.map_or(Value::Null, Value::from),
+        );
     }
     if let Some(job_url) = input.get("jobUrl") {
         let canonical = match job_url.as_str().filter(|text| !text.is_empty()) {
@@ -130,8 +156,13 @@ fn parse_metadata(input: &Args) -> Result<Args, String> {
     Ok(out)
 }
 
-const TRIAGE_FIELDS: [&str; 5] =
-    ["companySize", "salaryBandMentioned", "triageQuality", "triageReason", "incomingSource"];
+const TRIAGE_FIELDS: [&str; 5] = [
+    "companySize",
+    "salaryBandMentioned",
+    "triageQuality",
+    "triageReason",
+    "incomingSource",
+];
 
 fn add_triage(input: &Args, out: &mut Args) {
     for key in TRIAGE_FIELDS {
@@ -141,13 +172,19 @@ fn add_triage(input: &Args, out: &mut Args) {
     }
 }
 
-/// An integer column as Prisma validates it: a 32-bit integer, or the write fails.
+/// A number bound to an integer column as Prisma treats it: fractions truncate.
+fn truncated(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|n| n.trunc() as i64))
+}
+
+/// An integer column: out of 32-bit range, the write fails.
 fn int_column(value: &Value, key: &str) -> Result<Option<i64>, String> {
     if value.is_null() {
         return Ok(None);
     }
-    value
-        .as_i64()
+    truncated(value)
         .filter(|n| i32::try_from(*n).is_ok())
         .map(Some)
         .ok_or_else(|| format!("Invalid value for {key}: expected a 32-bit integer"))
@@ -161,7 +198,9 @@ fn to_fields(map: &Args) -> Result<ApplicationFields, String> {
         map.get(key)
             .map(|value: &Value| match value.as_str() {
                 None => Ok(None),
-                Some(text) => parse_date(text).map(Some).ok_or_else(|| format!("Invalid value for {key}")),
+                Some(text) => parse_date(text)
+                    .map(Some)
+                    .ok_or_else(|| format!("Invalid value for {key}")),
             })
             .transpose()
     };
@@ -244,8 +283,11 @@ fn insert_some(map: &mut Args, key: &str, value: Option<Value>) {
     }
 }
 
-const SLICED_FIELDS: [(&str, usize); 3] =
-    [("jobDescription", 50_000), ("source", 100), ("jobUrl", 2_000)];
+const SLICED_FIELDS: [(&str, usize); 3] = [
+    ("jobDescription", 50_000),
+    ("source", 100),
+    ("jobUrl", 2_000),
+];
 
 /// Port of `resolveAppliedAtForCreate` for a string or absent value.
 fn applied_at_for_create(status: &str, value: Option<&str>) -> Result<Value, String> {
@@ -262,7 +304,10 @@ fn applied_at_for_create(status: &str, value: Option<&str>) -> Result<Value, Str
 }
 
 async fn insert_application(ctx: &Ctx, map: &Args) -> Result<Application, Thrown> {
-    let company = map.get("company").and_then(Value::as_str).unwrap_or_default();
+    let company = map
+        .get("company")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let role = map.get("role").and_then(Value::as_str).unwrap_or_default();
     let fields = to_fields(map)?;
     let mut conn = ctx.state.db.conn().await?;
@@ -273,19 +318,34 @@ pub async fn create(ctx: &Ctx, args: &Args) -> ToolResult {
     let metadata = parse_metadata(args)?;
     let status = str_arg(args, "status").unwrap_or("inbound");
     let mut map = Map::new();
-    map.insert("company".to_owned(), slice16(req_str(args, "company"), 255).into());
-    map.insert("role".to_owned(), slice16(req_str(args, "role"), 255).into());
+    map.insert(
+        "company".to_owned(),
+        slice16(req_str(args, "company"), 255).into(),
+    );
+    map.insert(
+        "role".to_owned(),
+        slice16(req_str(args, "role"), 255).into(),
+    );
     map.insert("status".to_owned(), normalize_status(status).into());
-    map.insert("appliedAt".to_owned(), applied_at_for_create(status, str_arg(args, "appliedAt"))?);
+    map.insert(
+        "appliedAt".to_owned(),
+        applied_at_for_create(status, str_arg(args, "appliedAt"))?,
+    );
     for key in ["lastContact", "followUpAt"] {
         let date = str_arg(args, key).and_then(parse_date);
-        map.insert(key.to_owned(), date.map_or(Value::Null, |d| d.as_str().into()));
+        map.insert(
+            key.to_owned(),
+            date.map_or(Value::Null, |d| d.as_str().into()),
+        );
     }
     insert_some(&mut map, "notes", args.get("notes").cloned());
     for (key, max) in SLICED_FIELDS {
         insert_some(&mut map, key, sliced(args, key, max));
     }
-    map.insert("remote".to_owned(), bool_arg(args, "remote").unwrap_or(false).into());
+    map.insert(
+        "remote".to_owned(),
+        bool_arg(args, "remote").unwrap_or(false).into(),
+    );
     for key in ["salaryMin", "salaryMax", "rating", "resumeId"] {
         insert_some(&mut map, key, args.get(key).cloned());
     }
@@ -297,10 +357,14 @@ pub async fn create(ctx: &Ctx, args: &Args) -> ToolResult {
 
 pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
     let mut conn = ctx.state.db.conn().await?;
-    Ok(match find_application(&mut conn, req_str(args, "id")).await? {
-        Some(application) => json_result(ctx.app_with_contacts(&mut conn, &application).await?, false),
-        None => text_error("Application not found"),
-    })
+    Ok(
+        match find_application(&mut conn, req_str(args, "id")).await? {
+            Some(application) => {
+                json_result(ctx.app_with_contacts(&mut conn, &application).await?, false)
+            }
+            None => text_error("Application not found"),
+        },
+    )
 }
 
 async fn with_requested_contacts(
@@ -311,7 +375,10 @@ async fn with_requested_contacts(
 ) -> Result<Vec<Value>, Thrown> {
     let mut contacts: HashMap<i64, Vec<Value>> = HashMap::new();
     if include_contacts {
-        let ids: Vec<i64> = applications.iter().map(|application| application.id).collect();
+        let ids: Vec<i64> = applications
+            .iter()
+            .map(|application| application.id)
+            .collect();
         for contact in contacts_repo::list_for_applications(conn, &ids).await? {
             contacts
                 .entry(contact.application_id)
@@ -322,9 +389,55 @@ async fn with_requested_contacts(
     Ok(applications
         .iter()
         .map(|application| {
-            ctx.app_json(application, contacts.remove(&application.id).unwrap_or_default())
+            ctx.app_json(
+                application,
+                contacts.remove(&application.id).unwrap_or_default(),
+            )
         })
         .collect())
+}
+
+/// `listApplicationsFiltered`, with search done here because SQLite can't reproduce `ILIKE`. The
+/// row count is small enough to filter in memory.
+async fn list_rows(
+    conn: &mut sqlx::SqliteConnection,
+    mut filter: ApplicationFilter,
+) -> nexus_core::Result<Vec<Application>> {
+    let Some(term) = filter.search.take() else {
+        return repo::list_filtered(conn, &filter).await;
+    };
+    let (limit, cursor) = (filter.limit.take(), filter.cursor.take());
+    let fields = filter.search_fields.take().unwrap_or_else(|| {
+        vec![
+            SearchField::Company,
+            SearchField::Role,
+            SearchField::Notes,
+            SearchField::JobDescription,
+        ]
+    });
+    let mut rows = repo::list_filtered(conn, &filter).await?;
+    rows.retain(|row| {
+        fields.iter().any(|field| {
+            let text = match field {
+                SearchField::Company => Some(row.company.as_str()),
+                SearchField::Role => Some(row.role.as_str()),
+                SearchField::Notes => row.notes.as_deref(),
+                SearchField::JobDescription => row.job_description.as_deref(),
+            };
+            text.is_some_and(|text| ilike_contains(text, &term))
+        })
+    });
+    if let Some(cursor) = cursor {
+        let at = rows
+            .iter()
+            .position(|row| row.id == cursor)
+            .ok_or(nexus_core::Error::ApplicationCursorInvalid)?;
+        rows.drain(..=at);
+    }
+    if let Some(limit) = limit {
+        rows.truncate(limit.max(0) as usize);
+    }
+    Ok(rows)
 }
 
 /// Port of `pickFields`: `id` always, and only the fields the record has.
@@ -357,7 +470,16 @@ fn string_list<'a>(args: &'a Args, key: &str) -> Vec<&'a str> {
 pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
     let mut fields = string_list(args, "fields");
     if fields.is_empty() {
-        fields = vec!["id", "company", "role", "status", "currentStage", "nextAction", "rating", "updatedAt"];
+        fields = vec![
+            "id",
+            "company",
+            "role",
+            "status",
+            "currentStage",
+            "nextAction",
+            "rating",
+            "updatedAt",
+        ];
     }
     let cursor = match str_arg(args, "cursor").filter(|cursor| !cursor.is_empty()) {
         None => None,
@@ -367,14 +489,16 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
         },
     };
     let filter = ApplicationFilter {
-        search: str_arg(args, "q").filter(|q| !q.is_empty()).map(str::to_owned),
+        search: str_arg(args, "q")
+            .filter(|q| !q.is_empty())
+            .map(str::to_owned),
         search_fields: Some(vec![SearchField::Company, SearchField::Role]),
         limit: args.get("limit").and_then(Value::as_i64),
         cursor,
         ..Default::default()
     };
     let mut conn = ctx.state.db.conn().await?;
-    let applications = match repo::list_filtered(&mut conn, &filter).await {
+    let applications = match list_rows(&mut conn, filter).await {
         Ok(applications) => applications,
         Err(nexus_core::Error::ApplicationCursorInvalid) => {
             return Ok(code_error("application_cursor_invalid"));
@@ -382,28 +506,36 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
         Err(error) => return Err(error.into()),
     };
     let records = with_requested_contacts(ctx, &mut conn, &applications, false).await?;
-    Ok(json_result(Value::Array(pick_fields(records, &fields)), false))
+    Ok(json_result(
+        Value::Array(pick_fields(records, &fields)),
+        false,
+    ))
 }
 
 pub async fn list_filtered(ctx: &Ctx, args: &Args) -> ToolResult {
     let run = async {
-        let integer = |key| match args.get(key) {
-            None => Some(None),
-            Some(value) => value.as_i64().map(Some),
-        };
         let filter = ApplicationFilter {
-            status: string_list(args, "status").into_iter().map(str::to_owned).collect(),
-            rating_gte: integer("rating_gte")?,
-            search: str_arg(args, "search").filter(|s| !s.is_empty()).map(str::to_owned),
+            status: string_list(args, "status")
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            rating_gte: args.get("rating_gte").and_then(truncated),
+            search: str_arg(args, "search")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             remote: bool_arg(args, "remote"),
-            sort: str_arg(args, "sort").filter(|s| !s.is_empty()).map(str::to_owned),
-            limit: integer("limit")?,
+            sort: str_arg(args, "sort")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            limit: args.get("limit").and_then(truncated),
             ..Default::default()
         };
         let mut conn = ctx.state.db.conn().await.ok()?;
-        let applications = repo::list_filtered(&mut conn, &filter).await.ok()?;
+        let applications = list_rows(&mut conn, filter).await.ok()?;
         let include_contacts = bool_arg(args, "include_contacts").unwrap_or(false);
-        let records = with_requested_contacts(ctx, &mut conn, &applications, include_contacts).await.ok()?;
+        let records = with_requested_contacts(ctx, &mut conn, &applications, include_contacts)
+            .await
+            .ok()?;
         Some(pick_fields(records, &string_list(args, "fields")))
     };
     Ok(match run.await {
@@ -417,10 +549,16 @@ fn expected_guard(expected: Option<&Timestamp>) -> Guard {
 }
 
 pub async fn update(ctx: &Ctx, args: &Args) -> ToolResult {
-    let lifecycle: Vec<&str> = ["status", "appliedAt", "lastContact", "followUpAt", "currentStage"]
-        .into_iter()
-        .filter(|field| args.contains_key(*field))
-        .collect();
+    let lifecycle: Vec<&str> = [
+        "status",
+        "appliedAt",
+        "lastContact",
+        "followUpAt",
+        "currentStage",
+    ]
+    .into_iter()
+    .filter(|field| args.contains_key(*field))
+    .collect();
     if !lifecycle.is_empty() {
         return Ok(json_result(
             json!({"error": {"code": "lifecycle_event_required", "fields": lifecycle}}),
@@ -446,24 +584,38 @@ pub async fn update(ctx: &Ctx, args: &Args) -> ToolResult {
         add_triage(args, &mut map);
         let expected = str_arg(args, "expectedUpdatedAt").and_then(parse_date);
         if bool_arg(args, "dryRun") == Some(true) {
-            if expected.as_ref().is_some_and(|expected| *expected != current.updated_at) {
+            if expected
+                .as_ref()
+                .is_some_and(|expected| *expected != current.updated_at)
+            {
                 return Err(Thrown("conflict".to_owned()));
             }
             let mut preview = ctx.app_with_contacts(&mut conn, &current).await?;
             for (key, value) in map {
                 preview[key] = value;
             }
-            return Ok(json_result(json!({"dryRun": true, "application": preview}), false));
+            return Ok(json_result(
+                json!({"dryRun": true, "application": preview}),
+                false,
+            ));
         }
         drop(conn);
         let fields = to_fields(&map)?;
         let mut tx = ctx.state.db.begin_write().await?;
-        let updated = repo::update(&mut tx, current.id, fields, expected_guard(expected.as_ref())).await?;
+        let updated = repo::update(
+            &mut tx,
+            current.id,
+            fields,
+            expected_guard(expected.as_ref()),
+        )
+        .await?;
         let value = ctx.app_with_contacts(&mut tx, &updated).await?;
         tx.commit().await.map_err(nexus_core::Error::from)?;
         Ok(json_result(value, false))
     };
-    Ok(run.await.unwrap_or_else(|Thrown(message)| update_error(&message)))
+    Ok(run
+        .await
+        .unwrap_or_else(|Thrown(message)| update_error(&message)))
 }
 
 pub async fn set_archived(ctx: &Ctx, args: &Args, archive: bool) -> ToolResult {
@@ -473,13 +625,19 @@ pub async fn set_archived(ctx: &Ctx, args: &Args, archive: bool) -> ToolResult {
         let current = find_application(&mut conn, req_str(args, "id"))
             .await?
             .ok_or_else(|| Thrown("not_found".to_owned()))?;
-        let requested = if archive { str_arg(args, "archivedAt").and_then(parse_date) } else { None };
+        let requested = if archive {
+            str_arg(args, "archivedAt").and_then(parse_date)
+        } else {
+            None
+        };
         let expected = str_arg(args, "expectedUpdatedAt").and_then(parse_date);
         let in_state = |application: &Application| application.archived_at.is_some() == archive;
         let exact_retry = |application: &Application| {
             archive && requested.is_some() && application.archived_at == requested
         };
-        let expected_matches = expected.as_ref().is_none_or(|expected| *expected == current.updated_at);
+        let expected_matches = expected
+            .as_ref()
+            .is_none_or(|expected| *expected == current.updated_at);
 
         // Repeated calls are successful no-ops. A stale token still conflicts, unless the caller
         // supplied the exact timestamp its earlier archive request stored.
@@ -511,13 +669,20 @@ pub async fn set_archived(ctx: &Ctx, args: &Args, archive: bool) -> ToolResult {
             archived_at: Some(next),
             ..Default::default()
         };
-        let guard = Guard::UpdatedAt(expected.clone().unwrap_or_else(|| current.updated_at.clone()));
+        let guard = Guard::UpdatedAt(
+            expected
+                .clone()
+                .unwrap_or_else(|| current.updated_at.clone()),
+        );
         let mut tx = ctx.state.db.begin_write().await?;
         match repo::update(&mut tx, current.id, fields, guard).await {
             Ok(updated) => {
                 let application = ctx.app_with_contacts(&mut tx, &updated).await?;
                 tx.commit().await.map_err(nexus_core::Error::from)?;
-                Ok(json_result(json!({"changed": true, "application": application}), false))
+                Ok(json_result(
+                    json!({"changed": true, "application": application}),
+                    false,
+                ))
             }
             Err(nexus_core::Error::Conflict) => {
                 let latest = repo::get(&mut tx, current.id)
@@ -525,14 +690,19 @@ pub async fn set_archived(ctx: &Ctx, args: &Args, archive: bool) -> ToolResult {
                     .ok_or_else(|| Thrown("not_found".to_owned()))?;
                 if in_state(&latest) && (!archive || requested.is_none() || exact_retry(&latest)) {
                     let application = ctx.app_with_contacts(&mut tx, &latest).await?;
-                    return Ok(json_result(json!({"changed": false, "application": application}), false));
+                    return Ok(json_result(
+                        json!({"changed": false, "application": application}),
+                        false,
+                    ));
                 }
                 Err(Thrown("conflict".to_owned()))
             }
             Err(error) => Err(error.into()),
         }
     };
-    Ok(run.await.unwrap_or_else(|Thrown(message)| update_error(&message)))
+    Ok(run
+        .await
+        .unwrap_or_else(|Thrown(message)| update_error(&message)))
 }
 
 pub async fn delete(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -560,7 +730,10 @@ pub async fn find_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
         Some(application) => ctx.app_with_contacts(&mut conn, &application).await?,
         None => Value::Null,
     };
-    Ok(json_result(json!({"canonicalJobUrl": canonical, "application": application}), false))
+    Ok(json_result(
+        json!({"canonicalJobUrl": canonical, "application": application}),
+        false,
+    ))
 }
 
 pub async fn upsert_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -577,7 +750,8 @@ pub async fn upsert_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
         let existing = repo::find_by_canonical_job_url(&mut tx, &canonical).await?;
         let metadata = parse_metadata(args)?;
         if let Some(existing) = &existing {
-            let status_changes = str_arg(args, "status").is_some_and(|status| status != existing.status);
+            let status_changes =
+                str_arg(args, "status").is_some_and(|status| status != existing.status);
             let stage_changes = metadata
                 .get("currentStage")
                 .is_some_and(|stage| stage.as_str() != existing.current_stage.as_deref());
@@ -600,7 +774,16 @@ pub async fn upsert_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
         for key in ["company", "role", "jobUrl"] {
             insert_some(&mut map, key, args.get(key).cloned());
         }
-        for key in ["notes", "jobDescription", "source", "remote", "salaryMin", "salaryMax", "rating", "resumeId"] {
+        for key in [
+            "notes",
+            "jobDescription",
+            "source",
+            "remote",
+            "salaryMin",
+            "salaryMax",
+            "rating",
+            "resumeId",
+        ] {
             insert_some(&mut map, key, args.get(key).cloned());
         }
         map.extend(metadata);
@@ -609,20 +792,34 @@ pub async fn upsert_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
         let (operation, application) = if let Some(existing) = existing {
             map.remove("currentStage");
             let fields = to_fields(&map)?;
-            ("updated", repo::update(&mut tx, existing.id, fields, Guard::None).await?)
+            (
+                "updated",
+                repo::update(&mut tx, existing.id, fields, Guard::None).await?,
+            )
         } else {
             let status = str_arg(args, "status").unwrap_or("inbound");
             map.insert("status".to_owned(), status.into());
             map.insert("appliedAt".to_owned(), applied_at_for_create(status, None)?);
             let fields = to_fields(&map)?;
-            let created = repo::create(&mut tx, req_str(args, "company"), req_str(args, "role"), fields).await?;
+            let created = repo::create(
+                &mut tx,
+                req_str(args, "company"),
+                req_str(args, "role"),
+                fields,
+            )
+            .await?;
             ("created", created)
         };
         let application = ctx.app_with_contacts(&mut tx, &application).await?;
         tx.commit().await.map_err(nexus_core::Error::from)?;
-        Ok(json_result(json!({"operation": operation, "application": application}), false))
+        Ok(json_result(
+            json!({"operation": operation, "application": application}),
+            false,
+        ))
     };
-    Ok(run.await.unwrap_or_else(|Thrown(message)| code_error(&message)))
+    Ok(run
+        .await
+        .unwrap_or_else(|Thrown(message)| code_error(&message)))
 }
 
 impl From<&str> for Thrown {
@@ -649,7 +846,9 @@ fn sanitized_triage(item: &Args, out: &mut Args) {
 
 /// A date column in a batch item, where a value `new Date` can't read fails the item's write.
 fn batch_date(item: &Args, key: &str) -> Result<Option<Value>, String> {
-    let Some(value) = item.get(key) else { return Ok(None) };
+    let Some(value) = item.get(key) else {
+        return Ok(None);
+    };
     match value.as_str().filter(|text| !text.is_empty()) {
         None => Ok(Some(Value::Null)),
         Some(text) => parse_date(text)
@@ -683,7 +882,9 @@ async fn batch_update_item(ctx: &Ctx, id: i64, item: &Args, metadata: &Args) -> 
 }
 
 async fn batch_create_item(ctx: &Ctx, item: &Args, metadata: &Args) -> Result<Application, Thrown> {
-    let status = str_arg(item, "status").filter(|s| !s.is_empty()).unwrap_or("inbound");
+    let status = str_arg(item, "status")
+        .filter(|s| !s.is_empty())
+        .unwrap_or("inbound");
     let mut map = Map::new();
     batch_common(item, &mut map, metadata);
     map.insert("status".to_owned(), normalize_status(status).into());
@@ -733,7 +934,9 @@ pub async fn batch_upsert(ctx: &Ctx, args: &Args) -> ToolResult {
                 continue;
             }
             match nid(id) {
-                Ok(numeric) => batch_update_item(ctx, numeric, item, metadata).await.map(|()| id.to_owned()),
+                Ok(numeric) => batch_update_item(ctx, numeric, item, metadata)
+                    .await
+                    .map(|()| id.to_owned()),
                 Err(message) => Err(Thrown(message)),
             }
         } else {
@@ -747,7 +950,9 @@ pub async fn batch_upsert(ctx: &Ctx, args: &Args) -> ToolResult {
                 }));
                 continue;
             }
-            batch_create_item(ctx, item, metadata).await.map(|created| created.id.to_string())
+            batch_create_item(ctx, item, metadata)
+                .await
+                .map(|created| created.id.to_string())
         };
         let operation = if id.is_some() { "updated" } else { "created" };
         match outcome {
@@ -793,7 +998,9 @@ pub async fn batch_delete(ctx: &Ctx, args: &Args) -> ToolResult {
                 succeeded += 1;
                 results.push(json!({"id": id, "deleted": true}));
             }
-            Err(Thrown(message)) => results.push(json!({"id": id, "deleted": false, "error": message})),
+            Err(Thrown(message)) => {
+                results.push(json!({"id": id, "deleted": false, "error": message}))
+            }
         }
     }
     Ok(json_result(

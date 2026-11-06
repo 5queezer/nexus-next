@@ -25,10 +25,17 @@ fn requires_scope(document: &Document, requested_state: Option<&str>) -> bool {
 }
 
 pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
-    let id_filter = |key| str_arg(args, key).filter(|id| !id.is_empty()).map(nid).transpose();
+    let id_filter = |key| {
+        str_arg(args, key)
+            .filter(|id| !id.is_empty())
+            .map(nid)
+            .transpose()
+    };
     let filter = DocumentFilter {
         application_id: id_filter("applicationId")?,
-        document_type: str_arg(args, "documentType").filter(|t| !t.is_empty()).map(str::to_owned),
+        document_type: str_arg(args, "documentType")
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned),
         state: str_arg(args, "state").map(str::to_owned),
         submission_id: id_filter("submissionId")?,
         orphaned: args.get("orphaned").and_then(Value::as_bool),
@@ -90,7 +97,9 @@ fn decode(content: &str) -> Result<Vec<u8>, &'static str> {
     }
     let body = normalized.trim_end_matches('=');
     let padding = normalized.len() - body.len();
-    let alphabet_ok = body.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
+    let alphabet_ok = body
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/');
     if normalized.is_empty() || !alphabet_ok || padding > 2 {
         return Err("Invalid base64 content");
     }
@@ -187,7 +196,10 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     let Ok(sha256) = run_blocking(move || blobs.put(&bytes)).await else {
         return Ok(text_error("Failed to upload document"));
     };
-    let new = NewDocument { blob_sha256: sha256.clone(), ..new };
+    let new = NewDocument {
+        blob_sha256: sha256.clone(),
+        ..new
+    };
     let created = async {
         let mut tx = ctx.state.db.begin_write().await?;
         let document = repo::create(&mut tx, &new).await?;
@@ -213,7 +225,8 @@ pub async fn download(ctx: &Ctx, args: &Args) -> ToolResult {
         return Ok(error);
     }
     const MISSING: &str = "Document file is missing from storage";
-    let (BlobState::Present, Some(sha256)) = (document.blob_state, document.blob_sha256.clone()) else {
+    let (BlobState::Present, Some(sha256)) = (document.blob_state, document.blob_sha256.clone())
+    else {
         return Ok(text_error(MISSING));
     };
     let blobs = ctx.state.db.blobs().clone();
@@ -250,7 +263,9 @@ pub async fn update_links(ctx: &Ctx, args: &Args) -> ToolResult {
             return Some(error);
         }
         let mut tx = ctx.state.db.begin_write().await.ok()?;
-        let document = repo::set_links(&mut tx, existing.id, &application_ids).await.ok()?;
+        let document = repo::set_links(&mut tx, existing.id, &application_ids)
+            .await
+            .ok()?;
         tx.commit().await.ok()?;
         Some(json_result(ctx.doc_json(&document), false))
     };
@@ -258,7 +273,8 @@ pub async fn update_links(ctx: &Ctx, args: &Args) -> ToolResult {
 }
 
 fn date_patch(args: &Args, key: &str) -> Option<Option<Timestamp>> {
-    args.get(key).map(|value| value.as_str().and_then(parse_date))
+    args.get(key)
+        .map(|value| value.as_str().and_then(parse_date))
 }
 
 pub async fn update_metadata(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -269,7 +285,10 @@ pub async fn update_metadata(ctx: &Ctx, args: &Args) -> ToolResult {
         {
             return Some(error);
         }
-        let nullable = |key| args.get(key).map(|value: &Value| value.as_str().map(str::to_owned));
+        let nullable = |key| {
+            args.get(key)
+                .map(|value: &Value| value.as_str().map(str::to_owned))
+        };
         let patch = DocumentPatch {
             document_type: str_arg(args, "documentType").map(str::to_owned),
             state: str_arg(args, "state").map(str::to_owned),
@@ -280,7 +299,9 @@ pub async fn update_metadata(ctx: &Ctx, args: &Args) -> ToolResult {
             submitted_at: date_patch(args, "submittedAt"),
         };
         let mut tx = ctx.state.db.begin_write().await.ok()?;
-        let document = repo::update_metadata(&mut tx, existing.id, &patch).await.ok()?;
+        let document = repo::update_metadata(&mut tx, existing.id, &patch)
+            .await
+            .ok()?;
         tx.commit().await.ok()?;
         Some(json_result(ctx.doc_json(&document), false))
     };

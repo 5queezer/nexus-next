@@ -6,7 +6,13 @@ use serde_json::{Value, json};
 
 use super::{Ctx, ToolResult, json_result};
 
-fn finding(code: &str, severity: &str, ids: (&str, String), message: &str, remediation: &str) -> Value {
+fn finding(
+    code: &str,
+    severity: &str,
+    ids: (&str, String),
+    message: &str,
+    remediation: &str,
+) -> Value {
     let mut finding = json!({"code": code, "severity": severity});
     finding[ids.0] = ids.1.into();
     finding["message"] = message.into();
@@ -28,9 +34,17 @@ pub async fn check(ctx: &Ctx) -> ToolResult {
     let mut submission_counts: HashMap<i64, usize> = HashMap::new();
 
     for submission in &submissions {
-        *submission_counts.entry(submission.application_id).or_default() += 1;
+        *submission_counts
+            .entry(submission.application_id)
+            .or_default() += 1;
         let with_submission = |code, severity, message, remediation| {
-            let mut value = finding(code, severity, ("applicationId", submission.application_id.to_string()), message, remediation);
+            let mut value = finding(
+                code,
+                severity,
+                ("applicationId", submission.application_id.to_string()),
+                message,
+                remediation,
+            );
             value["submissionId"] = submission.id.to_string().into();
             value
         };
@@ -42,7 +56,12 @@ pub async fn check(ctx: &Ctx) -> ToolResult {
                 "Record the exact submitted answers or explicitly confirm the form had none.",
             ));
         }
-        if submission.document_ids.0.as_array().is_some_and(Vec::is_empty) {
+        if submission
+            .document_ids
+            .0
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        {
             findings.push(with_submission(
                 "submission_without_materials",
                 "error",
@@ -104,7 +123,10 @@ pub async fn check(ctx: &Ctx) -> ToolResult {
         }
     }
 
-    for document in documents.iter().filter(|document| document.applications.is_empty()) {
+    for document in documents
+        .iter()
+        .filter(|document| document.applications.is_empty())
+    {
         findings.push(finding(
             "orphan_document",
             "info",

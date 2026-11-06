@@ -179,7 +179,11 @@ impl Ctx {
     pub fn submission_json(&self, submission: &Submission, documents: &[Document]) -> Value {
         let mut value = serde_json::to_value(submission).expect("submission serializes");
         self.with_owner(&mut value);
-        value["documents"] = documents.iter().map(|d| self.doc_json(d)).collect::<Vec<_>>().into();
+        value["documents"] = documents
+            .iter()
+            .map(|d| self.doc_json(d))
+            .collect::<Vec<_>>()
+            .into();
         value
     }
 }
@@ -232,7 +236,9 @@ async fn dispatch(ctx: &Ctx, name: &str, args: Args) -> ToolResult {
         "get_cv_profile" => cv::get_profile(ctx).await,
         "upsert_cv_profile" => cv::upsert_profile(ctx, &args).await,
         "generate_tailored_cv" => cv::generate(ctx, &args).await,
-        _ => Ok(text_error(&format!("MCP error -32602: Tool {name} not found"))),
+        _ => Ok(text_error(&format!(
+            "MCP error -32602: Tool {name} not found"
+        ))),
     }
 }
 

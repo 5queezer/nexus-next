@@ -47,7 +47,9 @@ async fn bearer(State(tokens): State<Tokens>, mut request: Request, next: Next) 
     });
     let mut response = next.run(request).await;
     // A parity reset restarts this server, and a client must not reuse a socket across that.
-    response.headers_mut().insert(CONNECTION, HeaderValue::from_static("close"));
+    response
+        .headers_mut()
+        .insert(CONNECTION, HeaderValue::from_static("close"));
     response
 }
 
@@ -68,7 +70,8 @@ async fn main() -> anyhow::Result<()> {
         .nest("/api/mcp", mcp.clone())
         .nest("/mcp", mcp)
         .layer(middleware::from_fn_with_state(tokens, bearer));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", var("MCP_PORT")?.parse::<u16>()?)).await?;
+    let listener =
+        tokio::net::TcpListener::bind(("127.0.0.1", var("MCP_PORT")?.parse::<u16>()?)).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
