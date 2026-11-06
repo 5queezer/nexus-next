@@ -1,5 +1,6 @@
 //! Nexus domain storage: SQLite repository, blob store, timestamps and the export importer.
 
+pub mod auth;
 pub mod blob;
 pub mod db;
 pub mod error;
