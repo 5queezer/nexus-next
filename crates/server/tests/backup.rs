@@ -175,6 +175,30 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
 }
 
 #[tokio::test]
+async fn the_render_cache_stays_out_of_a_backup() {
+    let keys = new_keys();
+    let recipients = read_recipients(&keys.recipient_file).unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    let cache = source.path().join("cache/renders");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("abc-1"), b"a synthetic preview").unwrap();
+    let out_dir = tempfile::tempdir().unwrap();
+    let out = out_dir.path().join("backup.tar.age");
+    backup::backup(source.path(), &out, &recipients)
+        .await
+        .unwrap();
+    db.close().await;
+
+    let target = tempfile::tempdir().unwrap();
+    backup::restore(&out, &keys.identity_file, target.path(), false, false)
+        .await
+        .unwrap();
+    assert!(target.path().join("nexus.db").exists());
+    assert!(!target.path().join("cache").exists());
+}
+
+#[tokio::test]
 async fn backup_then_restore_reproduces_database_and_blobs() {
     let keys = new_keys();
     let recipients = read_recipients(&keys.recipient_file).unwrap();
