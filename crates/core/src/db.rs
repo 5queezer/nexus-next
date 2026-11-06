@@ -108,9 +108,12 @@ impl Db {
             .busy_timeout(Duration::from_secs(10));
         // On one connection, before the pool can open a second. With the pool's connections alongside,
         // a cold start sometimes failed at once with "database is locked", whatever the busy timeout says.
-        let mut first = options.connect().await?;
-        MIGRATOR.run(&mut first).await?;
-        first.close().await?;
+        let migrating = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await?;
+        MIGRATOR.run(&migrating).await?;
+        migrating.close().await;
         // Never closing idle connections keeps the WAL in place, which `in_use_reason` relies on.
         // `min_connections` alone is not enough: sqlx's reaper closes the last idle connection
         // before opening its replacement, and that close removes the WAL.
