@@ -8,7 +8,7 @@ use nexus_core::blob::sha256_hex;
 use nexus_core::repo::documents::{
     self as repo, BlobState, Document, DocumentFilter, DocumentPatch, NewDocument,
 };
-use nexus_core::{BlobStore, Db, Timestamp};
+use nexus_core::{Db, Timestamp};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -137,17 +137,15 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|e| nexus_core::Error::Io(std::io::Error::other(e)))?
 }
 
-/// Checks and unlinks under the write lock, so neither can interleave with `upload` making sure the
-/// file exists and inserting its row. A file left by a crash here is only an orphan.
+/// Holds the write lock across the check and the removal, so an upload of the same bytes can't
+/// commit its row in between. `upload` restores the file under the same lock.
 async fn remove_blob_if_unreferenced(db: &Db, sha256: String) -> nexus_core::Result<()> {
     let mut tx = db.begin_write().await?;
     if repo::blob_is_referenced(&mut tx, &sha256).await? {
         return Ok(());
     }
     let blobs = db.blobs().clone();
-    run_blocking(move || blobs.delete(&sha256)).await?;
-    tx.commit().await?;
-    Ok(())
+    run_blocking(move || blobs.delete(&sha256)).await
 }
 
 pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -199,9 +197,11 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
         blob_sha256: String::new(),
     };
     let bytes = Arc::new(bytes);
-    let put = |blobs: BlobStore, bytes: Arc<Vec<u8>>| move || blobs.put(&bytes);
-    let blobs = ctx.state.db.blobs().clone();
-    let Ok(sha256) = run_blocking(put(blobs.clone(), Arc::clone(&bytes))).await else {
+    let put = |bytes: Arc<Vec<u8>>| {
+        let blobs = ctx.state.db.blobs().clone();
+        run_blocking(move || blobs.put(&bytes))
+    };
+    let Ok(sha256) = put(bytes.clone()).await else {
         return Ok(text_error("Failed to upload document"));
     };
     let new = NewDocument {
@@ -210,11 +210,9 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     let created = async {
         let mut tx = ctx.state.db.begin_write().await?;
-        // A delete of the last document with this content may have taken the file since `put`.
-        // Writing it again holds the lock, but only in that rare case and for at most 10 MiB, far
-        // below the 10 s other writers wait. From here deletes wait for this commit.
-        if !blobs.exists(&sha256)? {
-            run_blocking(put(blobs, bytes)).await?;
+        // A delete of the same bytes may have removed the file since the put above.
+        if !ctx.state.db.blobs().exists(&sha256)? {
+            put(bytes.clone()).await?;
         }
         let document = repo::create(&mut tx, &new).await?;
         tx.commit().await?;

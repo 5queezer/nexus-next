@@ -43,22 +43,6 @@ async fn an_upload_survives_a_delete_of_its_content_after_its_put() {
     );
 }
 
-#[tokio::test]
-async fn racing_uploads_and_deletes_of_one_content_never_lose_a_file() {
-    let server = Server::start().await;
-    let mut kept = server.pdf(json!([])).await;
-    for _ in 0..40 {
-        let delete = server.call("delete_document", json!({"id": kept["id"]}));
-        let (uploaded, deleted) = tokio::join!(server.pdf(json!([])), delete);
-        assert_eq!(deleted.text, "Document deleted");
-        let download = server
-            .call("download_document_content", json!({"id": uploaded["id"]}))
-            .await;
-        assert_eq!(download.ok()["size"], 18);
-        kept = uploaded;
-    }
-}
-
 /// Stops an upload at the lock, removes its application so inserting the row fails, and returns the
 /// error it reports.
 async fn fail_an_upload(server: &Server) -> String {

@@ -90,6 +90,25 @@ impl BlobStore {
         }
     }
 
+    /// Removes the temp files of writes a killed process never finished. For the one server that
+    /// owns this directory, before it serves: a live temp file would be removed too.
+    pub fn sweep_temp_files(&self) -> Result<usize> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().as_encoded_bytes().starts_with(b".tmp-") {
+                fs::remove_file(entry.path())?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Addresses of all stored blobs.
     pub fn list(&self) -> Result<Vec<String>> {
         let entries = match fs::read_dir(&self.dir) {
@@ -150,6 +169,18 @@ mod tests {
         store.put(b"hello").unwrap();
         let names: Vec<_> = fs::read_dir(dir.path().join("blobs")).unwrap().collect();
         assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn sweeping_removes_temp_files_and_nothing_else() {
+        let (dir, store) = store();
+        assert_eq!(store.sweep_temp_files().unwrap(), 0);
+        store.put(b"hello").unwrap();
+        fs::write(dir.path().join("blobs/.tmp-1-1"), b"half").unwrap();
+        assert_eq!(store.sweep_temp_files().unwrap(), 1);
+        let names: Vec<_> = fs::read_dir(dir.path().join("blobs")).unwrap().collect();
+        assert_eq!(names.len(), 1);
+        assert_eq!(store.get(HELLO).unwrap(), b"hello");
     }
 
     #[test]
