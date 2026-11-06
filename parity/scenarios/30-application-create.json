@@ -1,0 +1,357 @@
+{
+  "name": "30-application-create",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Minimal GmbH",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "minimal": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$minimal.id"
+      },
+      "expect": {
+        "paths": {
+          "remote": false,
+          "status": "inbound",
+          "appliedAt": null
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status A",
+        "role": "R",
+        "status": "applied"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status B",
+        "role": "R",
+        "status": "interview"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status C",
+        "role": "R",
+        "status": "offer"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status D",
+        "role": "R",
+        "status": "rejected"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status E",
+        "role": "R",
+        "status": "inbound"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status F",
+        "role": "R",
+        "status": "interview",
+        "appliedAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "paths": {
+          "appliedAt": "2026-02-01T09:00:00.000Z"
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status G",
+        "role": "R",
+        "status": "inbound",
+        "appliedAt": "2026-02-01T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Status H",
+        "role": "R",
+        "status": "applied",
+        "appliedAt": ""
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity TZ A",
+        "role": "R",
+        "appliedAt": "2026-02-01T10:00:00+01:00"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity TZ B",
+        "role": "R",
+        "appliedAt": "2026-02-01"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity TZ C",
+        "role": "R",
+        "appliedAt": "not-a-date"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": {
+          "$repeat": [
+            "c",
+            300
+          ]
+        },
+        "role": {
+          "$repeat": [
+            "r",
+            300
+          ]
+        },
+        "source": {
+          "$repeat": [
+            "s",
+            150
+          ]
+        },
+        "jobUrl": "https://jobs.parity.invalid/pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Source 100",
+        "role": "R",
+        "source": {
+          "$repeat": [
+            "s",
+            100
+          ]
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Source 101",
+        "role": "R",
+        "source": {
+          "$repeat": [
+            "s",
+            101
+          ]
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity JD",
+        "role": "R",
+        "jobDescription": {
+          "$repeat": [
+            "j",
+            50001
+          ]
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Notes",
+        "role": "R",
+        "notes": {
+          "$repeat": [
+            "n",
+            10000
+          ]
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Structured",
+        "role": "R",
+        "workMode": "hybrid",
+        "eligibleCountries": [
+          "es",
+          "DE",
+          "es"
+        ],
+        "primaryLocations": [
+          " Madrid ",
+          "Berlin",
+          "Berlin",
+          ""
+        ],
+        "officeDaysMin": 2,
+        "travelPercent": 10,
+        "visaSponsorship": true,
+        "rightToWorkRequired": false,
+        "timezoneOverlap": " CET ",
+        "salaryCurrency": "eur",
+        "salaryPeriod": "year",
+        "salaryType": "base",
+        "salaryMin": 50000.5,
+        "salaryMax": 70000,
+        "rating": 4,
+        "atsName": "ParityATS",
+        "requisitionId": "REQ-1",
+        "jobCapturedAt": "2026-02-01T09:00:00.000Z",
+        "jobVerifiedAt": "2026-02-02T09:00:00.000Z",
+        "jobPostedAt": "2026-02-01T09:00:00.000Z",
+        "jobClosedAt": "2026-02-03T09:00:00.000Z",
+        "jobContentHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "jobLiveness": "live",
+        "jobSummary": " summary ",
+        "currentStage": "screening",
+        "nextAction": " call back ",
+        "companySize": "mid",
+        "salaryBandMentioned": true,
+        "triageQuality": 3,
+        "triageReason": "synthetic",
+        "incomingSource": "referral",
+        "resumeId": "rr-parity",
+        "lastContact": "2026-02-01T09:00:00.000Z",
+        "followUpAt": "2026-02-02T09:00:00.000Z",
+        "jobUrl": "HTTPS://Jobs.Parity.Invalid/a/?utm_source=x&b=1&a=2#frag",
+        "remote": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Hash A",
+        "role": "R",
+        "jobContentHash": "abc123"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Hash B",
+        "role": "R",
+        "jobContentHash": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Hash C",
+        "role": "R",
+        "jobContentHash": ""
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Hash D",
+        "role": "R",
+        "jobContentHash": null
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Bad A",
+        "role": "R",
+        "jobUrl": "not a url"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Bad B",
+        "role": "R",
+        "salaryMin": 100,
+        "salaryMax": 50
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Bad C",
+        "role": "R",
+        "salaryMin": 1000000000000.0
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "",
+        "role": ""
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Dup A",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/dup"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Dup B",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/dup?utm_campaign=z"
+      },
+      "expect": {
+        "isError": true
+      }
+    }
+  ]
+}

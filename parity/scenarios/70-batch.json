@@ -1,0 +1,312 @@
+{
+  "name": "70-batch",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Batch Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": [
+          {
+            "company": "Parity Batch New",
+            "role": "R",
+            "notes": "n",
+            "status": "interview"
+          },
+          {
+            "company": "Only Company"
+          },
+          {
+            "id": "$app.id",
+            "notes": "updated"
+          },
+          {
+            "id": "$app.id",
+            "status": "applied"
+          },
+          {
+            "id": "$app.id",
+            "followUpAt": "2026-02-01T09:00:00.000Z",
+            "notes": "must not persist"
+          },
+          {
+            "company": "Parity Batch Long",
+            "role": "R",
+            "source": {
+              "$repeat": [
+                "s",
+                150
+              ]
+            }
+          },
+          {
+            "company": "Parity Batch Dup A",
+            "role": "R",
+            "jobUrl": "https://jobs.parity.invalid/batch"
+          },
+          {
+            "company": "Parity Batch Dup B",
+            "role": "R",
+            "jobUrl": "https://jobs.parity.invalid/batch?utm_source=x"
+          },
+          {
+            "id": "$app.id",
+            "rating": 2.5
+          },
+          {
+            "company": "Parity Batch Dates",
+            "role": "R",
+            "appliedAt": "2026-02-01T10:00:00+01:00",
+            "lastContact": "2026-02-01T09:00:00.000Z",
+            "followUpAt": "2026-02-02T09:00:00.000Z"
+          }
+        ]
+      },
+      "compare": "batch-results",
+      "save": {
+        "res": "."
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "Parity Batch",
+        "limit": 200,
+        "fields": [
+          "company",
+          "status",
+          "appliedAt",
+          "source",
+          "canonicalJobUrl"
+        ]
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": [
+          {
+            "company": "Parity Batch Poison",
+            "role": "R"
+          },
+          {
+            "id": "999999",
+            "notes": "x"
+          }
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Batch upsert failed"
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": [
+          {
+            "company": "Parity Batch Poison",
+            "role": "R"
+          },
+          {
+            "company": "X",
+            "role": "R",
+            "jobContentHash": "abc123"
+          }
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Batch upsert failed"
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": [
+          {
+            "company": "Parity Batch Poison",
+            "role": "R"
+          },
+          {
+            "id": "not-a-number",
+            "notes": "x"
+          }
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Batch upsert failed"
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "Parity Batch Poison",
+        "limit": 200
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Delete One",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "d1": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Delete Two",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "d2": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "batch_delete_applications",
+      "args": {
+        "ids": [
+          "$d1.id",
+          "999999"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Batch delete failed"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$d1.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "batch_delete_applications",
+      "args": {
+        "ids": [
+          "$d1.id",
+          "$d2.id",
+          "$d1.id"
+        ]
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$d1.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found"
+      }
+    },
+    {
+      "tool": "batch_create_contacts",
+      "args": {
+        "applicationId": "$app.id",
+        "contacts": [
+          {
+            "name": "Batch One",
+            "email": "one@parity.invalid",
+            "phone": {
+              "$repeat": [
+                "1",
+                60
+              ]
+            },
+            "role": {
+              "$repeat": [
+                "r",
+                120
+              ]
+            },
+            "linkedIn": {
+              "$repeat": [
+                "l",
+                600
+              ]
+            }
+          },
+          {
+            "name": {
+              "$repeat": [
+                "n",
+                300
+              ]
+            }
+          },
+          {
+            "name": ""
+          }
+        ]
+      }
+    },
+    {
+      "tool": "batch_create_contacts",
+      "args": {
+        "applicationId": "999999",
+        "contacts": [
+          {
+            "name": "X"
+          }
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "batch_create_contacts",
+      "args": {
+        "applicationId": "not-a-number",
+        "contacts": [
+          {
+            "name": "X"
+          }
+        ]
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    }
+  ]
+}

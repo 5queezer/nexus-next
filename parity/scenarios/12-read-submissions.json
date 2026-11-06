@@ -1,0 +1,88 @@
+{
+  "name": "12-read-submissions",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "types": [
+          "application_submitted"
+        ],
+        "limit": 10
+      },
+      "save": {
+        "sub": "items.0"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "$sub.metadata.submissionId"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "$sub.applicationId"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "$sub.applicationId"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "submitted"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "submissionId": "$sub.metadata.submissionId"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "60"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "60"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Submission not found"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true
+      }
+    }
+  ]
+}

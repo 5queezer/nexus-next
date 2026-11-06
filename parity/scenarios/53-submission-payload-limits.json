@@ -1,0 +1,765 @@
+{
+  "name": "53-submission-payload-limits",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Payload Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "doc": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-big-over",
+        "answers": [
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_failed"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-big-under",
+        "answers": [
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "save": {
+        "first": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "$first.submission.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,275 @@
+{
+  "name": "71-contacts",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Contact Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Contact Other",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "other": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$app.id",
+        "name": "Casey Parity",
+        "email": "casey@parity.invalid",
+        "phone": "+34 600 000 000",
+        "role": "Recruiter",
+        "linkedIn": "linkedin.com/in/casey-parity"
+      },
+      "save": {
+        "contact": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$app.id",
+        "name": {
+          "$repeat": [
+            "n",
+            300
+          ]
+        },
+        "email": {
+          "$repeat": [
+            "e",
+            300
+          ]
+        },
+        "phone": {
+          "$repeat": [
+            "1",
+            60
+          ]
+        },
+        "role": {
+          "$repeat": [
+            "r",
+            120
+          ]
+        },
+        "linkedIn": {
+          "$repeat": [
+            "l",
+            600
+          ]
+        }
+      },
+      "save": {
+        "long": "."
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$app.id",
+        "name": ""
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "999999",
+        "name": "X"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "not-a-number",
+        "name": "X"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id",
+        "name": "Casey Renamed",
+        "email": null,
+        "phone": null,
+        "role": null,
+        "linkedIn": null
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id",
+        "phone": {
+          "$repeat": [
+            "1",
+            60
+          ]
+        },
+        "email": {
+          "$repeat": [
+            "e",
+            300
+          ]
+        }
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$other.id",
+        "name": "Wrong App"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "999999",
+        "applicationId": "$app.id",
+        "name": "X"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "999999",
+        "name": "X"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "not-a-number",
+        "applicationId": "$app.id",
+        "name": "X"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "search": "Parity Contact Labs",
+        "include_contacts": true,
+        "fields": [
+          "contacts"
+        ]
+      }
+    },
+    {
+      "tool": "delete_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$other.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "delete_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "text": "Contact deleted"
+      }
+    },
+    {
+      "tool": "delete_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Contact not found or access denied"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "98",
+        "name": "Real App Contact"
+      },
+      "expect": {
+        "isError": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,1675 @@
+{
+  "name": "50-submissions",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Submit Labs",
+        "role": "Parity Engineer",
+        "requisitionId": "REQ-S1",
+        "atsName": "ParityATS"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$app.id"
+        ]
+      },
+      "save": {
+        "doc": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-second.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "doc2": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": null,
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "human_review_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-2",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "human_review_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-3",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": false,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "human_review_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-4",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": false,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "identity_consistency_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-5",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": false,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "fact_verification_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-6",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "nope"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "profile_consistency_review_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-7",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": []
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_materials_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-8",
+        "answers": [],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_answers_required"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-9",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "confirmedNoAnswers": true
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_answers_conflict"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-a",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "resubmissionReason": 5
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_policy_reason_invalid"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-b",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "sameCompanyOverrideReason": {
+            "$repeat": [
+              "r",
+              1001
+            ]
+          }
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_policy_reason_too_long"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-c",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id",
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_documents_invalid"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-d",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "999999"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "invalid_documents"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-e",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "candidateSalaryMin": 100,
+        "candidateSalaryMax": 50
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "salary_range_invalid"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-f",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "999999",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-g",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-h",
+        "answers": [
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          },
+          {
+            "question": "q",
+            "answer": {
+              "$repeat": [
+                "a",
+                20000
+              ]
+            }
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_failed"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-gate-i",
+        "answers": [
+          {
+            "key": {
+              "$repeat": [
+                "k",
+                101
+              ]
+            },
+            "question": "q",
+            "answer": "a"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_failed"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "status": "inbound",
+          "appliedAt": null
+        }
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "expect": {
+        "paths": {
+          "state": "current",
+          "submissionId": null
+        }
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "replayed": false,
+          "submission.id": "dry-run",
+          "event": null
+        }
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "status": "inbound"
+        }
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "expect": {
+        "paths": {
+          "state": "current"
+        }
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "followUpAt": "2026-02-03T09:00:00.000Z",
+        "language": "en",
+        "applicationUrl": "https://jobs.parity.invalid/submit",
+        "candidateSalaryMin": 50000,
+        "candidateSalaryMax": 60000,
+        "candidateSalaryCurrency": "eur",
+        "candidateSalaryPeriod": "year",
+        "candidateSalaryType": "base",
+        "candidateSalaryFlexible": true
+      },
+      "save": {
+        "first": "."
+      },
+      "expect": {
+        "paths": {
+          "replayed": false,
+          "dryRun": false,
+          "verified": true,
+          "application.status": "applied",
+          "application.appliedAt": "2026-02-02T09:00:00.000Z"
+        }
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "followUpAt": "2026-02-03T09:00:00.000Z",
+        "language": "en",
+        "applicationUrl": "https://jobs.parity.invalid/submit",
+        "candidateSalaryMin": 50000,
+        "candidateSalaryMax": 60000,
+        "candidateSalaryCurrency": "eur",
+        "candidateSalaryPeriod": "year",
+        "candidateSalaryType": "base",
+        "candidateSalaryFlexible": true
+      },
+      "expect": {
+        "paths": {
+          "replayed": true,
+          "submission.id": "$first.submission.id"
+        }
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "language": "fr"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc.id"
+        ],
+        "followUpAt": "2026-02-03T09:00:00.000Z",
+        "language": "en",
+        "applicationUrl": "https://jobs.parity.invalid/submit",
+        "candidateSalaryMin": 50000,
+        "candidateSalaryMax": 60000,
+        "candidateSalaryCurrency": "eur",
+        "candidateSalaryPeriod": "year",
+        "candidateSalaryType": "base",
+        "candidateSalaryFlexible": true,
+        "dryRun": true,
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-2",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc2.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "application_already_submitted"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-3",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "resubmissionReason": "synthetic retry"
+        },
+        "documentIds": [
+          "$doc.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "document_already_submitted"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-4",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "resubmissionReason": "synthetic retry"
+        },
+        "documentIds": [
+          "$doc2.id"
+        ]
+      },
+      "expect": {
+        "paths": {
+          "replayed": false
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "  parity SUBMIT   labs ",
+        "role": "Parity Engineer",
+        "requisitionId": "REQ-S1",
+        "atsName": "ParityATS"
+      },
+      "save": {
+        "sibling": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-third.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "doc3": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-fourth.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "doc4": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$sibling.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-5",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc3.id"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "duplicate_requisition"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$sibling.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-6",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$doc3.id"
+        ],
+        "requisitionId": "REQ-S2"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "same_company_active_application"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$sibling.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-sub-7",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "sameCompanyOverrideReason": "different team"
+        },
+        "documentIds": [
+          "$doc3.id"
+        ],
+        "requisitionId": "REQ-S2"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "$app.id"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "$first.submission.id"
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "$app.id"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "submissionId": "$first.submission.id"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "submitted",
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "$first.submission.id"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "submissionId": "$first.submission.id"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 100
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$doc.id",
+        "documentType": "cv"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$doc.id",
+        "state": "current"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$doc.id",
+        "state": "submitted"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "$doc.id",
+        "applicationIds": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$doc.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$doc.id",
+        "state": "historical"
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "state": "historical"
+        }
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$doc.id",
+        "state": "submitted"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "60"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "60",
+        "applicationIds": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    }
+  ]
+}

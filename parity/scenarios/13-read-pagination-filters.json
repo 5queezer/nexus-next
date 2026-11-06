@@ -1,0 +1,653 @@
+{
+  "name": "13-read-pagination-filters",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "list_applications",
+      "args": {}
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 5
+      },
+      "save": {
+        "page1": "."
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 5,
+        "cursor": "$page1.4.id"
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "cursor": "not-a-number"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "application_cursor_invalid"
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "cursor": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "application_cursor_invalid"
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "$page1.0.company",
+        "limit": 200
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "no-such-company-parity",
+        "limit": 200
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [
+          "company"
+        ],
+        "limit": 3
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [
+          "jobDescription",
+          "notes"
+        ],
+        "limit": 3
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [
+          "doesNotExist"
+        ],
+        "limit": 3
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [],
+        "limit": 3
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [
+          "contacts"
+        ],
+        "limit": 3
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "status": [
+          "interview"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "status": [
+          "rejected",
+          "offer"
+        ],
+        "fields": [
+          "status"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "rating_gte": 4,
+        "fields": [
+          "rating"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "rating_gte": 2.5,
+        "fields": [
+          "rating"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "search": "$page1.0.company",
+        "fields": [
+          "company"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "remote": true,
+        "fields": [
+          "remote"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "remote": false,
+        "fields": [
+          "remote"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "sort": "-rating",
+        "fields": [
+          "rating"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "sort": "company",
+        "fields": [
+          "company"
+        ],
+        "limit": 20
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "sort": "-salaryMax",
+        "fields": [
+          "salaryMax"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "sort": "appliedAt",
+        "fields": [
+          "appliedAt"
+        ]
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "sort": "notAField",
+        "fields": [
+          "id"
+        ],
+        "limit": 5
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "fields": [
+          "company",
+          "contacts"
+        ],
+        "limit": 5
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "include_contacts": true,
+        "fields": [
+          "contacts"
+        ],
+        "limit": 200
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "limit": 2.5,
+        "fields": [
+          "id"
+        ]
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 5
+      },
+      "save": {
+        "ev1": "."
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 5,
+        "cursor": "$ev1.nextCursor"
+      },
+      "save": {
+        "ev2": "."
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 5,
+        "cursor": "$ev2.nextCursor"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 5,
+        "order": "oldest"
+      },
+      "save": {
+        "ev3": "."
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 5,
+        "order": "oldest",
+        "cursor": "$ev3.nextCursor"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "cursor": "%%%"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_query_invalid"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "not-a-number"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "limit": 100
+      },
+      "save": {
+        "act": ".",
+        "withContact": "items.?contactId",
+        "withOutcome": "items.?outcome"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "limit": 3,
+        "cursor": "$act.nextCursor"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "order": "oldest",
+        "limit": 10
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "applicationId": "190",
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "company": "$act.items.0.application.company"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "types": [
+          "note_added",
+          "stage_changed"
+        ],
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "occurredAfter": "2026-07-01T00:00:00.000Z",
+        "occurredBefore": "2026-08-01T00:00:00.000Z",
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "occurredAfter": "2026-08-01T00:00:00.000Z",
+        "occurredBefore": "2026-07-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_query_invalid"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "source": "rest",
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "actor": "no-such-actor@parity.invalid"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "contactId": "$withContact.0.contactId"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "outcome": "$withOutcome.0.outcome"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "actor": "$act.items.0.actor",
+        "limit": 5
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "outcome": "no-such-outcome"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {}
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "documentType": "cv",
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "superseded",
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "orphaned": true,
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "orphaned": false,
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 5,
+        "page": 2
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 200,
+        "page": 20
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "fields": [
+          "originalName",
+          "size",
+          "state"
+        ],
+        "pageSize": 5
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "fields": [
+          "doesNotExist"
+        ],
+        "pageSize": 5
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "fields": [
+          "applications"
+        ],
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "999999"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "not-a-number"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": [
+          "jobUrl",
+          "canonicalJobUrl"
+        ],
+        "limit": 200
+      },
+      "save": {
+        "urls": "?jobUrl"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "$urls.0.jobUrl"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/none"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "0"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "2147483648"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found"
+      }
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "999999"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "999999"
+      },
+      "expect": {
+        "isError": true
+      }
+    }
+  ]
+}

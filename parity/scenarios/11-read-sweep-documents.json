@@ -1,0 +1,87 @@
+{
+  "name": "11-read-sweep-documents",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 200,
+        "fields": [
+          "id"
+        ]
+      },
+      "save": {
+        "docs": "."
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$doc.id"
+      },
+      "forEach": "$docs",
+      "bind": "doc"
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$doc.id"
+      },
+      "forEach": "$docs",
+      "bind": "doc"
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "9"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "9"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document file is missing from storage"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "1"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "1"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document file is missing from storage"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "67"
+      },
+      "expect": {
+        "isError": false
+      }
+    }
+  ]
+}

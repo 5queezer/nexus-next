@@ -1,0 +1,1126 @@
+{
+  "name": "15-schema-validation",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "no_such_tool",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 0
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 201
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 1.5
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "fields": "company"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": 190
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Only Company Parity"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "status": "archived"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "lastContact": "2026-02-01T10:00:00+01:00"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "followUpAt": "2026-02-01"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "rating": 6
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "rating": 3.5
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "notes": {
+          "$repeat": [
+            "n",
+            10001
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "jobContentHash": {
+          "$repeat": [
+            "a",
+            65
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "eligibleCountries": [
+          "ESP"
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "workMode": "moon"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "190",
+        "expectedUpdatedAt": "yesterday"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "190",
+        "notes": {
+          "$repeat": [
+            "n",
+            10001
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "190",
+        "rating": 0
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "190",
+        "archivedAt": "soon"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "190",
+        "expectedUpdatedAt": "soon"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190",
+        "submittedAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "short"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190",
+        "submittedAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-key-1",
+        "answers": [
+          {
+            "question": "",
+            "answer": "x"
+          }
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190",
+        "submittedAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-key-1",
+        "applicationUrl": "not a url"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": ""
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": ""
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "190",
+        "note": "   ",
+        "occurredAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-key-1"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "190",
+        "note": "n",
+        "idempotencyKey": "parity-key-1"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "190",
+        "type": "lead_discovered"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "190",
+        "type": "note_added",
+        "idempotencyKey": "short"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "190",
+        "type": "note_added",
+        "occurredAt": "2026-02-01T10:00:00+01:00",
+        "metadata": {
+          "note": "n"
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "limit": 101
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "190",
+        "order": "sideways"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "limit": 0
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "types": [
+          "bogus"
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "occurredAfter": "2026-02-01"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "not a url"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "jobUrl": "not a url"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/x",
+        "source": {
+          "$repeat": [
+            "s",
+            101
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/x"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/x",
+        "salaryMin": 1.5
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": []
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "batch_upsert_applications",
+      "args": {
+        "items": [
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          },
+          {
+            "company": "c",
+            "role": "r"
+          }
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "batch_delete_applications",
+      "args": {
+        "ids": []
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "rating_gte": 6
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "status": [
+          "nope"
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "190"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "batch_create_contacts",
+      "args": {
+        "applicationId": "190",
+        "contacts": []
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "1"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "delete_contact",
+      "args": {
+        "contactId": "1"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "page": 21
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 201
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "shredded"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "fields": [
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id",
+          "id"
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.txt",
+        "mimeType": "text/plain",
+        "contentBase64": "eA=="
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": {
+          "$repeat": [
+            "f",
+            256
+          ]
+        },
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": ""
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "38"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "source": {
+          "$repeat": [
+            "s",
+            101
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "documentType": {
+          "$repeat": [
+            "t",
+            101
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "version": 0
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "contentHash": "abc"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "generatedAt": "today"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {},
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity",
+        "contact": {},
+        "profile": "p",
+        "skills": [],
+        "experience": [
+          {
+            "id": "e",
+            "company": "c",
+            "title": "t",
+            "date": "d",
+            "location": "l",
+            "tier": 4,
+            "bullets": []
+          }
+        ]
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "190"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": "5"
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity",
+        "role": "R",
+        "remote": null
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "190",
+        "bogusKey": 1
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Unknown Key",
+        "role": "R",
+        "bogusKey": 1,
+        "isDemo": true,
+        "userId": "someone-else"
+      }
+    }
+  ]
+}

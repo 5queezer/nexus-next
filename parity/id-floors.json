@@ -1,0 +1,10 @@
+{
+  "_comment": "Highest IDs in the 2026-11-06 export. A higher ID was created during a run and is normalized by compare.py.",
+  "Application": 240,
+  "ApplicationEvent": 212,
+  "ApplicationSubmission": 1,
+  "Contact": 43,
+  "CvPatch": 0,
+  "CvProfile": 0,
+  "Document": 88
+}

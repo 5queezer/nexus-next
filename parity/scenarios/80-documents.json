@@ -1,0 +1,590 @@
+{
+  "name": "80-documents",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Doc Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Doc Other",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "other": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$app.id",
+          "$app.id"
+        ]
+      },
+      "save": {
+        "pdf": "."
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "state": "current",
+          "documentType": "other",
+          "version": 1,
+          "source": "upload",
+          "size": 15
+        }
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$pdf.id"
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "contentBase64.sha256": "$pdf.contentHash"
+        }
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity.png",
+        "mimeType": "image/png",
+        "contentBase64": "iVBORw0KGgo="
+      },
+      "save": {
+        "png": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$png.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity.jpg",
+        "mimeType": "image/jpeg",
+        "contentBase64": "/9j/4AAQ"
+      },
+      "save": {
+        "jpg": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity.webp",
+        "mimeType": "image/webp",
+        "contentBase64": "UklGRhIAAABXRUJQVlA4"
+      },
+      "save": {
+        "webp": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$webp.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "  spaces and \u00fcnicode.pdf  ",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBER i0xLjQ\nKJSVFT0YK"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "!!!notbase64"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Invalid base64 content"
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0"
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "size": 5
+        }
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "iVBORw0KGgo="
+      },
+      "expect": {
+        "isError": true,
+        "text": "File bytes do not match the declared MIME type"
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.png",
+        "mimeType": "image/png",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "expect": {
+        "isError": true,
+        "text": "File bytes do not match the declared MIME type"
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "999999"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "x.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "not-a-number"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "$png.id",
+        "applicationIds": [
+          "$app.id",
+          "$other.id"
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "$other.id"
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "$other.id"
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "$png.id",
+        "applicationIds": [
+          "$other.id",
+          "$other.id"
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "$png.id",
+        "applicationIds": [
+          "999999"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$png.id"
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "$png.id",
+        "applicationIds": []
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "999999",
+        "applicationIds": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id",
+        "documentType": "cv",
+        "state": "draft",
+        "version": 2,
+        "contentHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "source": {
+          "$repeat": [
+            "s",
+            100
+          ]
+        },
+        "generatedAt": "2026-02-01T09:00:00.000Z",
+        "submittedAt": "2026-02-02T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id",
+        "contentHash": null,
+        "source": null,
+        "generatedAt": null,
+        "submittedAt": null
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id",
+        "state": "submitted"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id",
+        "state": "superseded"
+      },
+      "expect": {
+        "paths": {
+          "state": "superseded"
+        }
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$jpg.id",
+        "state": "orphaned"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$webp.id",
+        "state": "historical"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "$webp.id",
+        "state": "current"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "$webp.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "999999",
+        "documentType": "cv"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "orphaned",
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "draft",
+        "pageSize": 200
+      }
+    },
+    {
+      "tool": "pipeline_healthcheck",
+      "args": {}
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "$jpg.id"
+      },
+      "expect": {
+        "text": "Document deleted"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "$jpg.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$jpg.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$jpg.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "$pdf.id"
+      },
+      "expect": {
+        "text": "Document deleted"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "$app.id"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document not found or access denied"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "9",
+        "documentType": "cv"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "9",
+        "applicationIds": [
+          "$app.id"
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "9"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Document file is missing from storage"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "document_attached",
+        "metadata": {
+          "documentId": "9"
+        }
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-missing-file",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "1"
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "38"
+      },
+      "expect": {
+        "text": "Document deleted"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "orphaned": true,
+        "pageSize": 200,
+        "fields": [
+          "state"
+        ]
+      }
+    }
+  ]
+}
