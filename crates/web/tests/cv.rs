@@ -704,7 +704,10 @@ async fn locking_on_the_page_confirms_the_profiles_numbers_and_records_who() {
     assert!(facts_row(&f.db).await.is_locked());
     assert_eq!(
         history(&f.db).await,
-        [("lock".to_owned(), "dashboard".to_owned())]
+        [
+            ("upsert_cv_profile".to_owned(), "mcp".to_owned()),
+            ("lock".to_owned(), "dashboard".to_owned())
+        ]
     );
 
     let (status, _, page) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
