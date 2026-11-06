@@ -757,7 +757,7 @@ async fn poisoned_rows_cost_at_most_themselves_on_every_page() {
     let queue = html(&f.app, "/queue").await;
     assert!(queue.contains("Good Co") && queue.contains("Min Quality"));
     assert!(
-        queue.find("Max Quality") < queue.find("Min Quality"),
+        queue.find("Max Quality").unwrap() < queue.find("Min Quality").unwrap(),
         "higher triage quality comes first, even at the limits"
     );
 

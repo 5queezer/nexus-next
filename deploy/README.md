@@ -18,6 +18,7 @@ Files here:
 | `/calendar.ics` | The secret token in its URL. Not served without a token file |
 | `/`, `/queue`, `/applications/*`, `/api/*` | The owner, logged in at `/login` |
 | `/.well-known/oauth-*`, `/api/mcp/{register,authorize,token}` | OAuth 2.1 for MCP clients |
+| `/api/mcp`, `/mcp` | MCP tools: an OAuth access token or the API token |
 
 `nexus serve` refuses to start without `NEXUS_PUBLIC_BASE_URL` and an owner passphrase (section 3). `--insecure-local-only` drops the login and the OAuth routes and forces a loopback bind. It exists for local parity runs and restore drills, and answers only to `localhost`, `127.0.0.1` and the bind address, so a web page can't reach the data through DNS rebinding or a cross-site POST. Never add it to the unit on the board.
 
@@ -154,7 +155,7 @@ sudo -u nexus /usr/local/bin/nexus import --export /var/tmp/nexus-export --data-
 sudo rm -rf /var/tmp/nexus-export    # it is private data
 ```
 
-The import prints counts and fails on any count, hash or foreign-key mismatch. Re-running it is safe; `--force` replaces a database holding rows the import did not write.
+The import prints counts and fails on any count, hash or foreign-key mismatch. Re-running it is safe; `--force` replaces a database holding rows the import did not write. Stop the server first: even with `--force`, an import refuses a database another process has open. A WAL left by a crash is replayed rather than refused, so its rows count as live data without `--force`.
 
 The passphrase hash is a separate file, so setting it first is fine and an import never touches it. OAuth grants and the API token do live in the database: once any exist, a re-import needs `--force` and empties them. So issue the API token after the final import, and expect clients to authorize again after one.
 
@@ -169,6 +170,8 @@ curl -fsS http://127.0.0.1:8080/healthz        # ok
 sudo journalctl -u nexus -n 20 --no-pager
 systemctl list-timers nexus-backup.timer
 ```
+
+At startup, `serve` removes `.tmp-*` files from `blobs/`, the unfinished writes of a killed process, and logs `removed unfinished uploads a crash left behind` if there were any. It assumes it is the only process writing there, so don't start the server during an import, or a second server on the same data directory: their temp files would go too.
 
 Request logs carry method, route template and status only. Query strings, headers and bodies are never logged. `NEXUS_LOG_LEVEL` (default `info`) only changes verbosity; SQL text stays out at every level.
 
@@ -199,7 +202,7 @@ Reboot test, with `/home` left locked: `sudo reboot`, wait, then `systemctl is-a
 
 ## 6. Backups
 
-`nexus-backup.timer` runs at 03:30 UTC (plus up to 10 minutes of jitter) and writes `/var/lib/nexus-backups/nexus-<UTC timestamp>.tar.age`, then deletes all but the newest 14. Each file is one age-encrypted tar of a consistent `VACUUM INTO` snapshot plus every blob the snapshot references. Before packaging, the copy passes `integrity_check` and `foreign_key_check`, and every referenced blob must exist and match its hash; otherwise the run fails and leaves no file. It is safe while the server runs.
+`nexus-backup.timer` runs at 03:30 UTC (plus up to 10 minutes of jitter) and writes `/var/lib/nexus-backups/nexus-<UTC timestamp>.tar.age`, then deletes all but the newest 14. Each file is one age-encrypted tar of a consistent `VACUUM INTO` snapshot plus every blob the snapshot references. Before packaging, the copy passes `integrity_check` and `foreign_key_check`, and every referenced blob must exist and match its hash; otherwise the run fails and leaves no file. It is safe while the server runs; a document deleted during a run can fail it this way, and the next run is fine.
 
 The plaintext snapshot is staged in a mode 0700 `.backup-*` directory under `/var/lib/nexus`, which holds the same data anyway and is never synced. A kill leaves it there, and the next backup deletes it. It also deletes any older `.backup-*` left in the backup directory. Only one backup of a data directory runs at a time.
 
@@ -230,7 +233,7 @@ nexus restore --from nexus-20261107T033000Z.tar.age --identity nexus-backup.key 
 nexus serve --data-dir /tmp/nexus-drill --bind 127.0.0.1:8099 --insecure-local-only   # look at it, then Ctrl-C
 ```
 
-Restore verifies everything before touching the target: decryption (a wrong key, truncation or a changed byte installs nothing), `integrity_check`, `foreign_key_check`, and every blob against its hash. It refuses to overwrite an existing `nexus.db` without `--force`; with `--force` the old file is kept as `nexus.db.before-restore`, mode 600.
+Restore verifies everything before touching the target: decryption (a wrong key, truncation or a changed byte installs nothing), `integrity_check`, `foreign_key_check`, and every blob against its hash. It refuses to overwrite an existing `nexus.db` without `--force`; with `--force` the old file is kept as `nexus.db.before-restore`, with its `-wal` and `-shm` if it had them, all mode 600. After a crash the WAL holds committed transactions, and SQLite replays it when the copy is opened, so move or copy those files together. A later restore replaces all three.
 
 **What this does not prove is who wrote the file.** age encrypts to a public key, so anyone holding that key can build a complete, valid backup with whatever data they like. A file replaced on the backup host restores without complaint, so the off-site host must be trusted not to swap files, or you need your own record of each backup's hash. To limit the damage, restore installs only blobs a document references, and it clears the API token and all OAuth clients and grants: afterwards every client authorizes again and the API token must be reissued. `--keep-credentials` keeps them, for a backup you know you wrote, such as your own pre-upgrade one. A forged database could still hold rows or triggers that restore doesn't look for.
 
@@ -242,7 +245,9 @@ Restoring over the live data: `sudo systemctl stop nexus`, run `nexus restore ..
 
 Whichever is used, set `NEXUS_TRUSTED_IP_HEADER` for it (section 3) and restart before going public.
 
-- **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8080`): keeps a stable custom domain. Local notes say Cloudflare's proxy breaks MCP Streamable HTTP by buffering streaming responses unless buffering is disabled. The MCP routes must therefore send `X-Accel-Buffering: no` and `Cache-Control: no-store`. This server does not set those yet because the MCP router is not mounted; check when it lands.
+**Buffering.** The MCP router is mounted, and this is what its responses really carry. `POST` returns one complete `application/json` body with `Content-Length`, and no `Cache-Control`. `GET` returns `text/event-stream` with `Cache-Control: no-cache, no-transform` and an empty body that ends at once. Nothing sets `X-Accel-Buffering`. So there is no long-lived stream for a proxy to buffer, and that header shouldn't be needed. That is an expectation, not a result: nothing has been tested through either ingress, and only a real Claude.ai OAuth and tool call can settle it. The steps are in [`docs/CUTOVER.md`](../docs/CUTOVER.md), step 4.
+
+- **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8080`): keeps a stable custom domain, but a tunnel is always proxied. Old Nexus's local notes say Cloudflare's proxy broke MCP Streamable HTTP by buffering streaming responses, so its domain stayed DNS-only.
 - **Tailscale Funnel** (`tailscale funnel 8080`): no Cloudflare in the path, but the hostname becomes `*.ts.net`, so every OAuth client re-registers once.
 
 `NEXUS_PUBLIC_BASE_URL` must be the public origin. It is the OAuth issuer, so changing it later means every client registers again. Calendar apps that cannot send bearer tokens use the secret URL; Google Calendar cannot reach a tailnet-only URL, so use an on-device subscriber (ICSx5) or the public ingress.
@@ -272,6 +277,8 @@ Upgrade: `sudo systemctl start nexus-backup.service`, install the new binary (ke
 Rollback: `sudo systemctl stop nexus`, `sudo install -m 0755 /usr/local/bin/nexus.prev /usr/local/bin/nexus`, start. Database migrations only move forward. If the new version migrated the database, an older binary may refuse it; restore the pre-upgrade backup (section 6) with `--force --keep-credentials`.
 
 ## 9. Cutover checklist (SPEC section 7)
+
+The steps, commands and rollback are in [`docs/CUTOVER.md`](../docs/CUTOVER.md). In short:
 
 0. Owner passphrase set, `NEXUS_PUBLIC_BASE_URL` and `NEXUS_TRUSTED_IP_HEADER` set, and a failed login from outside logs your real address. Replay the slow-request checks through the chosen ingress.
 1. Board health: `journalctl -b | grep end0` shows no Ethernet drops (SPEC section 10), `free -h` has headroom, and a reboot with `/home` locked brings Nexus up.

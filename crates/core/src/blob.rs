@@ -81,7 +81,8 @@ impl BlobStore {
         Ok(self.path(sha256)?.try_exists()?)
     }
 
-    /// Removes a blob if present. Blobs are shared: check that no document still references it.
+    /// Removes a blob if present. Blobs are shared: check that no document still references it,
+    /// holding the database's write lock across the check and this call.
     pub fn delete(&self, sha256: &str) -> Result<()> {
         match fs::remove_file(self.path(sha256)?) {
             Err(e) if e.kind() != ErrorKind::NotFound => Err(e.into()),

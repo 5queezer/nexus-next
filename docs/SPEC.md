@@ -110,6 +110,8 @@ Dropped: `User`, `Session`, `Account`, `Verification`, `ShareLink`, `DemoWorkspa
 - better-auth goes away, so `authorize` needs a new login: one owner passphrase (argon2id) with rate limiting, a session cookie and the existing consent step from the `authorize` route.
 - rmcp's `auth` features look client-oriented, so assume the authorization server is hand-written in axum. To verify at scaffold time.
 - Hermes Career Ops also connects with OAuth (`auth: oauth` in its config), not only Claude.ai.
+- Registration is open, because Claude.ai registers itself. So a redirect URI must be https to a host in `NEXUS_OAUTH_REDIRECT_HOSTS` (default `claude.ai,claude.com`, Claude.ai's real host still unverified) or loopback, checked at registration and again at authorize.
+- Rate limits and login backoff key on the client's address. With an https base URL, `serve` refuses to start until `NEXUS_TRUSTED_IP_HEADER` names the ingress's client-address header or says `none`. The header is believed only from `NEXUS_TRUSTED_PROXY_PEERS` (default loopback).
 - OAuth clients re-register after cutover if the issuer URL changes, so Claude.ai and Hermes would each need one reconnect. Keeping `nexus.vasudev.xyz` doesn't avoid this unless tokens and clients are migrated, and the OAuth tables start empty. Plan one re-authorization at cutover.
 
 ## 7. Migration
@@ -161,7 +163,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 **Parity result, 2026-11-06.** Golden scenarios of 1,809 calls through the real `nexus serve` binary, compared with old Nexus at `235138d` restored locally: 1,805 pass, 3 documented (the `generate_tailored_cv` gap), 1 fail (`sort: company`). That one is an artifact of the baseline: it ran under glibc `en_US` collation, while production compares bytewise (`'Z' < 'a'` is true there), as Rust does. Contact and linked-application order is compared unordered, because old Nexus returned Postgres heap order, which no client can rely on. About 18,000 further fuzzed calls matched apart from explained differences. The baseline goes stale for time-dependent `pipeline_healthcheck` checks from 2026-11-09, so re-record it after that.
 
-**Cutover:** stop writes to old Nexus, re-export, import, re-run parity, then repoint clients. Keep old Nexus stopped but restorable for 30 days.
+**Cutover:** stop writes to old Nexus, re-export, import, re-run parity, then repoint clients. Keep old Nexus stopped but restorable for 30 days. The runbook is [`CUTOVER.md`](CUTOVER.md).
 
 ## 8. Deployment and open risks
 
@@ -177,6 +179,8 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 - A Cloudflare tunnel keeps a stable custom domain, but local notes say the Cloudflare proxy breaks MCP streaming unless buffering is disabled.
 - Tailscale Funnel avoids Cloudflare, but the hostname becomes `*.ts.net`, so clients change URL once.
 - M1 gate: a full Claude.ai OAuth and tool call through whichever one is chosen.
+
+**Limits.** Each kind of caller has its own pool of request slots: public (login, OAuth, calendar: 8 in flight, 2 s wait, 10 s deadline), owner (dashboard, JSON API: 8, 10 s, 60 s) and mcp (8, 10 s, 60 s, or 300 s for a large body). A full pool gives a 503. On the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content`, also needs one of 2 large slots, because one 10 MiB document costs about 85 MB in the transport. At most 256 connections. Details in `deploy/README.md` section 7.
 
 **Calendar.** Calendar apps can't send bearer tokens, so `/calendar.ics` needs a secret URL token. Google Calendar fetches subscriptions from its own servers and can't reach a tailnet-only URL. Use an on-device subscriber such as ICSx5, or publish the URL through the public ingress.
 

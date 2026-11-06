@@ -194,6 +194,15 @@ async function runCall(step, vars, trace, group) {
   trace.calls.push(entry);
 }
 
+// Holds whatever the other side did: exactly these errors, in any order, and every other call succeeded.
+function checkErrorCodes(step, calls) {
+  if (!step.expectErrorCodes) return;
+  const failed = calls.filter((call) => call.isError !== false).map((call) => call.json?.error?.code ?? null);
+  if (stable(failed.sort()) !== stable([...step.expectErrorCodes].sort())) {
+    calls[0].expectFailures = [...(calls[0].expectFailures ?? []), "expectErrorCodes"];
+  }
+}
+
 async function runScenario(scenario, file) {
   if (scenario.resetDb) execSync(opt["reset-cmd"], { stdio: "inherit" });
   const trace = { format: 1, scenario: scenario.name, startedAt: new Date().toISOString(), calls: [] };
@@ -204,6 +213,7 @@ async function runScenario(scenario, file) {
       group += 1;
       const settled = { calls: [] };
       await Promise.all(step.parallel.map((inner) => runCall(inner, vars, settled, group)));
+      checkErrorCodes(step, settled.calls);
       trace.calls.push(...settled.calls);
     } else if (step.forEach) {
       const items = resolve(step.forEach, vars);

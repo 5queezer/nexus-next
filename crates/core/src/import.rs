@@ -765,24 +765,45 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Opens and closes a database. If nothing else has it open, that replays a WAL left by a crash
+/// into the database and removes it.
+async fn replay_wal(target: &Path) {
+    let connection = SqliteConnectOptions::new()
+        .filename(target)
+        .foreign_keys(false)
+        .connect()
+        .await;
+    if let Ok(mut conn) = connection {
+        let _ = sqlx::query("SELECT count(*) FROM sqlite_master")
+            .fetch_one(&mut conn)
+            .await;
+        let _ = conn.close().await;
+    }
+}
+
 async fn guard_target(target: &Path, force: bool) -> Result<()> {
     if !target.try_exists()? {
         return Ok(());
     }
     if force {
-        return Ok(());
-    }
-    if !is_replaceable(target).await.unwrap_or(false) {
+        replay_wal(target).await;
+    } else if !is_replaceable(target).await.unwrap_or(false) {
         return Err(ImportError::Refused(format!(
             "{} holds data no import wrote (or cannot be read); pass --force to replace it",
             target.display()
         )));
     }
-    // Closing the last connection removes the WAL, so one still here has another user.
-    if side_file(target, "-wal").try_exists()? {
+    // Closing the last connection removes the WAL, so one still here has another user. `--force`
+    // overrides the check on what the database holds, never this one: deleting a live WAL and
+    // renaming over the database would lose whatever the server writes next.
+    let wal = side_file(target, "-wal");
+    if wal.try_exists()? {
         return Err(ImportError::Refused(format!(
-            "{} is in use; stop the server before importing",
-            target.display()
+            "{} is in use: {} is still there after closing it. Stop the server and import \
+             again. If nothing has the database open, check that this user can write to the data \
+             directory: a WAL left by a crash is replayed and removed by opening the database",
+            target.display(),
+            wal.display()
         )));
     }
     Ok(())

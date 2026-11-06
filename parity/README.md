@@ -7,6 +7,7 @@ Golden request/response traces from old Nexus (`nexus-crm` at `235138d`), for co
 | `scenarios/*.json` | Ordered tool calls. Personal values are discovered at runtime; only integer IDs and invented strings are committed. |
 | `runner-mcp/run.mjs` | Streamable HTTP MCP client that runs scenarios against any URL. No dependencies. |
 | `runner-old/` | Serves the real old route handlers on loopback, then drives them with `run.mjs`. |
+| `runner-rust.sh` | Imports an export into a throwaway data dir, serves it with the real binary and real bearer checks, then drives it with `run.mjs`. |
 | `env/pg.sh` | Throwaway Postgres 17 and uploads dir, restored from the export. |
 | `compare.py` | Compares two trace directories. Its docstring is the complete list of normalizations. |
 | `id-floors.json` | Highest IDs in the export. Higher IDs were created during a run. |
@@ -27,6 +28,14 @@ Expected row counts: Application 190, ApplicationEvent 205, Contact 36, Document
 `runner-old` stays on loopback: GCS variables are unset, so storage uses the local uploads dir, `DATABASE_URL` must be loopback, and `fetch` to any other host throws. The harness does not modify old code. It replaces one thing, the `require()` in `lib/db/index.ts` that can't load TypeScript under vitest, with the same `PrismaAdapter`.
 
 ## Run against the Rust server
+
+```bash
+parity/runner-rust.sh target/debug/nexus ~/.local/share/nexus-export/20261106T001410Z /private/path/rust-run
+python3 parity/compare.py ~/.local/share/nexus-export/parity-golden/baseline /private/path/rust-run \
+  --unordered contacts --unordered applications
+```
+
+Or against any server, by hand:
 
 ```bash
 node parity/runner-mcp/run.mjs \
@@ -74,6 +83,7 @@ The exit code is 0, or 3 if any `expect` failed. Anything else is a crash.
 | `allowDiff` | A reason. Differences are listed as documented and don't fail the run. |
 | `forEach` + `bind` | Repeats the call for each item of a saved list. |
 | `parallel` | A list of calls sent concurrently. `compare.py` sorts each group before comparing. |
+| `expectErrorCodes` | On a `parallel` step: the `error.code` of every call that must fail, in any order; all others must succeed. Fails whatever the baseline did, so a double claim can't pass by matching a bad baseline. |
 
 ## Trace format
 
@@ -96,7 +106,7 @@ One JSON file per scenario, the same from any MCP client:
 
 ## Comparing
 
-`compare.py` prints a per-tool table and precise JSON paths, with sizes and types instead of values. Add `--show-values` to see values, which are personal data.
+`compare.py` prints a per-tool table and precise JSON paths, with sizes and types instead of values. Add `--show-values` to see values, which are personal data. `python3 parity/test_compare.py` checks that its modes can fail, on synthetic traces.
 
 Use `--unordered contacts --unordered applications` to compare those arrays by ID: old Nexus returned them in Postgres heap order, which a restore doesn't even keep stable.
 

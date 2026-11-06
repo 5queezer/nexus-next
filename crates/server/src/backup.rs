@@ -21,6 +21,7 @@ const BLOBS_DIR: &str = "blobs";
 const REPLACED_DB: &str = "nexus.db.before-restore";
 const STAGE_PREFIX: &str = ".backup-";
 const BACKUP_LOCK: &str = ".backup.lock";
+const SIDE_FILES: [&str; 2] = ["-wal", "-shm"];
 
 #[derive(Debug)]
 pub struct Summary {
@@ -57,6 +58,13 @@ pub fn read_recipients(path: &Path) -> anyhow::Result<Vec<x25519::Recipient>> {
 
 fn is_sha256(name: &str) -> bool {
     name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 fn private_dir(path: &Path) -> io::Result<()> {
@@ -238,7 +246,8 @@ async fn clear_credentials(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Decrypts `from`, verifies it and installs it into `data_dir`. Stop the server first. An
-/// existing database is only replaced with `force`, and is kept as `nexus.db.before-restore`. API
+/// existing database is only replaced with `force`, and is kept as `nexus.db.before-restore`, with
+/// its WAL and SHM if it has them. API
 /// tokens and OAuth clients and grants are cleared unless `keep_credentials`, and blobs no document
 /// references are not installed.
 pub async fn restore(
@@ -290,13 +299,27 @@ pub async fn restore(
         fs::rename(stage.path().join(BLOBS_DIR).join(sha), blobs_dir.join(sha))?;
     }
     File::open(&blobs_dir)?.sync_all()?;
-    if target.exists() {
+    let keep_old = target.exists();
+    if keep_old {
         let replaced = data_dir.join(REPLACED_DB);
+        // An earlier safety copy's WAL would be replayed onto the one replacing it.
+        for suffix in SIDE_FILES {
+            remove_if_present(&data_dir.join(format!("{REPLACED_DB}{suffix}")))?;
+        }
         fs::rename(&target, &replaced)?;
         fs::set_permissions(&replaced, Permissions::from_mode(0o600))?;
     }
-    for suffix in ["-wal", "-shm"] {
-        let _ = fs::remove_file(data_dir.join(format!("{DB_FILE}{suffix}")));
+    for suffix in SIDE_FILES {
+        let side = data_dir.join(format!("{DB_FILE}{suffix}"));
+        if !keep_old {
+            remove_if_present(&side)?;
+        } else if side.exists() {
+            // After a crash the WAL holds committed transactions, and SQLite replays it when the
+            // safety copy is opened under this name.
+            let kept = data_dir.join(format!("{REPLACED_DB}{suffix}"));
+            fs::rename(&side, &kept)?;
+            fs::set_permissions(&kept, Permissions::from_mode(0o600))?;
+        }
     }
     fs::rename(&staged_db, &target)?;
     File::open(data_dir)?.sync_all()?;

@@ -21,7 +21,8 @@ Per-call modes, set in the scenario and copied to the trace:
   compare: "isError"        Only the error flag: schema-validator wording and Prisma messages,
                             neither of which a different implementation can reproduce.
   compare: "isError-set"    Within a parallel group, only the multiset of error flags: the race
-                            winner legitimately varies.
+                            winner legitimately varies, how many calls win does not. Groups are sorted
+                            by flags first, so comparing by position compares the multisets.
   compare: "batch-results"  Exact, except that a per-item error holding a Prisma message only has
                             to be some error on the other side.
   allowDiff: "<reason>"     Differences are listed as documented and do not fail the run.
@@ -52,6 +53,11 @@ NAMED_IDS = {
     "submissionId": "ApplicationSubmission", "contactId": "Contact", "eventId": "ApplicationEvent",
 }
 PRISMA_ERROR = "invocation in\n"
+ERROR_FLAGS = ("isError", "rpcError", "httpStatus")
+
+
+def error_flags(call):
+    return {key: bool(call.get(key)) for key in ERROR_FLAGS}
 
 
 def parse_ts(value):
@@ -171,7 +177,7 @@ def normalized_calls(trace, drop_keys):
         while group is not None and index + len(members) < len(source) and source[index + len(members)].get("group") == group:
             members.append(source[index + len(members)])
         if group is not None:
-            members.sort(key=lambda call: json.dumps(normalizer.call(call, number=False), sort_keys=True))
+            members.sort(key=lambda call: (sorted(error_flags(call).items()), json.dumps(normalizer.call(call, number=False), sort_keys=True)))
         calls.extend((call, normalizer.call(call)) for call in members)
         index += len(members)
     return calls
@@ -210,13 +216,8 @@ def diff(a, b, path, show, out):
 def compare_call(call, a, b, show):
     mode = call.get("compare")
     if mode in ("isError", "isError-set"):
-        keys = ("isError", "rpcError", "httpStatus")
-        left = {key: bool(a.get(key)) for key in keys}
-        right = {key: bool(b.get(key)) for key in keys}
-        if mode == "isError-set":
-            left, right = {}, {}
         out = []
-        diff(left, right, "$", show, out)
+        diff(error_flags(a), error_flags(b), "$", show, out)
         return out
     if mode == "batch-results":
         for left, right in zip(a.get("json", {}).get("results", []), b.get("json", {}).get("results", [])):

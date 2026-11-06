@@ -674,6 +674,114 @@ async fn an_open_database_is_refused() {
     env.import().await.unwrap();
 }
 
+/// Leaves the data directory as a crash would: a row committed only to a WAL nobody holds open.
+async fn crash_with_a_row_in_the_wal(env: &Env) {
+    env.import().await.unwrap();
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    applications::create(&mut conn, "Live Row", "Engineer", Default::default())
+        .await
+        .unwrap();
+    drop(conn);
+    let names = ["nexus.db", "nexus.db-wal", "nexus.db-shm"];
+    let image: Vec<Vec<u8>> = names
+        .iter()
+        .map(|name| fs::read(env.data.join(name)).unwrap())
+        .collect();
+    db.close().await;
+    for (name, bytes) in names.iter().zip(image) {
+        fs::write(env.data.join(name), bytes).unwrap();
+    }
+}
+
+fn forced(env: &Env) -> ImportOptions {
+    ImportOptions {
+        force: true,
+        ..env.options()
+    }
+}
+
+#[tokio::test]
+async fn an_open_database_is_refused_even_when_forced() {
+    let env = Env::new();
+    env.import().await.unwrap();
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    let live = applications::create(&mut conn, "Live Row", "Engineer", Default::default())
+        .await
+        .unwrap();
+
+    let Err(ImportError::Refused(message)) = import::run(&forced(&env)).await else {
+        panic!("a forced import replaced a database in use");
+    };
+    assert!(message.contains("Stop the server"), "{message}");
+    assert!(
+        applications::get(&mut conn, live.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(env.data.join("nexus.db-wal").exists());
+
+    drop(conn);
+    db.close().await;
+    import::run(&forced(&env)).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_crashed_wal_does_not_block_a_forced_import() {
+    let env = Env::new();
+    crash_with_a_row_in_the_wal(&env).await;
+    assert!(env.data.join("nexus.db-wal").exists());
+
+    import::run(&forced(&env)).await.unwrap();
+
+    assert!(!env.data.join("nexus.db-wal").exists());
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    assert!(applications::get(&mut conn, 13).await.unwrap().is_none());
+    drop(conn);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_row_only_in_a_crashed_wal_still_counts_as_live_data() {
+    let env = Env::new();
+    crash_with_a_row_in_the_wal(&env).await;
+    let Err(ImportError::Refused(message)) = env.import().await else {
+        panic!("an import without --force replaced a row from the WAL");
+    };
+    assert!(message.contains("--force"), "{message}");
+}
+
+#[tokio::test]
+async fn a_wal_that_cannot_be_removed_names_the_way_out() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = Env::new();
+    crash_with_a_row_in_the_wal(&env).await;
+    let set_mode = |mode| {
+        fs::set_permissions(&env.data, fs::Permissions::from_mode(mode)).unwrap();
+    };
+    set_mode(0o500);
+    if fs::write(env.data.join("probe"), "").is_ok() {
+        // Running as root, which ignores the mode.
+        set_mode(0o700);
+        return;
+    }
+    let refused = import::run(&forced(&env)).await;
+    set_mode(0o700);
+    let Err(ImportError::Refused(message)) = refused else {
+        panic!("a forced import went past a WAL it could not remove: {refused:?}");
+    };
+    assert!(
+        message.contains("can write to the data directory"),
+        "{message}"
+    );
+
+    import::run(&forced(&env)).await.unwrap();
+}
+
 #[tokio::test]
 async fn tampering_fails_the_manifest_check() {
     for relative in [

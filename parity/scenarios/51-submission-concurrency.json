@@ -169,6 +169,7 @@
       }
     },
     {
+      "expectErrorCodes": ["document_already_submitted"],
       "parallel": [
         {
           "tool": "record_application_submission",
@@ -289,6 +290,7 @@
       }
     },
     {
+      "expectErrorCodes": ["same_company_active_application"],
       "parallel": [
         {
           "tool": "record_application_submission",
