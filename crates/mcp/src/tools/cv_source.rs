@@ -28,11 +28,16 @@ use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, re
 
 /// With a compile's 30 s, this stays inside the MCP route's 60 s deadline.
 const RENDER_QUEUE_WAIT: Duration = Duration::from_secs(20);
+/// One compiling and two waiting. Of the MCP pool's 8 slots, that leaves 5 for every other tool.
+pub(crate) const MAX_RENDER_CALLS: usize = 3;
+/// What a refused call reports. The rest would only cost memory: the first ones tell what is wrong.
+const MAX_REPORTED_VIOLATIONS: usize = 50;
+const MAX_VIOLATION_TEXT_CHARS: usize = 200;
+/// What one page of `list_cv_revisions` carries in diffs. A source can reach 256 KiB, so 50 full
+/// diffs would be 50 MB in the reply, and several times that in the transport.
+const MAX_DIFF_BYTES_PER_PAGE: usize = 1024 * 1024;
 /// Past this a diff gets coarser, not wrong. A page holds up to 50 of them, on a runtime thread.
 const DIFF_TIMEOUT: Duration = Duration::from_millis(200);
-/// A PDF at its limit and a typical preview. One result costs several times this in the transport,
-/// as a downloaded document does.
-const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
 const RESERVED_VARIANT_PREFIX: &str = "application-";
 
 pub(super) fn error_with(code: &str, details: Value) -> CallToolResult {
@@ -44,7 +49,23 @@ pub(super) fn error_with(code: &str, details: Value) -> CallToolResult {
 }
 
 pub(super) fn violation_error(violations: &[Violation]) -> CallToolResult {
-    error_with("cv_fact_violation", json!({"violations": violations}))
+    let short = |text: &str| text.chars().take(MAX_VIOLATION_TEXT_CHARS).collect();
+    let reported: Vec<Violation> = violations
+        .iter()
+        .take(MAX_REPORTED_VIOLATIONS)
+        .map(|violation| Violation {
+            rule: violation.rule,
+            token: short(&violation.token),
+            context: short(&violation.context),
+        })
+        .collect();
+    error_with(
+        "cv_fact_violation",
+        json!({
+            "violations": reported,
+            "truncated": violations.len() - reported.len(),
+        }),
+    )
 }
 
 fn render_error(error: RenderError) -> CallToolResult {
@@ -55,6 +76,7 @@ fn render_error(error: RenderError) -> CallToolResult {
         RenderError::SourceTooLarge => code_error("cv_source_too_large"),
         RenderError::TooManyPages => code_error("cv_too_many_pages"),
         RenderError::PdfTooLarge => code_error("cv_pdf_too_large"),
+        RenderError::ResultTooLarge => code_error("cv_render_result_too_large"),
         RenderError::Timeout => code_error("cv_render_timeout"),
         RenderError::MemoryExceeded => code_error("cv_render_memory_exceeded"),
         RenderError::Worker(detail) => {
@@ -64,9 +86,17 @@ fn render_error(error: RenderError) -> CallToolResult {
     }
 }
 
-/// One compile, waiting its turn for a bounded time. `/facts.json` goes to the compile without the
-/// banned phrases: nothing a source could print needs them, and a source that printed them would
-/// read them back from the violation.
+fn render_busy() -> Box<CallToolResult> {
+    Box::new(error_with(
+        "cv_render_busy",
+        json!({"message": "Other CVs are rendering. Nothing was stored. Try again shortly."}),
+    ))
+}
+
+/// One compile, waiting its turn for a bounded time, and only if few calls wait already. It ends with
+/// the client's connection: the child dies with this future. `/facts.json` goes to the compile
+/// without the banned phrases: nothing a source could print needs them, and a source that printed
+/// them would read them back from the violation.
 pub(super) async fn compile(
     ctx: &Ctx,
     source: &str,
@@ -74,27 +104,39 @@ pub(super) async fn compile(
     pdf: bool,
     preview_pages: u32,
 ) -> Result<Rendered, Box<CallToolResult>> {
-    let slot = ctx.state.render_slot.clone();
-    let Ok(Ok(_slot)) = tokio::time::timeout(RENDER_QUEUE_WAIT, slot.acquire_owned()).await else {
-        return Err(Box::new(error_with(
-            "cv_render_busy",
-            json!({"message": "Other CVs are rendering. Nothing was stored. Try again shortly."}),
-        )));
+    let Ok(_admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
+        return Err(render_busy());
     };
-    let request = RenderRequest {
-        source: source.to_owned(),
-        facts: Facts {
-            banned_phrases: Vec::new(),
-            ..facts.clone()
-        },
-        pdf,
-        preview_pages,
+    let work = async {
+        let slot = ctx.state.render_slot.clone();
+        let Ok(Ok(_slot)) = tokio::time::timeout(RENDER_QUEUE_WAIT, slot.acquire_owned()).await
+        else {
+            return Err(render_busy());
+        };
+        let request = RenderRequest {
+            source: source.to_owned(),
+            facts: Facts {
+                banned_phrases: Vec::new(),
+                ..facts.clone()
+            },
+            pdf,
+            preview_pages,
+        };
+        ctx.state
+            .renderer
+            .render(request)
+            .await
+            .map_err(|error| Box::new(render_error(error)))
     };
-    ctx.state
-        .renderer
-        .render(request)
-        .await
-        .map_err(|error| Box::new(render_error(error)))
+    tokio::select! {
+        () = ctx.client_gone.cancelled() => Err(client_gone_error()),
+        result = work => result,
+    }
+}
+
+/// Nobody reads this: it only makes the tool stop before it stores anything.
+fn client_gone_error() -> Box<CallToolResult> {
+    Box::new(code_error("cv_client_gone"))
 }
 
 /// `true` when the facts moved while a compile ran, so that its check says nothing about them.
@@ -356,6 +398,10 @@ async fn compile_and_check(
         .await
         .ok()
         .map(|rendered| rendered.text);
+    // A failed compile of the old source only costs the comparison, unless the client went with it.
+    if ctx.client_gone.is_cancelled() {
+        return Err(client_gone_error());
+    }
     let review_tokens = check(&rendered.text, facts, previous.as_ref()).review_tokens;
     Ok((rendered, review_tokens))
 }
@@ -547,6 +593,7 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
     let total = repo::count(&mut conn, variant.id).await?;
     let revisions = repo::list(&mut conn, variant.id, page_size, (page - 1) * page_size).await?;
     let mut items = Vec::with_capacity(revisions.len());
+    let mut diff_budget = MAX_DIFF_BYTES_PER_PAGE;
     for revision in revisions {
         let mut item = json!({
             "revision": revision.number,
@@ -560,19 +607,30 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
         if include_diff {
             // A parent in another variant can be gone with its application.
             let parent = match revision.parent_id {
-                Some(id) => repo::get_by_id(&mut conn, id).await?,
-                None => None,
+                Some(id) if diff_budget > 0 => repo::get_by_id(&mut conn, id).await?,
+                _ => None,
             };
-            item["diff"] = unified_diff(
-                parent.as_ref().map_or("", |parent| &parent.source),
-                &revision.source,
-                &parent.as_ref().map_or_else(
-                    || "empty".to_owned(),
-                    |parent| format!("revision {}", parent.number),
-                ),
-                &format!("revision {}", revision.number),
-            )
-            .into();
+            let diff = (diff_budget > 0).then(|| {
+                unified_diff(
+                    parent.as_ref().map_or("", |parent| &parent.source),
+                    &revision.source,
+                    &parent.as_ref().map_or_else(
+                        || "empty".to_owned(),
+                        |parent| format!("revision {}", parent.number),
+                    ),
+                    &format!("revision {}", revision.number),
+                )
+            });
+            match diff.filter(|diff| diff.len() <= diff_budget) {
+                Some(diff) => {
+                    diff_budget -= diff.len();
+                    item["diff"] = diff.into();
+                }
+                None => {
+                    diff_budget = 0;
+                    item["diffOmitted"] = true.into();
+                }
+            }
         }
         items.push(item);
     }
@@ -653,6 +711,10 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
             None => None,
         };
         let state = cv_facts::get(&mut conn).await?;
+        // A stored CV is built on facts the owner confirmed.
+        if application.is_some() && !state.is_locked() {
+            return Ok(code_error("cv_facts_not_locked"));
+        }
         let base = match resolve(&mut conn, &state.facts, name, number).await? {
             Ok(base) => base,
             Err(missing) => return Ok(missing.error()),
@@ -668,10 +730,6 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
         return Ok(violation_error(&report.violations));
     }
     let pdf = rendered.pdf.unwrap_or_default();
-    let total: usize = pdf.len() + rendered.previews.iter().map(Vec::len).sum::<usize>();
-    if total > MAX_RENDER_RESULT_BYTES {
-        return Ok(code_error("cv_render_result_too_large"));
-    }
     let mut summary = json!({
         "variant": base.variant.name,
         "revision": base.number,
@@ -716,6 +774,7 @@ mod tests {
 
     use nexus_core::Db;
     use nexus_tailor::Renderer;
+    use tokio_util::sync::CancellationToken;
 
     use super::*;
     use crate::McpState;
@@ -735,6 +794,7 @@ mod tests {
             state,
             can_access_submissions: true,
             source: "test",
+            client_gone: CancellationToken::new(),
         };
         tokio::time::pause();
         let started = tokio::time::Instant::now();
@@ -746,5 +806,37 @@ mod tests {
         let text = serde_json::to_string(&error.structured_content).unwrap();
         assert!(text.contains("cv_render_busy"), "{text}");
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn a_full_render_queue_refuses_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let _held = state
+            .render_calls
+            .clone()
+            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .await
+            .unwrap();
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+            client_gone: CancellationToken::new(),
+        };
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let error = compile(&ctx, "= CV", &Facts::default(), false, 0)
+            .await
+            .unwrap_err();
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        let text = serde_json::to_string(&error.structured_content).unwrap();
+        assert!(text.contains("cv_render_busy"), "{text}");
     }
 }

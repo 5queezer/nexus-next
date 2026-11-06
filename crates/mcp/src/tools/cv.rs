@@ -92,7 +92,8 @@ fn profile_as_text(profile: &CvProfile) -> RenderedText {
 }
 
 /// Port of `generateAndStoreCv`, with Typst for react-pdf and the integrity check before anything
-/// is stored. Replaces the document the patch last tracked, unless that one was submitted.
+/// is stored. Replaces the document the patch last tracked, unless that one was submitted. Unlike old
+/// Nexus, a document also linked to another application stays for that one, and only loses this link.
 pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
     let (application, profile, state) = {
         let mut conn = ctx.state.db.conn().await?;
@@ -211,9 +212,19 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             && let Some(previous) = documents_repo::get(&mut tx, previous_id).await?
             && !previous.is_submission_document()
         {
-            replaced_blob = documents_repo::delete(&mut tx, previous_id)
-                .await?
-                .and_then(|deleted| deleted.blob_sha256);
+            let others: Vec<i64> = previous
+                .applications
+                .iter()
+                .map(|parent| parent.id)
+                .filter(|id| *id != application.id)
+                .collect();
+            if others.is_empty() {
+                replaced_blob = documents_repo::delete(&mut tx, previous_id)
+                    .await?
+                    .and_then(|deleted| deleted.blob_sha256);
+            } else {
+                documents_repo::set_links(&mut tx, previous_id, &others).await?;
+            }
         }
         // A delete of the same bytes may have removed the file since the put above.
         if !db.blobs().exists(&sha256)? {

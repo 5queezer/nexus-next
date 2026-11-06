@@ -652,6 +652,80 @@ async fn a_render_returns_a_resource_and_images_and_can_save_a_document() {
     );
 }
 
+/// Finding 13: a stored CV is built on facts the owner confirmed.
+#[tokio::test]
+async fn saving_a_render_needs_locked_facts_and_a_plain_render_does_not() {
+    let server = Server::start().await;
+    server.call("upsert_cv_profile", profile()).await.ok();
+    owner_set(&server, json!({"allowedTokens": ["40%", "3"]})).await;
+    let app = server.application("Acme").await;
+    let saved = render(&server, json!({"saveToApplicationId": app})).await;
+    assert!(saved.is_error);
+    assert_eq!(saved.text_json()["error"]["code"], "cv_facts_not_locked");
+    assert_eq!(
+        server
+            .call("list_documents", json!({"applicationId": app}))
+            .await
+            .ok(),
+        json!([]),
+    );
+    assert!(!render(&server, json!({})).await.is_error);
+}
+
+/// Finding 17: a refused source says what is wrong without costing the server its memory.
+#[tokio::test]
+async fn a_long_list_of_violations_is_cut_and_says_so() {
+    let server = locked_server().await;
+    let numbers: String = (1000..1200).map(|n| format!("{n} ")).collect();
+    let long_run = format!("#text(fill: white)[{}]", "Word ".repeat(2000));
+    let new = format!("Backend engineer. {numbers} {long_run}");
+    let refused = patch(&server, 0, "Backend engineer", &new).await;
+    assert_eq!(refused.code(), "cv_fact_violation");
+    let error = &refused.json()["error"];
+    let violations = error["violations"].as_array().unwrap();
+    assert_eq!(violations.len(), 50);
+    assert!(error["truncated"].as_u64().unwrap() >= 150, "{error}");
+    let hidden = "Word ".repeat(2000);
+    let tiny = format!("Backend engineer. #text(fill: white)[{hidden}]");
+    let refused = patch(&server, 0, "Backend engineer", &tiny).await;
+    let error = &refused.json()["error"];
+    assert_eq!(error["truncated"], 0);
+    for violation in error["violations"].as_array().unwrap() {
+        assert!(violation["token"].as_str().unwrap().chars().count() <= 200);
+        assert!(violation["context"].as_str().unwrap().chars().count() <= 200);
+    }
+}
+
+/// Finding 17: a page of diffs has a budget. The newest ones show, and the rest say they were left out.
+#[tokio::test]
+async fn a_page_of_revisions_carries_a_bounded_amount_of_diff() {
+    let server = locked_server().await;
+    let filler = |c: char| format!("// {}\n", c.to_string().repeat(80)).repeat(3000);
+    let mut old = "#show: cv".to_owned();
+    let (mut number, _) = head(&server, "default").await;
+    for c in ['a', 'b', 'c', 'd', 'e'] {
+        let new = format!("{}#show: cv", filler(c));
+        patch(&server, number, &old, &new).await.ok();
+        old = new;
+        number += 1;
+    }
+    let page = server
+        .call("list_cv_revisions", json!({"includeDiff": true}))
+        .await
+        .ok();
+    let revisions = page["revisions"].as_array().unwrap();
+    assert_eq!(revisions.len(), 5);
+    let total: usize = revisions
+        .iter()
+        .filter_map(|r| r["diff"].as_str())
+        .map(str::len)
+        .sum();
+    assert!(total <= 1024 * 1024, "{total}");
+    assert!(revisions[0]["diff"].is_string());
+    assert_eq!(revisions[4]["diffOmitted"], true);
+    assert!(revisions[4].get("diff").is_none());
+}
+
 fn generate_args(app: &str) -> Value {
     json!({
         "applicationId": app,
@@ -768,6 +842,65 @@ async fn generate_keeps_the_frozen_response_and_replaces_only_its_own_unsubmitte
         "a submitted one stays: {ids:?}"
     );
     assert!(ids.contains(&&third["documentId"]));
+}
+
+/// Finding 16, a deliberate difference from old Nexus: a shared document stays for the other application.
+#[tokio::test]
+async fn generate_keeps_a_document_another_application_still_links() {
+    let server = locked_server().await;
+    let (a, b) = (
+        server.application("Acme").await,
+        server.application("Birch").await,
+    );
+    let first = server
+        .call("generate_tailored_cv", generate_args(&a))
+        .await
+        .ok();
+    let shared = first["documentId"].as_str().unwrap().to_owned();
+    server
+        .call(
+            "update_document_links",
+            json!({"id": shared, "applicationIds": [a, b]}),
+        )
+        .await
+        .ok();
+    let second = server
+        .call("generate_tailored_cv", generate_args(&a))
+        .await
+        .ok();
+    assert_ne!(second["documentId"].as_str().unwrap(), shared);
+
+    let linked_to = |app: &str| {
+        let app = app.to_owned();
+        let server = &server;
+        async move {
+            let listed = server
+                .call("list_documents", json!({"applicationId": app}))
+                .await
+                .ok();
+            let ids: Vec<String> = listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| d["id"].as_str().unwrap().to_owned())
+                .collect();
+            ids
+        }
+    };
+    assert_eq!(linked_to(&b).await, [shared.clone()]);
+    assert_eq!(
+        linked_to(&a).await,
+        [second["documentId"].as_str().unwrap().to_owned()]
+    );
+    let kept = server
+        .call("get_document", json!({"id": shared}))
+        .await
+        .ok();
+    assert_eq!(kept["id"].as_str().unwrap(), shared);
+    let content = server
+        .call("download_document_content", json!({"id": shared}))
+        .await;
+    assert!(!content.is_error, "{}", content.text);
 }
 
 #[tokio::test]
@@ -993,7 +1126,8 @@ fn fake_worker(dir: &std::path::Path, pdf_bytes: usize) -> (PathBuf, Vec<u8>) {
     let preview = b"\x89PNG\r\n\x1a\nsynthetic".to_vec();
     let head = json!({"Ok": {
         "hasPdf": true, "previewCount": 1, "pageCount": 1, "warnings": [],
-        "text": {"lines": ["Mara Example"], "hidden": [], "metadata": [], "imageCount": 0},
+        "text": {"lines": ["Mara Example"], "hidden": [], "transformed": [], "reversed": [], "links": [],
+            "metadata": [], "imageCount": 0},
     }});
     let mut frames = Vec::new();
     for frame in [head.to_string().as_bytes(), &pdf, &preview] {
@@ -1022,6 +1156,8 @@ async fn the_transport_carries_a_pdf_at_its_limit() {
         timeout: Duration::from_secs(20),
     })
     .await;
+    server.call("upsert_cv_profile", profile()).await.ok();
+    owner_lock(&server).await;
     let done = render(&server, json!({})).await;
     assert!(!done.is_error, "{:?}", done.content.first());
     let returned = STANDARD

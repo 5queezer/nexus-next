@@ -290,10 +290,10 @@ async fn locked_changes(
     Ok((fields, tokens))
 }
 
-/// While the facts are unlocked, writes facts and wording as old Nexus's `upsertCvProfile` did.
-/// While they are locked, writes wording only, or refuses with [`Error::CvFactsLocked`] and writes
-/// nothing. Never records `cv_facts_history`: that belongs to the owner's paths. Run inside
-/// `Db::begin_write`.
+/// While the facts are unlocked, writes facts and wording as old Nexus's `upsertCvProfile` did, and
+/// records the state before any change of a fact as `changed_by: mcp`, so that a lock can show who
+/// wrote what. While they are locked, writes wording only, or refuses with
+/// [`Error::CvFactsLocked`] and writes nothing. Run inside `Db::begin_write`.
 pub async fn upsert_profile(
     conn: &mut SqliteConnection,
     input: &CvProfileInput,
@@ -310,6 +310,20 @@ pub async fn upsert_profile(
             return Err(Error::CvFactsLocked { fields, tokens });
         }
     } else {
+        let moves: bool = sqlx::query_scalar(
+            "SELECT name IS NOT ?1 OR contact IS NOT ?2 OR employment IS NOT ?3
+                 OR education IS NOT ?4
+             FROM cv_facts",
+        )
+        .bind(&input.name)
+        .bind(Json(&input.contact))
+        .bind(Json(&employment))
+        .bind(Json(&education))
+        .fetch_one(&mut *conn)
+        .await?;
+        if moves {
+            cv_facts::record_history(&mut *conn, "upsert_cv_profile", "mcp", &now).await?;
+        }
         sqlx::query(
             "UPDATE cv_facts SET
                  version = version + (name IS NOT ?1 OR contact IS NOT ?2 OR employment IS NOT ?3

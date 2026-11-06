@@ -17,6 +17,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 
 pub use http::router;
 pub use nexus_tailor::Renderer;
@@ -40,7 +41,15 @@ pub async fn call_tool(
     if !auth.has_scope(SCOPE_TOOLS) {
         return tools::code_error("insufficient_scope");
     }
-    tools::call(state, &auth, source, name, Some(args)).await
+    tools::call(
+        state,
+        &auth,
+        source,
+        name,
+        Some(args),
+        CancellationToken::new(),
+    )
+    .await
 }
 
 const SNAPSHOT: &str = include_str!("../../../contract/mcp-tools.snapshot.json");
@@ -83,6 +92,9 @@ pub struct McpState {
     pub renderer: Renderer,
     /// One compile at a time. Taken only around the compile itself, never across other work.
     render_slot: Arc<Semaphore>,
+    /// The compile and the calls allowed to wait for it. Each holds a slot of the MCP pool meanwhile,
+    /// so any more are refused at once.
+    render_calls: Arc<Semaphore>,
 }
 
 impl McpState {
@@ -93,6 +105,7 @@ impl McpState {
             owner_email,
             renderer,
             render_slot: Arc::new(Semaphore::new(1)),
+            render_calls: Arc::new(Semaphore::new(tools::MAX_RENDER_CALLS)),
         }
     }
 }
@@ -139,11 +152,18 @@ impl ServerHandler for Handler {
             .cloned()
             .ok_or_else(|| ErrorData::internal_error("missing auth context", None))?;
         let args = request.arguments.map(Value::Object);
-        Ok(
-            tools::call(self.state.clone(), &auth, "mcp", &request.name, args)
-                .await
-                .into(),
+        // rmcp runs this in a task of its own, so a lost connection doesn't drop it: it only cancels
+        // this token.
+        Ok(tools::call(
+            self.state.clone(),
+            &auth,
+            "mcp",
+            &request.name,
+            args,
+            context.ct,
         )
+        .await
+        .into())
     }
 }
 

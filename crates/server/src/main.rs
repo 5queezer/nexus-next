@@ -140,8 +140,13 @@ enum CvFactsAction {
         #[arg(long)]
         file: PathBuf,
     },
-    /// Lock the facts, confirming the numbers in the profile's wording. Prints the ones it added.
-    Lock,
+    /// Lock the facts. Prints every fact changed since the last lock and every number and URL taken
+    /// from the profile's wording, and writes nothing unless nothing changed or you pass --confirm.
+    Lock {
+        /// You have read the changes, and they are true.
+        #[arg(long)]
+        confirm: bool,
+    },
     /// Unlock the facts, so that upsert_cv_profile can change them again.
     Unlock,
 }
@@ -156,25 +161,34 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
         return Ok(());
     }
     let mut tx = db.begin_write().await?;
-    let (state, added) = match action {
+    let state = match action {
         CvFactsAction::Show => unreachable!("handled above"),
         CvFactsAction::Set { file } => {
             let bytes =
                 std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
             let fields: OwnerFacts = serde_json::from_slice(&bytes)
                 .with_context(|| format!("{} is not valid", file.display()))?;
-            (
-                cv_facts::set_owner_facts(&mut tx, &fields, CV_FACTS_ACTOR).await?,
-                Vec::new(),
-            )
+            cv_facts::set_owner_facts(&mut tx, &fields, CV_FACTS_ACTOR).await?
         }
-        CvFactsAction::Lock => cv_facts::lock(&mut tx, CV_FACTS_ACTOR).await?,
-        CvFactsAction::Unlock => (cv_facts::unlock(&mut tx, CV_FACTS_ACTOR).await?, Vec::new()),
+        CvFactsAction::Lock { confirm } => {
+            let preview = cv_facts::lock_preview(&mut tx).await?;
+            for change in &preview.changes {
+                println!("changed {}: {} -> {}", change.field, change.old, change.new);
+            }
+            for token in &preview.added {
+                println!("added to allowed tokens: {token}");
+            }
+            if preview.needs_confirmation() && !confirm {
+                anyhow::bail!(
+                    "nothing was written. Locking confirms all of the above as true: if it is, \
+                     run `nexus cv-facts lock --confirm`"
+                );
+            }
+            cv_facts::lock(&mut tx, CV_FACTS_ACTOR).await?.0
+        }
+        CvFactsAction::Unlock => cv_facts::unlock(&mut tx, CV_FACTS_ACTOR).await?,
     };
     tx.commit().await?;
-    for token in &added {
-        println!("added to allowed tokens: {token}");
-    }
     let lock = if state.is_locked() {
         "locked"
     } else {

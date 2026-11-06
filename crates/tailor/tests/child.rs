@@ -181,10 +181,7 @@ async fn a_crash_and_garbage_are_worker_errors() {
 #[tokio::test]
 async fn too_much_output_is_cut_off() {
     let scratch = scratch();
-    let exe = script(
-        scratch.path(),
-        "cat >/dev/null\nhead -c 20971520 /dev/zero",
-    );
+    let exe = script(scratch.path(), "cat >/dev/null\nhead -c 20971520 /dev/zero");
     let result = renderer(exe, u64::MAX, Duration::from_secs(20))
         .render(request())
         .await;

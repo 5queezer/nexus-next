@@ -27,49 +27,61 @@ END;
 
 -- An M1 database may hold a profile written by upsert_cv_profile: its facts move across here. The
 -- importer and upsert_cv_profile split rows the same way. Education has no ID in old Nexus, so an
--- entry's ID is its position.
+-- entry's ID is its position. M1's own checks keep the odd values below out, but `cv_facts` must be
+-- readable whatever a row holds, or no tool could ever repair it: a fact that isn't a string reads as
+-- empty, in `contact` by leaving the key out, and an entry that isn't an object is dropped.
 UPDATE cv_facts SET
     name = p.name,
-    contact = p.contact,
+    contact = CASE WHEN json_type(p.contact) = 'object' THEN json_remove(
+        p.contact,
+        iif(json_type(p.contact, '$.email') = 'text', '$.keep', '$.email'),
+        iif(json_type(p.contact, '$.phone') = 'text', '$.keep', '$.phone'),
+        iif(json_type(p.contact, '$.linkedin') = 'text', '$.keep', '$.linkedin'),
+        iif(json_type(p.contact, '$.github') = 'text', '$.keep', '$.github'),
+        iif(json_type(p.contact, '$.location') = 'text', '$.keep', '$.location')
+    ) ELSE '{}' END,
     employment = (
         SELECT json_group_array(json_object(
-            'id', value ->> '$.id',
-            'company', coalesce(value ->> '$.company', ''),
-            'title', coalesce(value ->> '$.title', ''),
-            'date', coalesce(value ->> '$.date', ''),
-            'location', coalesce(value ->> '$.location', '')
+            'id', iif(json_type(value, '$.id') = 'text', value ->> '$.id', ''),
+            'company', iif(json_type(value, '$.company') = 'text', value ->> '$.company', ''),
+            'title', iif(json_type(value, '$.title') = 'text', value ->> '$.title', ''),
+            'date', iif(json_type(value, '$.date') = 'text', value ->> '$.date', ''),
+            'location', iif(json_type(value, '$.location') = 'text', value ->> '$.location', '')
         ))
         FROM json_each(p.experience)
+        WHERE type = 'object'
     ),
     education = (
-        SELECT json_group_array(CASE WHEN json_type(value, '$.details') IS NULL THEN json_object(
+        SELECT json_group_array(CASE WHEN json_type(value, '$.details') = 'text' THEN json_object(
             'id', 'edu-' || (key + 1),
-            'institution', coalesce(value ->> '$.institution', ''),
-            'qualification', coalesce(value ->> '$.degree', ''),
-            'date', coalesce(value ->> '$.date', ''),
-            'location', coalesce(value ->> '$.location', '')
+            'institution', iif(json_type(value, '$.institution') = 'text', value ->> '$.institution', ''),
+            'qualification', iif(json_type(value, '$.degree') = 'text', value ->> '$.degree', ''),
+            'date', iif(json_type(value, '$.date') = 'text', value ->> '$.date', ''),
+            'location', iif(json_type(value, '$.location') = 'text', value ->> '$.location', ''),
+            'details', value ->> '$.details'
         ) ELSE json_object(
             'id', 'edu-' || (key + 1),
-            'institution', coalesce(value ->> '$.institution', ''),
-            'qualification', coalesce(value ->> '$.degree', ''),
-            'date', coalesce(value ->> '$.date', ''),
-            'location', coalesce(value ->> '$.location', ''),
-            'details', value ->> '$.details'
+            'institution', iif(json_type(value, '$.institution') = 'text', value ->> '$.institution', ''),
+            'qualification', iif(json_type(value, '$.degree') = 'text', value ->> '$.degree', ''),
+            'date', iif(json_type(value, '$.date') = 'text', value ->> '$.date', ''),
+            'location', iif(json_type(value, '$.location') = 'text', value ->> '$.location', '')
         ) END)
         FROM json_each(p.education)
+        WHERE type = 'object'
     )
 FROM cv_profile p;
 
 UPDATE cv_profile SET experience = (
     SELECT json_group_array(json(json_remove(value, '$.company', '$.title', '$.date', '$.location')))
     FROM json_each(experience)
+    WHERE type = 'object'
 );
 
 ALTER TABLE cv_profile DROP COLUMN name;
 ALTER TABLE cv_profile DROP COLUMN contact;
 ALTER TABLE cv_profile DROP COLUMN education;
 
--- Written only by the owner's paths, as the state before each change.
+-- The state before each change, by the owner's paths and by upsert_cv_profile while unlocked.
 CREATE TABLE cv_facts_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     version INTEGER NOT NULL,

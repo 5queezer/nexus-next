@@ -20,6 +20,7 @@ use nexus_core::repo::submissions::Submission;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value, json};
 use sqlx::SqliteConnection;
+use tokio_util::sync::CancellationToken;
 
 use crate::js::{nid, normalize_numbers};
 use crate::{McpState, all_tools, zod};
@@ -29,6 +30,8 @@ use crate::{McpState, all_tools, zod};
 pub(crate) struct Thrown(pub String);
 
 /// Replaces the text of a storage failure, which can hold SQL details, in what a client sees.
+pub(crate) use cv_source::MAX_RENDER_CALLS;
+
 pub(crate) const INTERNAL_ERROR: &str = "Internal error";
 
 impl From<nexus_core::Error> for Thrown {
@@ -120,6 +123,8 @@ pub(crate) struct Ctx {
     pub can_access_submissions: bool,
     /// Who the caller is, stored as the `source` of every event the call writes.
     pub source: &'static str,
+    /// Cancelled when the HTTP connection of the call is gone.
+    pub client_gone: CancellationToken,
 }
 
 impl Ctx {
@@ -278,6 +283,7 @@ pub(crate) async fn call(
     source: &'static str,
     name: &str,
     mut args: Option<Value>,
+    client_gone: CancellationToken,
 ) -> CallToolResult {
     let Some(tool) = all_tools().iter().find(|tool| tool["name"] == name) else {
         return text_error(&format!("MCP error -32602: Tool {name} not found"));
@@ -298,6 +304,7 @@ pub(crate) async fn call(
         can_access_submissions: auth.auth_type != AuthType::OAuth
             || auth.has_scope(SCOPE_SUBMISSIONS),
         source,
+        client_gone,
     };
     match dispatch(&ctx, name, args).await {
         Ok(result) => result,

@@ -308,7 +308,7 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
     )
     .unwrap();
     cv_facts(&node, &["set", "--file", file.to_str().unwrap()]);
-    let locked = String::from_utf8(cv_facts(&node, &["lock"]).stdout).unwrap();
+    let locked = String::from_utf8(cv_facts(&node, &["lock", "--confirm"]).stdout).unwrap();
     // Not 40%: the metric the owner just set already vouches for it.
     for token in ["6", "3", "12"] {
         assert!(

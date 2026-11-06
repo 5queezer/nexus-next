@@ -165,7 +165,7 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
         .fetch_one(&mut *conn)
         .await
         .unwrap();
-    assert_eq!(history, 1);
+    assert_eq!(history, 2, "the first profile write, then the lock");
     let update = sqlx::query("UPDATE cv_revisions SET source = 'x'")
         .execute(&mut *conn)
         .await;

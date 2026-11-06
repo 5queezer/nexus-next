@@ -1,8 +1,11 @@
 //! The hard facts of a CV. MCP can write them only through `upsert_cv_profile`, and only while they
 //! are unlocked. The functions here are the owner's paths: `nexus cv-facts` now, the dashboard later.
 
+use std::collections::BTreeMap;
+
 use nexus_tailor::{Contact, Education, Employment, Facts, Language, Metric};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::SqliteConnection;
 use sqlx::types::Json;
 
@@ -65,7 +68,7 @@ pub async fn get(conn: &mut SqliteConnection) -> Result<FactsState> {
 }
 
 /// Saves the state as it is now, before a change.
-async fn record_history(
+pub(crate) async fn record_history(
     conn: &mut SqliteConnection,
     change: &str,
     changed_by: &str,
@@ -128,13 +131,104 @@ pub async fn set_owner_facts(
     get(conn).await
 }
 
-/// Locks the facts. Numbers in the profile's wording join `allowed_tokens`: locking is the owner
-/// confirming them, so show them `added`. Run inside `Db::begin_write`.
-pub async fn lock(
+/// One fact field that differs from the last locked state. `old` and `new` are quoted and escaped, so
+/// that an agent's text can't rewrite the owner's terminal, and `(none)` when there is no value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactChange {
+    pub field: String,
+    pub old: String,
+    pub new: String,
+}
+
+/// What a lock would confirm.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LockPreview {
+    pub changes: Vec<FactChange>,
+    /// Tokens the profile's wording would add to `allowed_tokens`.
+    pub added: Vec<String>,
+}
+
+impl LockPreview {
+    pub fn needs_confirmation(&self) -> bool {
+        !self.changes.is_empty() || !self.added.is_empty()
+    }
+}
+
+/// Every value in a fact as `path -> text`. An entry's path holds its position and its name, because
+/// IDs can repeat. Empty values are left out: they read the same as no value.
+fn flatten(path: &str, value: &Value, out: &mut BTreeMap<String, String>) {
+    let child = |key: &str| {
+        if path.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{path}.{key}")
+        }
+    };
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map {
+                flatten(&child(key), value, out);
+            }
+        }
+        Value::Array(items) if items.iter().any(Value::is_object) => {
+            for (index, item) in items.iter().enumerate() {
+                let name = ["id", "key", "name"]
+                    .iter()
+                    .find_map(|key| item[key].as_str())
+                    .unwrap_or_default();
+                flatten(&format!("{path}[{index}:{name}]"), item, out);
+            }
+        }
+        Value::Array(items) if !items.is_empty() => {
+            let texts: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
+            out.insert(path.to_owned(), format!("{texts:?}"));
+        }
+        Value::String(text) if !text.is_empty() => {
+            out.insert(path.to_owned(), format!("{text:?}"));
+        }
+        _ => {}
+    }
+}
+
+fn fact_changes(old: &Facts, new: &Facts) -> Vec<FactChange> {
+    let flat = |facts: &Facts| {
+        let mut out = BTreeMap::new();
+        let value = serde_json::to_value(facts).expect("facts serialize");
+        flatten("", &value, &mut out);
+        out
+    };
+    let (old, new) = (flat(old), flat(new));
+    let none = "(none)".to_owned();
+    let mut fields: Vec<&String> = old.keys().chain(new.keys()).collect();
+    fields.sort_unstable();
+    fields.dedup();
+    fields
+        .into_iter()
+        .filter(|field| old.get(*field) != new.get(*field))
+        .map(|field| FactChange {
+            field: field.clone(),
+            old: old.get(field).unwrap_or(&none).clone(),
+            new: new.get(field).unwrap_or(&none).clone(),
+        })
+        .collect()
+}
+
+/// The facts as they last stood locked: an unlock records the state before it. Empty before the first
+/// lock.
+async fn last_locked(conn: &mut SqliteConnection) -> Result<Facts> {
+    let state: Option<Json<Facts>> = sqlx::query_scalar(
+        "SELECT state FROM cv_facts_history WHERE change = 'unlock' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(conn)
+    .await?;
+    Ok(state.map_or_else(Facts::default, |state| state.0))
+}
+
+/// Refuses what can't be locked, and moves tokens from the profile's wording into `facts`.
+async fn derive_tokens(
     conn: &mut SqliteConnection,
-    changed_by: &str,
-) -> Result<(FactsState, Vec<String>)> {
-    let state = get(&mut *conn).await?;
+    state: &FactsState,
+) -> Result<(Facts, Vec<String>)> {
     if state.is_locked() {
         return Err(Error::CvFacts("the facts are already locked"));
     }
@@ -143,14 +237,37 @@ pub async fn lock(
             "there is nothing to lock: no profile has set the name yet",
         ));
     }
-    let mut facts = state.facts;
+    let mut facts = state.facts.clone();
     let mut added = Vec::new();
-    for (_, text) in cv::stored_wording(&mut *conn).await? {
+    for (_, text) in cv::stored_wording(conn).await? {
         for token in nexus_tailor::unverified_numbers(&text, &facts) {
             facts.allowed_tokens.push(token.clone());
             added.push(token);
         }
+        for url in nexus_tailor::unverified_urls(&text, &facts) {
+            facts.allowed_tokens.push(url.clone());
+            added.push(url);
+        }
     }
+    Ok((facts, added))
+}
+
+/// What locking now would confirm, compared with the last locked state. Writes nothing.
+pub async fn lock_preview(conn: &mut SqliteConnection) -> Result<LockPreview> {
+    let state = get(&mut *conn).await?;
+    let (_, added) = derive_tokens(&mut *conn, &state).await?;
+    let changes = fact_changes(&last_locked(conn).await?, &state.facts);
+    Ok(LockPreview { changes, added })
+}
+
+/// Locks the facts. Numbers and URLs in the profile's wording join `allowed_tokens`: locking is the
+/// owner confirming them, so show them [`lock_preview`] first. Run inside `Db::begin_write`.
+pub async fn lock(
+    conn: &mut SqliteConnection,
+    changed_by: &str,
+) -> Result<(FactsState, Vec<String>)> {
+    let state = get(&mut *conn).await?;
+    let (facts, added) = derive_tokens(&mut *conn, &state).await?;
     let now = Timestamp::now();
     record_history(&mut *conn, "lock", changed_by, &now).await?;
     sqlx::query(
