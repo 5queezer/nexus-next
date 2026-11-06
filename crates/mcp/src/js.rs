@@ -4,6 +4,8 @@
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Utc};
 use nexus_core::Timestamp;
 use nexus_core::blob::sha256_hex;
+#[cfg(test)]
+use serde_json::json;
 use serde_json::{Number, Value};
 use url::Url;
 
@@ -117,46 +119,76 @@ fn digits(value: &str, count: usize) -> Option<i64> {
         .flatten()
 }
 
-/// `new Date(value)` for the ISO forms, then for the common forms V8's legacy parser accepts. A
-/// value without a zone is local time in JavaScript, and old Nexus's containers ran in UTC.
+const LEGACY_DATES: [&str; 12] = [
+    "%Y/%m/%d",
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%b %d %Y",
+    "%B %d %Y",
+    "%d %b %Y",
+    "%d %B %Y",
+    "%a, %d %b %Y",
+    "%a %b %d %Y",
+];
+const LEGACY_TIMES: [&str; 4] = ["%H:%M:%S%.f", "%H:%M", "%I:%M %p", "%I:%M:%S %p"];
+
+/// The forms of V8's legacy parser an agent might plausibly send, plus its reading of a bare number
+/// and of a date without a year, which is 2001. A value it would accept in some other shape is
+/// rejected here instead.
+fn parse_legacy(value: &str) -> Option<DateTime<Utc>> {
+    if let Ok(number) = value.parse::<u32>() {
+        let (year, month) = match number {
+            0 => (2000, 1),
+            1..=12 => (2001, number),
+            32..=49 => (2000 + number as i32, 1),
+            50..=99 => (1900 + number as i32, 1),
+            100..=9999 => (number as i32, 1),
+            _ => return None,
+        };
+        return Some(
+            NaiveDate::from_ymd_opt(year, month, 1)?
+                .and_hms_opt(0, 0, 0)?
+                .and_utc(),
+        );
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc2822(value) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    let upper = value.to_ascii_uppercase();
+    let local = upper
+        .strip_suffix(" UTC")
+        .or_else(|| upper.strip_suffix(" GMT"))
+        .unwrap_or(&upper);
+    for date in LEGACY_DATES {
+        if let Ok(parsed) = NaiveDate::parse_from_str(local, date) {
+            return Some(parsed.and_hms_opt(0, 0, 0)?.and_utc());
+        }
+        for time in LEGACY_TIMES {
+            if let Ok(parsed) = NaiveDateTime::parse_from_str(local, &format!("{date} {time}")) {
+                return Some(parsed.and_utc());
+            }
+        }
+    }
+    let with_year = format!("{local} 2001");
+    [
+        "%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y", "%m/%d %Y", "%m-%d %Y",
+    ]
+    .iter()
+    .find_map(|format| NaiveDate::parse_from_str(&with_year, format).ok())
+    .and_then(|date| date.and_hms_opt(0, 0, 0))
+    .map(|parsed| parsed.and_utc())
+}
+
+/// `new Date(value)`. A value without a zone is local time in JavaScript, and old Nexus's containers
+/// ran in UTC.
 pub fn parse_date(value: &str) -> Option<Timestamp> {
     let value = value.trim();
-    parse_iso(value)
-        .or_else(|| {
-            let rfc2822 = DateTime::parse_from_rfc2822(value).ok()?;
-            Some(rfc2822.with_timezone(&Utc))
-        })
-        .or_else(|| {
-            [
-                "%Y-%m-%d %H:%M:%S%.f",
-                "%Y-%m-%d %H:%M",
-                "%Y/%m/%d %H:%M:%S",
-                "%m/%d/%Y %H:%M:%S",
-            ]
-            .iter()
-            .find_map(|format| NaiveDateTime::parse_from_str(value, format).ok())
-            .map(|parsed| parsed.and_utc())
-        })
-        .or_else(|| {
-            [
-                "%Y/%m/%d",
-                "%m/%d/%Y",
-                "%b %d, %Y",
-                "%B %d, %Y",
-                "%b %d %Y",
-                "%B %d %Y",
-                "%d %b %Y",
-                "%d %B %Y",
-            ]
-            .iter()
-            .find_map(|format| NaiveDate::parse_from_str(value, format).ok())
-            .and_then(|date| date.and_hms_opt(0, 0, 0))
-            .map(|parsed| parsed.and_utc())
-        })
-        .and_then(|parsed| {
-            let stamp = Timestamp::from_datetime(parsed);
-            (stamp.as_str().len() == 24).then_some(stamp)
-        })
+    let parsed = parse_iso(&value.to_ascii_uppercase()).or_else(|| parse_legacy(value))?;
+    let stamp = Timestamp::from_datetime(parsed);
+    (stamp.as_str().len() == 24).then_some(stamp)
 }
 
 fn parse_iso(value: &str) -> Option<DateTime<Utc>> {
@@ -368,6 +400,62 @@ pub fn canonicalize_job_url(raw: &str) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Expected values generated with Node, zod v3 and old Nexus's own functions. Reports every
+    /// mismatch at once.
+    #[test]
+    fn ports_match_real_javascript() {
+        let vectors: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/js_vectors.json")).unwrap();
+        let list = |key: &str| vectors[key].as_array().unwrap();
+        let mut failures = Vec::new();
+        for case in list("urls") {
+            let input = case["input"].as_str().unwrap();
+            let got = match canonicalize_job_url(input) {
+                Ok(canonical) => json!({"ok": canonical}),
+                Err(message) => json!({"err": message}),
+            };
+            let expected = match case.get("ok") {
+                Some(ok) => json!({"ok": ok}),
+                None => json!({"err": case["err"]}),
+            };
+            if got != expected {
+                failures.push(format!("canonicalize {input:?}: {got} vs {expected}"));
+            }
+            let parses = Url::parse(input).is_ok();
+            if parses != case["zodUrl"] {
+                failures.push(format!("z.url {input:?}: {parses}"));
+            }
+        }
+        for case in list("dates") {
+            let input = case["input"].as_str().unwrap();
+            let got = parse_date(input);
+            let got = got.as_ref().map(Timestamp::as_str);
+            if got != case["iso"].as_str() {
+                failures.push(format!("Date {input:?}: {got:?} vs {}", case["iso"]));
+            }
+            if is_zod_datetime(input, false) != case["zod"] {
+                failures.push(format!("datetime {input:?}"));
+            }
+            if is_zod_datetime(input, true) != case["zodOffset"] {
+                failures.push(format!("datetime offset {input:?}"));
+            }
+        }
+        for case in list("trims") {
+            let input = case["input"].as_str().unwrap();
+            if trim(input) != case["trimmed"] {
+                failures.push(format!("trim {input:?}"));
+            }
+        }
+        for case in list("hashes") {
+            let mut input = case["input"].clone();
+            normalize_numbers(&mut input);
+            if request_hash(&input) != case["hash"] {
+                failures.push(format!("hash {input}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     #[test]
     fn dates_follow_new_date() {

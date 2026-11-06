@@ -71,7 +71,20 @@ impl Walker<'_> {
         if let Some(Value::Array(options)) = schema.get("enum") {
             return self.enumeration(options, value);
         }
-        match schema.get("type").and_then(Value::as_str) {
+        // Simple nullables are written `"type": ["string", "null"]`.
+        let kind = match schema.get("type") {
+            Some(Value::Array(kinds)) => {
+                if value == Some(&Value::Null) {
+                    return Some(Value::Null);
+                }
+                kinds
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .find(|kind| *kind != "null")
+            }
+            other => other.and_then(Value::as_str),
+        };
+        match kind {
             Some("string") => self.string(schema, value),
             Some("number" | "integer") => self.number(schema, value),
             Some("boolean") => match value {
@@ -434,6 +447,19 @@ mod tests {
             err.contains("Invalid enum value. Expected 'a' | 'b', received 'c'"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn type_lists_are_nullables_of_the_other_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"email": {"type": ["string", "null"]}, "pay": {"type": ["number", "null"]}},
+        });
+        let parsed = parse("t", &schema, Some(&json!({"email": null, "pay": 5}))).unwrap();
+        assert_eq!(Value::Object(parsed), json!({"email": null, "pay": 5}));
+        let err = parse("t", &schema, Some(&json!({"email": 5, "pay": "x"}))).unwrap_err();
+        assert!(err.contains("Expected string, received number"), "{err}");
+        assert!(err.contains("Expected number, received string"), "{err}");
     }
 
     #[test]

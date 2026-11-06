@@ -157,6 +157,33 @@ async fn validation_errors_carry_zod_issues() {
         .call("get_application", json!({"id": id, "surprise": true}))
         .await
         .ok();
+    // Nullable fields still check the type of a value that isn't null.
+    let contact = server
+        .call(
+            "create_contact",
+            json!({"applicationId": id, "name": "Ann"}),
+        )
+        .await
+        .ok();
+    let wrong_type = server
+        .call(
+            "update_contact",
+            json!({"contactId": contact["id"], "applicationId": id, "email": 5}),
+        )
+        .await;
+    assert!(
+        wrong_type
+            .err_text()
+            .contains("Expected string, received number")
+    );
+    let wrong_type = server
+        .call("update_application", json!({"id": id, "salaryMin": "many"}))
+        .await;
+    assert!(
+        wrong_type
+            .err_text()
+            .contains("Expected number, received string")
+    );
     // Offsets are accepted only where the schema was declared with them.
     let offset = "2026-01-02T03:04:05+02:00";
     assert!(
@@ -1503,6 +1530,28 @@ async fn submission_policy_and_conflict_rules() {
         "different team"
     );
 
+    // Candidate salaries are 32-bit columns: too large fails the write, but not a dry run.
+    for amount in [json!(3_000_000_000_i64), json!(1e21)] {
+        let big = server.application("Epsilon").await;
+        let big_doc = server.pdf(json!([])).await;
+        let mut args = submission(&big, "big-salary-1", json!([big_doc["id"]]));
+        args["candidateSalaryMin"] = amount;
+        assert_eq!(
+            server
+                .call("record_application_submission", args.clone())
+                .await
+                .code(),
+            "submission_failed"
+        );
+        args["dryRun"] = true.into();
+        assert!(
+            !server
+                .call("record_application_submission", args)
+                .await
+                .is_error
+        );
+    }
+
     // A document can only be claimed once.
     let third = server.application("Gamma").await;
     let used = submission(&third, "submit-key-c", json!([twin_doc["id"]]));
@@ -1801,6 +1850,19 @@ async fn documents_upload_list_get_download_update_delete() {
         "any case is stored as given"
     );
     assert_eq!(meta["generatedAt"], "2026-01-02T03:04:05.000Z");
+    for version in [json!(3_000_000_000_i64), json!(1e21)] {
+        let reply = server
+            .call(
+                "update_document_metadata",
+                json!({"id": doc_id, "version": version}),
+            )
+            .await;
+        assert_eq!(
+            reply.err_text(),
+            "Document not found or access denied",
+            "the column is 32 bits"
+        );
+    }
     let source = server
         .call(
             "update_document_metadata",
@@ -1960,6 +2022,34 @@ async fn a_computed_content_hash_stays_hidden() {
         .await
         .ok();
     assert_eq!(written["contentHash"], "b".repeat(64));
+}
+
+#[tokio::test]
+async fn free_form_dates_follow_the_javascript_parser() {
+    let server = Server::start().await;
+    let id = server.application("Acme").await;
+    let event = |follow_up: &str| json!({"applicationId": id, "type": "follow_up_scheduled", "metadata": {"followUpAt": follow_up}});
+    for (given, stored) in [
+        ("2026-03-01", "2026-03-01T00:00:00.000Z"),
+        ("2026-03-01T10:00:00+02:00", "2026-03-01T08:00:00.000Z"),
+        ("March 3, 2026 10:00", "2026-03-03T10:00:00.000Z"),
+        ("Jan 5", "2001-01-05T00:00:00.000Z"),
+        ("4", "2001-04-01T00:00:00.000Z"),
+    ] {
+        let reply = server
+            .call("record_application_event", event(given))
+            .await
+            .ok();
+        assert_eq!(reply["application"]["followUpAt"], stored, "{given}");
+        assert_eq!(reply["event"]["metadata"]["followUpAt"], stored, "{given}");
+    }
+    assert_eq!(
+        server
+            .call("record_application_event", event("13"))
+            .await
+            .code(),
+        "event_metadata_invalid"
+    );
 }
 
 #[tokio::test]

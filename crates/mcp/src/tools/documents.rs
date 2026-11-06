@@ -298,6 +298,14 @@ pub async fn update_metadata(ctx: &Ctx, args: &Args) -> ToolResult {
             generated_at: date_patch(args, "generatedAt"),
             submitted_at: date_patch(args, "submittedAt"),
         };
+        // The version column is 32 bits, so a larger value failed the write.
+        if args.get("version").is_some_and(|version| {
+            version
+                .as_i64()
+                .is_none_or(|version| i32::try_from(version).is_err())
+        }) {
+            return None;
+        }
         let mut tx = ctx.state.db.begin_write().await.ok()?;
         let document = repo::update_metadata(&mut tx, existing.id, &patch)
             .await

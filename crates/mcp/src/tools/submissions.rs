@@ -216,7 +216,7 @@ fn validate_conflicts(
     Ok(())
 }
 
-fn hash_without_policy_change(input: &Map<String, Value>, policy: Option<Value>) -> String {
+fn hash_with_policy(input: &Map<String, Value>, policy: Option<Value>) -> String {
     let mut hashable = input.clone();
     match policy {
         Some(policy) => {
@@ -288,7 +288,7 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
             None => return fail("not_found"),
         }
     };
-    let salary = |key| args.get(key).and_then(Value::as_i64);
+    let salary = |key| args.get(key).and_then(Value::as_f64);
     if let (Some(min), Some(max)) = (salary("candidateSalaryMin"), salary("candidateSalaryMax"))
         && min > max
     {
@@ -351,12 +351,12 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
     let policy_result = validate_policy(policy_arg, &answers, &raw_document_ids);
     let raw_hash = request_hash(&Value::Object(input.clone()));
     let request_hash_value = match &policy_result {
-        Ok(policy) => hash_without_policy_change(&input, Some(Value::Object(policy.clone()))),
+        Ok(policy) => hash_with_policy(&input, Some(Value::Object(policy.clone()))),
         Err(_) => raw_hash.clone(),
     };
     let mut accepted = vec![raw_hash, request_hash_value.clone()];
     if policy_arg.is_none_or(Value::is_null) {
-        accepted.push(hash_without_policy_change(&input, None));
+        accepted.push(hash_with_policy(&input, None));
     }
 
     let mut tx = ctx.state.db.begin_write().await?;
@@ -496,6 +496,14 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
         }));
     }
 
+    // These columns are 32 bits, so a larger value failed the write, though not a dry run.
+    let amount = |key: &str| args.get(key).filter(|value| !value.is_null());
+    let fits = |key| {
+        amount(key).is_none_or(|value| value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()))
+    };
+    if !fits("candidateSalaryMin") || !fits("candidateSalaryMax") {
+        return fail("submission_failed");
+    }
     let created = repo::insert(
         &mut tx,
         &NewSubmission {
@@ -509,8 +517,8 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
             language,
             answers: Value::Array(answers),
             policy: policy_value.clone(),
-            candidate_salary_min: salary("candidateSalaryMin"),
-            candidate_salary_max: salary("candidateSalaryMax"),
+            candidate_salary_min: amount("candidateSalaryMin").and_then(Value::as_i64),
+            candidate_salary_max: amount("candidateSalaryMax").and_then(Value::as_i64),
             candidate_salary_currency: currency.flatten(),
             candidate_salary_period: str_arg(args, "candidateSalaryPeriod").map(str::to_owned),
             candidate_salary_type: str_arg(args, "candidateSalaryType").map(str::to_owned),

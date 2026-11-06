@@ -283,7 +283,7 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, message: Value) -> Value {
+async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, mut message: Value) -> Value {
     let id = message["id"].clone();
     let name = method(&message).unwrap_or_default();
     let issues = params_issues(name, message.get("params"));
@@ -303,6 +303,10 @@ async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, message: Val
             json!({"result": {"tools": frozen_tools()}, "jsonrpc": "2.0", "id": id})
         }
         Some("initialize" | "ping" | "tools/call") => {
+            // Old Nexus ignored `_meta`; to rmcp it can select a newer protocol's lifecycle.
+            if let Some(params) = message.get_mut("params").and_then(Value::as_object_mut) {
+                params.remove("_meta");
+            }
             let mut inner = Request::post("/")
                 .header(HOST, "localhost")
                 .header(ACCEPT, "application/json, text/event-stream")

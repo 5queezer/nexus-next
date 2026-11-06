@@ -354,6 +354,26 @@ async fn unknown_methods_and_malformed_params_are_jsonrpc_errors() {
 }
 
 #[tokio::test]
+async fn request_meta_is_ignored() {
+    let server = Server::start().await;
+    let reply = post(
+        &server,
+        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+            "name": "get_application",
+            "arguments": {"id": "424242"},
+            "_meta": {"progressToken": 1, "io.modelcontextprotocol/protocolVersion": "2026-07-28"},
+        }}),
+    )
+    .await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.body["result"]["content"][0]["text"],
+        "Application not found"
+    );
+    assert!(reply.body["result"].get("resultType").is_none());
+}
+
+#[tokio::test]
 async fn get_and_delete_are_accepted_and_end_at_once() {
     let server = Server::start().await;
     let reply = send(

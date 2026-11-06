@@ -39,6 +39,12 @@ impl From<String> for Thrown {
     }
 }
 
+impl From<&str> for Thrown {
+    fn from(message: &str) -> Self {
+        Self(message.to_owned())
+    }
+}
+
 pub(crate) type ToolResult = Result<CallToolResult, Thrown>;
 pub(crate) type Args = Map<String, Value>;
 

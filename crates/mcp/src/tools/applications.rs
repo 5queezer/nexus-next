@@ -822,12 +822,6 @@ pub async fn upsert_by_job_url(ctx: &Ctx, args: &Args) -> ToolResult {
         .unwrap_or_else(|Thrown(message)| code_error(&message)))
 }
 
-impl From<&str> for Thrown {
-    fn from(message: &str) -> Self {
-        Self(message.to_owned())
-    }
-}
-
 /// `validateApplicationSummary`, which reads an empty string as null.
 fn summary(value: &Value) -> Value {
     match value.as_str() {
