@@ -2,7 +2,7 @@
 
 Job-application CRM rebuilt as a single Rust binary: an MCP tool server for agents, with a web dashboard for humans.
 
-Status: the M1 code is in place: storage, importer, the 35-tool MCP server, OAuth and owner login, read-only dashboard, calendar feed and encrypted backups. Not done: Claude.ai through a real ingress, and the cutover itself, so nothing is deployed yet. See [`docs/CUTOVER.md`](docs/CUTOVER.md).
+Status: the M1 code is in place: storage, importer, the 35-tool MCP server, OAuth and owner login, dashboard with forms (notes, triage, lifecycle events, contacts, archive; CSRF-protected, same tool code as MCP) and an installable PWA shell, calendar feed and encrypted backups. Not done: Claude.ai through a real ingress, and the cutover itself, so nothing is deployed yet. See [`docs/CUTOVER.md`](docs/CUTOVER.md).
 
 - [`docs/SPEC.md`](docs/SPEC.md): architecture, data model, migration, milestones, open items
 - [`docs/CUTOVER.md`](docs/CUTOVER.md): runbook from today's state to cutover, with what has never been run

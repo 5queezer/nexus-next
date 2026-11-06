@@ -138,7 +138,9 @@ async fn get(http: &reqwest::Client, url: &str) -> (u16, String) {
 }
 
 fn assert_inert(url: &str, html: &str) {
-    let lower = html.to_lowercase();
+    let lower = html
+        .to_lowercase()
+        .replace("<script src=\"/assets/app.js?v=", "");
     for marker in ["<script", "<img", "href=\"javascript:", "href='javascript:"] {
         assert!(!lower.contains(marker), "{url} has raw {marker}");
     }

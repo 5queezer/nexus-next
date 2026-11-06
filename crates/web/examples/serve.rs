@@ -9,7 +9,13 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: serve <data-dir> [port]"))?;
     let port = args.next().unwrap_or_else(|| "8099".to_owned());
     let db = nexus_core::Db::open(data_dir.as_ref()).await?;
-    let app = nexus_web::dashboard_router(db.clone(), "Europe/Madrid".parse().unwrap())
+    let state = nexus_mcp::McpState {
+        db: db.clone(),
+        owner_id: "owner".to_owned(),
+        owner_email: "owner@example.com".to_owned(),
+    };
+    let app = nexus_web::dashboard_router(state, "Europe/Madrid".parse().unwrap())
+        .merge(nexus_web::static_router())
         .merge(nexus_web::api_router(db.clone()))
         .merge(nexus_web::calendar_router(db, "dev-token".to_owned()));
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;

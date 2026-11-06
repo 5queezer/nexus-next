@@ -111,6 +111,8 @@ pub(crate) fn bool_arg(args: &Args, key: &str) -> Option<bool> {
 pub(crate) struct Ctx {
     pub state: Arc<McpState>,
     pub can_access_submissions: bool,
+    /// Who the caller is, stored as the `source` of every event the call writes.
+    pub source: &'static str,
 }
 
 impl Ctx {
@@ -261,6 +263,7 @@ async fn dispatch(ctx: &Ctx, name: &str, args: Args) -> ToolResult {
 pub(crate) async fn call(
     state: Arc<McpState>,
     auth: &AuthContext,
+    source: &'static str,
     name: &str,
     mut args: Option<Value>,
 ) -> CallToolResult {
@@ -282,6 +285,7 @@ pub(crate) async fn call(
         state,
         can_access_submissions: auth.auth_type != AuthType::OAuth
             || auth.has_scope(SCOPE_SUBMISSIONS),
+        source,
     };
     match dispatch(&ctx, name, args).await {
         Ok(result) => result,

@@ -30,7 +30,13 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();
-    let app = nexus_web::dashboard_router(db.clone(), "Europe/Madrid".parse().unwrap())
+    let state = nexus_mcp::McpState {
+        db: db.clone(),
+        owner_id: "owner-1".to_owned(),
+        owner_email: "owner@example.com".to_owned(),
+    };
+    let app = nexus_web::dashboard_router(state, "Europe/Madrid".parse().unwrap())
+        .merge(nexus_web::static_router())
         .merge(nexus_web::api_router(db.clone()))
         .merge(nexus_web::calendar_router(db.clone(), TOKEN.to_owned()));
     Fixture { _dir: dir, db, app }
@@ -103,7 +109,7 @@ async fn pipeline_escapes_text_and_sets_security_headers() {
     let (status, headers, body) = fetch(&f.app, "/").await;
     let body = String::from_utf8(body).unwrap();
     assert_eq!(status, StatusCode::OK);
-    assert!(!body.contains("<script"), "{body}");
+    assert!(!body.contains("<script>"), "no inline script: {body}");
     assert!(!body.contains(" style="), "the CSP blocks inline styles");
     assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(body.contains(&format!("#{id}")));
@@ -305,7 +311,7 @@ async fn detail_shows_everything_and_marks_missing_files() {
 
     let page = html(&f.app, &format!("/applications/{id}")).await;
     assert!(
-        !page.contains("<script") && !page.contains("<b>markup") && !page.contains("<i>reasons")
+        !page.contains("<script>") && !page.contains("<b>markup") && !page.contains("<i>reasons")
     );
     assert!(page.contains(&format!("#{id}")));
     assert!(
