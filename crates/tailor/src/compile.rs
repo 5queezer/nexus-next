@@ -3,7 +3,8 @@
 use std::sync::LazyLock;
 
 use typst::diag::{FileError, FileResult, Severity as TypstSeverity, SourceDiagnostic, bail};
-use typst::foundations::{Bytes, Datetime, Duration, Target};
+use typst::foundations::{Bytes, Datetime, Duration, NativeElement, Target};
+use typst::introspection::Introspector;
 use typst::layout::HideElem;
 use typst::pdf::AttachElem;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
@@ -14,7 +15,10 @@ use typst_layout::PagedDocument;
 use typst_pdf::PdfOptions;
 use typst_render::RenderOptions;
 
-use crate::{Diagnostic, MAX_PAGES, MAX_PDF_BYTES, RenderError, RenderRequest, Rendered, Severity};
+use crate::{
+    Diagnostic, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest,
+    Rendered, Severity,
+};
 
 const NEXUS_TYP: &str = include_str!("nexus.typ");
 
@@ -29,6 +33,12 @@ const FONT_FILES: [&[u8]; 4] = [
 const PREVIEW_PIXEL_PER_PT: f64 = 2.0;
 const MAX_PREVIEW_PIXELS: f64 = 2_200_000.0;
 
+/// A source can raise any number of errors of any length, which would cross to the parent and on to
+/// the agent. These bounds give the worker a fixed budget for them: see `worker::MAX_OUTPUT_BYTES`.
+const MAX_DIAGNOSTICS: usize = 20;
+const MAX_HINTS: usize = 5;
+const MAX_DIAGNOSTIC_CHARS: usize = 1000;
+
 static FONTS: LazyLock<Vec<Font>> = LazyLock::new(|| {
     FONT_FILES
         .iter()
@@ -36,8 +46,9 @@ static FONTS: LazyLock<Vec<Font>> = LazyLock::new(|| {
         .collect()
 });
 
-/// Text and attachments that no rendered page shows would be invisible to the check, so these are
-/// compile errors: Typst drops hidden text from the frames altogether.
+/// Hidden text is a compile error: Typst drops it from the frames altogether, so the check would
+/// never see it. Nothing else marks text hidden, and a user's show rule that takes over `hide` instead
+/// of this one can only draw the body, which the check reads, or drop it, from the PDF too.
 static LIBRARY: LazyLock<LazyHash<Library>> = LazyLock::new(|| {
     let mut library = Library::builder().build();
     library
@@ -48,16 +59,22 @@ static LIBRARY: LazyLock<LazyHash<Library>> = LazyLock::new(|| {
                 "hide is not allowed: a CV shows everything it says"
             )
         });
-    library
-        .rules
-        .replace::<AttachElem>(Target::Paged, |elem, _, _| {
-            bail!(
-                elem.span(),
-                "pdf.attach is not allowed: a CV has no attachments"
-            )
-        });
     LazyHash::new(library)
 });
+
+/// The PDF exporter attaches every element it finds, whatever show rules did to it, and an attachment
+/// is text no page shows. So this looks where the exporter looks.
+fn refuse_attachments(world: &CvWorld, document: &PagedDocument) -> Result<(), RenderError> {
+    let attached = document.introspector().query(&AttachElem::ELEM.select());
+    let Some(first) = attached.first() else {
+        return Ok(());
+    };
+    let error = SourceDiagnostic::error(
+        first.span(),
+        "pdf.attach is not allowed: a CV has no attachments",
+    );
+    Err(RenderError::Diagnostics(vec![to_diagnostic(world, &error)]))
+}
 
 static BOOK: LazyLock<LazyHash<FontBook>> =
     LazyLock::new(|| LazyHash::new(FontBook::from_fonts(FONTS.iter())));
@@ -153,18 +170,31 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
             .find(|span| in_main(*span))
             .unwrap_or(diag.span)
     };
+    let bounded = |text: &str| {
+        let mut chars = text.chars();
+        let mut bounded: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+        if chars.next().is_some() {
+            bounded.push('…');
+        }
+        bounded
+    };
     let mut result = Diagnostic {
         severity: match diag.severity {
             TypstSeverity::Error => Severity::Error,
             TypstSeverity::Warning => Severity::Warning,
         },
-        message: diag.message.to_string(),
+        message: bounded(&diag.message),
         file: None,
         line: None,
         column: None,
         end_line: None,
         end_column: None,
-        hints: diag.hints.iter().map(|hint| hint.v.to_string()).collect(),
+        hints: diag
+            .hints
+            .iter()
+            .take(MAX_HINTS)
+            .map(|hint| bounded(&hint.v))
+            .collect(),
     };
     if let Some(id) = span.id() {
         result.file = Some(id.vpath().get_with_slash().to_owned());
@@ -190,11 +220,15 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     let warnings: Vec<_> = compiled
         .warnings
         .iter()
+        .take(MAX_DIAGNOSTICS)
         .map(|diag| to_diagnostic(&world, diag))
         .collect();
-    let document = compiled.output.map_err(|errors| {
-        RenderError::Diagnostics(errors.iter().map(|d| to_diagnostic(&world, d)).collect())
-    })?;
+    let bounded_errors = |errors: &[SourceDiagnostic]| {
+        let errors = errors.iter().take(MAX_DIAGNOSTICS);
+        RenderError::Diagnostics(errors.map(|d| to_diagnostic(&world, d)).collect())
+    };
+    let document = compiled.output.map_err(|errors| bounded_errors(&errors))?;
+    refuse_attachments(&world, &document)?;
     let pages = document.pages();
     let page_count = u32::try_from(pages.len()).unwrap_or(u32::MAX);
     if page_count > MAX_PAGES {
@@ -208,9 +242,8 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
             tagged: false,
             ..PdfOptions::default()
         };
-        let bytes = typst_pdf::pdf(&document, &options).map_err(|errors| {
-            RenderError::Diagnostics(errors.iter().map(|d| to_diagnostic(&world, d)).collect())
-        })?;
+        let bytes =
+            typst_pdf::pdf(&document, &options).map_err(|errors| bounded_errors(&errors))?;
         if bytes.len() > MAX_PDF_BYTES {
             return Err(RenderError::PdfTooLarge);
         }
@@ -218,7 +251,7 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     } else {
         None
     };
-    let previews = pages
+    let previews: Vec<Vec<u8>> = pages
         .iter()
         .take(req.preview_pages as usize)
         .map(|page| {
@@ -235,6 +268,10 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
                 .map_err(|e| RenderError::Worker(e.to_string()))
         })
         .collect::<Result<_, _>>()?;
+    let total = pdf.as_ref().map_or(0, Vec::len) + previews.iter().map(Vec::len).sum::<usize>();
+    if total > MAX_RENDER_RESULT_BYTES {
+        return Err(RenderError::ResultTooLarge);
+    }
     Ok(Rendered {
         pdf,
         previews,

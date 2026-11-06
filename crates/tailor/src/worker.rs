@@ -11,10 +11,15 @@ use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::time::MissedTickBehavior;
 
-use crate::{Diagnostic, MAX_PDF_BYTES, RenderError, RenderRequest, Rendered, RenderedText};
+use crate::{
+    Diagnostic, MAX_RENDER_RESULT_BYTES, MAX_TEXT_BYTES, RenderError, RenderRequest, Rendered,
+    RenderedText,
+};
 
-/// Above what a limited compile returns: the PDF and ten incompressible page previews of 8 MiB.
-const MAX_OUTPUT_BYTES: u64 = MAX_PDF_BYTES as u64 + 80 * 1024 * 1024 + 1024 * 1024;
+/// Above what a limited compile returns: a result at its limit, the text at its limit, and a full
+/// list of diagnostics, which `compile.rs` keeps well under 1 MiB. The worker refuses a larger result
+/// itself, so reaching this means the child is not behaving as it should.
+const MAX_OUTPUT_BYTES: u64 = (MAX_RENDER_RESULT_BYTES + MAX_TEXT_BYTES + 1024 * 1024) as u64;
 /// A compile holds hundreds of megabytes, so only one runs at a time.
 static ONE_COMPILE: Semaphore = Semaphore::const_new(1);
 const RSS_POLL: Duration = Duration::from_millis(20);

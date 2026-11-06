@@ -52,12 +52,16 @@
   ]
 }
 
+// The date stands by the last line, so that a wrapped title reads whole, line after line.
 #let _dated(left, date) = grid(
   columns: (1fr, auto),
   column-gutter: 1em,
+  align: bottom,
   left,
   text(fill: _muted, date),
 )
+
+#let _employer(e) = if e.title == "" { strong(e.company) } else { [#strong(e.company) · #e.title] }
 
 // One job. With a body it is a full entry: `#employment("id")[- a bullet]`. Without one, a single
 // compact line.
@@ -66,10 +70,10 @@
   let bullets = body.pos().at(0, default: none)
   if bullets == none {
     let place = if e.location != "" { [ · #e.location] }
-    block(below: 0.55em, _dated([#strong(e.company) · #e.title#place], e.date))
+    block(below: 0.55em, _dated([#_employer(e)#place], e.date))
   } else {
     block(above: 0.85em, below: 0.75em)[
-      #_dated([#strong(e.company) · #e.title], e.date)
+      #_dated(_employer(e), e.date)
       #if e.location != "" { v(-0.35em); text(size: 9.5pt, style: "italic", fill: _muted, e.location) }
       #v(-0.1em)
       #bullets

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub use check::{Report, Rule, Violation, check, unverified_numbers};
+pub use check::{Report, Rule, Violation, check, unverified_numbers, unverified_urls};
 pub use template::{
     CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, default_source,
     source_from_profile,
@@ -24,6 +24,11 @@ pub use worker::run_worker;
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_PAGES: u32 = 10;
 pub const MAX_PDF_BYTES: usize = 10 * 1024 * 1024;
+/// A PDF at its limit and a typical preview. One result costs several times this in the transport,
+/// as a downloaded document does.
+pub const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
+/// Far above what ten pages hold, and below what would strain the server, which keeps a copy.
+pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// A 9-page CV peaks at 48 MB on the board and 56 MB on x86-64. The unit's `MemoryHigh=256M` is the real ceiling, not
 /// `MemoryMax`: above it the kernel stalls the whole cgroup, server included, instead of killing
@@ -119,10 +124,24 @@ pub struct RenderedText {
     pub lines: Vec<String>,
     /// The runs among those no reader can see.
     pub hidden: Vec<String>,
+    /// The runs among those drawn under anything but a translation and a uniform positive scale.
+    pub transformed: Vec<String>,
+    /// The runs among those a bidi override draws back to front. Typst trims the control character
+    /// from a line's ends, while its effect stays.
+    pub reversed: Vec<String>,
+    /// Every URL link, with the text it covers on the page.
+    pub links: Vec<RenderedLink>,
     /// Document title, authors, description, keywords, date, bookmarks, link targets and page
     /// labels: what the PDF says beyond its pages.
     pub metadata: Vec<String>,
     pub image_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedLink {
+    pub target: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +176,8 @@ pub enum RenderError {
     TooManyPages,
     #[error("the PDF is larger than {MAX_PDF_BYTES} bytes")]
     PdfTooLarge,
+    #[error("the PDF and previews are larger than {MAX_RENDER_RESULT_BYTES} bytes")]
+    ResultTooLarge,
     #[error("the compile took too long")]
     Timeout,
     #[error("the compile used too much memory")]

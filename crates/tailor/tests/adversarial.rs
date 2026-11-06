@@ -3,7 +3,7 @@
 mod common;
 
 use common::{facts_en, render, render_and_check};
-use nexus_tailor::{RenderError, Rule, Severity};
+use nexus_tailor::{Facts, RenderError, RenderRequest, Renderer, Rule, Severity, check};
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
 /// The smallest valid PNG, one pixel.
@@ -476,13 +476,16 @@ async fn flagged_sources() {
 }
 
 async fn assert_flagged(cases: &[(&str, Rule, &str)]) {
-    let facts = facts_en();
+    assert_flagged_with(&facts_en(), cases).await;
+}
+
+async fn assert_flagged_with(facts: &Facts, cases: &[(&str, Rule, &str)]) {
     let mut missed = Vec::new();
     for (name, rule, body) in cases {
         let source = format!("{START}{body}\n");
-        match render(&source, &facts).await {
+        match render(&source, facts).await {
             Ok(rendered) => {
-                let report = nexus_tailor::check(&rendered.text, &facts, None);
+                let report = nexus_tailor::check(&rendered.text, facts, None);
                 if !report.violations.iter().any(|v| v.rule == *rule) {
                     missed.push(format!(
                         "{name}: wanted {rule:?}, got {:?}\n  lines: {:?}",
@@ -641,6 +644,23 @@ async fn refused_sources() {
             "#pdf.attach(\"x.txt\", bytes(\"2018\"))",
             "pdf.attach is not allowed",
         ),
+        (
+            "#show pdf.attach: none\n#pdf.attach(\"x.txt\", bytes(\"2018\"))",
+            "pdf.attach is not allowed",
+        ),
+        (
+            "#show pdf.attach: it => []\n#pdf.attach(\"x.txt\", bytes(\"2018\"))",
+            "pdf.attach is not allowed",
+        ),
+        (
+            "#show pdf.attach: none\n#context pdf.attach(\"x.txt\", bytes(\"2018\"))",
+            "pdf.attach is not allowed",
+        ),
+        ("#show hide: it => it\n#hide[2018]", "hide is not allowed"),
+        (
+            "#show hide: set text(fill: red)\n#hide[2018]",
+            "hide is not allowed",
+        ),
         ("#import \"@preview/x:1.0.0\"", "does not exist"),
         ("#read(\"/etc/passwd\")", "does not exist"),
         ("#read(\"../../x\")", "would escape the project root"),
@@ -716,4 +736,385 @@ async fn math_is_refused_or_read() {
         }
         Err(other) => panic!("{other:?}"),
     }
+}
+
+/// The exporter asks the document's introspector for attachments, which has never seen a tiling's
+/// content. So one there reaches no PDF, as the check's query says.
+#[tokio::test]
+async fn an_attachment_in_a_tiling_reaches_no_pdf() {
+    let source = "#show pdf.attach: none\n#rect(fill: tiling(size: (9pt, 9pt))[#pdf.attach(\"x.txt\", bytes(\"2018\"))])\n";
+    let rendered = Renderer::InProcess
+        .render(RenderRequest {
+            source: source.to_owned(),
+            facts: facts_en(),
+            pdf: true,
+            preview_pages: 0,
+        })
+        .await
+        .unwrap();
+    let pdf = String::from_utf8_lossy(rendered.pdf.as_deref().unwrap()).into_owned();
+    assert!(!pdf.contains("EmbeddedFile"));
+}
+
+/// A show rule that takes over `hide` can only draw its body, which the check reads, or drop it.
+#[tokio::test]
+async fn a_show_rule_on_hide_cannot_hide_text_from_the_check() {
+    assert_flagged(&[(
+        "drawn after all",
+        Rule::Numbers,
+        "#show hide: it => it.body\n#hide[2018]",
+    )])
+    .await;
+    let rendered = render("#show hide: none\n#hide[2018]\nWork.\n", &facts_en())
+        .await
+        .unwrap();
+    assert_eq!(rendered.text.lines, ["Work."]);
+}
+
+/// The review's proofs of finding 6, and every control character in a run.
+#[tokio::test]
+async fn bidi_controls_are_refused_wherever_they_stand() {
+    let mut facts = facts_en();
+    facts.allowed_tokens.push("12".to_owned());
+    facts.banned_phrases.push("rockstar ninja".to_owned());
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "a reversed claim",
+                Rule::BidiControl,
+                "#\"\\u{202E}roineS\\u{202C}\" engineer",
+            ),
+            (
+                "a reversed number",
+                Rule::BidiControl,
+                "Moved #\"\\u{202E}12\\u{202C}\" services.",
+            ),
+            (
+                "reversed claims",
+                Rule::BidiControl,
+                "#\"\\u{202E}rotceriD roineS ,DhP\\u{202C}\"",
+            ),
+            (
+                "a reversed banned phrase",
+                Rule::BidiControl,
+                "#\"\\u{202E}ajnin ratskcor\\u{202C}\"",
+            ),
+            (
+                "in the metadata",
+                Rule::BidiControl,
+                "#set document(description: \"\\u{202E}roineS\")",
+            ),
+            (
+                "digits with the control trimmed from the line's start",
+                Rule::BidiControl,
+                "#\"\\u{202E}12\"",
+            ),
+            (
+                "Arabic digits reversed",
+                Rule::BidiControl,
+                "#\"\\u{202E}١٢\"",
+            ),
+            (
+                "an override as an element of its own",
+                Rule::BidiControl,
+                "Moved #\"\\u{202E}\"12 services.",
+            ),
+            (
+                "an isolate around an override",
+                Rule::BidiControl,
+                "#\"\\u{2067}\\u{202E}12\\u{202C}\\u{2069}\"",
+            ),
+        ],
+    )
+    .await;
+    for control in [
+        0x200E, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069,
+    ] {
+        let body = format!("#\"Wo\\u{{{control:X}}}rk done.\"");
+        let name = format!("U+{control:X}");
+        assert_flagged_with(&facts, &[(&name, Rule::BidiControl, &body)]).await;
+    }
+}
+
+/// A right-to-left mark forms a run of its own that holds no glyph, so no run shows it. Whatever order
+/// it causes between runs is the order the lines read, since they join runs by where they draw.
+#[tokio::test]
+async fn a_mark_that_reorders_runs_reads_as_drawn() {
+    let rendered = render("#\"\\u{200F}12 34\"\n", &facts_en()).await.unwrap();
+    assert_eq!(rendered.text.lines, ["34 12"]);
+}
+
+/// The review's proofs of finding 7: the check read `12 6` and a 6, the page shows 126 and a 9.
+#[tokio::test]
+async fn transforms_cannot_draw_numbers_the_check_reads_otherwise() {
+    let mut facts = facts_en();
+    facts.allowed_tokens.extend(["12", "6"].map(str::to_owned));
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "scaled digits drawn together",
+                Rule::Numbers,
+                "Served #box(scale(1000%, reflow: true, text(size: 1.05pt)[12]))#h(.35pt)#box(scale(1000%, reflow: true, text(size: 1.05pt)[6])) clients.",
+            ),
+            (
+                "a 6 turned into a 9",
+                Rule::Transform,
+                "#box(rotate(180deg)[6]) years in freight.",
+            ),
+            ("rotated", Rule::Transform, "#rotate(90deg)[Work]"),
+            ("barely rotated", Rule::Transform, "#rotate(1deg)[Work]"),
+            ("mirrored", Rule::Transform, "#scale(x: -100%)[Work]"),
+            (
+                "mirrored both ways",
+                Rule::Transform,
+                "#scale(x: -100%, y: -100%)[Work]",
+            ),
+            ("skewed", Rule::Transform, "#skew(ax: 30deg)[Work]"),
+            ("stretched", Rule::Transform, "#scale(x: 150%, y: 100%)[Work]"),
+        ],
+    )
+    .await;
+}
+
+/// The review's proof of finding 9: the bookmark says what the page doesn't.
+#[tokio::test]
+async fn heading_numbering_reaches_the_check_as_the_bookmark_has_it() {
+    assert_flagged(&[
+        (
+            "numbering function on a hidden heading",
+            Rule::Numbers,
+            "#set heading(numbering: (..n) => \"CEO since 1999, PhD\")\n#show heading: none\n= Experience",
+        ),
+        (
+            "a claim in the numbering",
+            Rule::ClaimWords,
+            "#set heading(numbering: (..n) => \"CEO since 1999, PhD\")\n#show heading: none\n= Experience",
+        ),
+        (
+            "numbering on one heading",
+            Rule::Numbers,
+            "#show heading: none\n#heading(numbering: (..n) => \"PhD 2029\")[Experience]",
+        ),
+    ])
+    .await;
+    let source = "#set heading(numbering: (..n) => \"PhD\")\n#show heading: none\n= Experience\n";
+    let rendered = render(source, &facts_en()).await.unwrap();
+    assert!(
+        rendered.text.metadata.iter().any(|m| m == "PhD Experience"),
+        "{:?}",
+        rendered.text.metadata
+    );
+}
+
+/// The review's proofs of finding 18: a baseline can stand inside what shows while its ink doesn't.
+#[tokio::test]
+async fn glyphs_not_baselines_must_stand_in_what_shows() {
+    assert_flagged(&[
+        (
+            "above the page with its baseline on it",
+            Rule::HiddenText,
+            "#place(top + left, dy: -1.7cm - 0.2pt)[#text(top-edge: \"baseline\", bottom-edge: \"baseline\")[Software Engineer]]",
+        ),
+        (
+            "a sliver of a clip",
+            Rule::HiddenText,
+            "#box(width: 8cm, height: 0.5pt, clip: true)[#text(top-edge: \"baseline\", bottom-edge: \"descender\")[Hidden Extra Words]]",
+        ),
+        (
+            "tall but squeezed to nothing",
+            Rule::HiddenText,
+            "#scale(x: 1%, y: 20%, origin: top + left, reflow: true)[#text(size: 100pt)[Hidden Extra Words]]",
+        ),
+    ])
+    .await;
+}
+
+/// The review's proofs of finding 11.
+#[tokio::test]
+async fn contact_details_only_from_the_facts() {
+    assert_flagged(&[
+        (
+            "a false address behind the true one",
+            Rule::ContactDetails,
+            "#link(\"mailto:hr-dropbox@evil.example\")[mara\\@example.org]",
+        ),
+        (
+            "a false address as text",
+            Rule::ContactDetails,
+            "Write to hr-dropbox\\@evil.example.",
+        ),
+        (
+            "an obfuscated address",
+            Rule::ContactDetails,
+            "Write to hr-dropbox(at)evil.example.",
+        ),
+        (
+            "an address in the true address",
+            Rule::ContactDetails,
+            "mara\\@example.org.evil.example",
+        ),
+        (
+            "an address in the metadata",
+            Rule::ContactDetails,
+            "#set document(description: \"hr@evil.example\")",
+        ),
+        (
+            "a false address on a neutral link",
+            Rule::ContactDetails,
+            "#link(\"mailto:hr@evil.example\")[Write to me]",
+        ),
+        (
+            "a copy to someone else",
+            Rule::ContactDetails,
+            "#link(\"mailto:mara@example.org?bcc=hr@evil.example\")[mara\\@example.org]",
+        ),
+        (
+            "a false phone target",
+            Rule::ContactDetails,
+            "#link(\"tel:+4917000\")[Call me]",
+        ),
+        (
+            "a false profile link",
+            Rule::ContactDetails,
+            "#link(\"https://evil.example/phish\")[github.com/maraexample]",
+        ),
+        (
+            "an http link on the true address",
+            Rule::ContactDetails,
+            "#link(\"https://evil.example\")[mara\\@example.org]",
+        ),
+        (
+            "a link on the true phone number",
+            Rule::ContactDetails,
+            "#link(\"https://evil.example\")[+49 170 5550137]",
+        ),
+        (
+            "a mail target on the true profile",
+            Rule::ContactDetails,
+            "#link(\"mailto:mara@example.org\")[github.com/maraexample]",
+        ),
+        (
+            "a URL with a scheme",
+            Rule::ContactDetails,
+            "See https://evil.example/apply.",
+        ),
+        (
+            "a www address",
+            Rule::ContactDetails,
+            "See www.evil.example.",
+        ),
+        (
+            "a host and a path",
+            Rule::ContactDetails,
+            "See evil.example/apply.",
+        ),
+        ("a bare host", Rule::ContactDetails, "See apply.evil.com."),
+        (
+            "in capitals",
+            Rule::ContactDetails,
+            "#upper[See evil.com/apply.]",
+        ),
+        (
+            "a false profile in text",
+            Rule::ContactDetails,
+            "See github.com/someone-else.",
+        ),
+        (
+            "a profile with a longer name",
+            Rule::ContactDetails,
+            "See github.com/maraexample-evil.",
+        ),
+        (
+            "another scheme",
+            Rule::ContactDetails,
+            "#link(\"sms:555\")[Text me]",
+        ),
+    ])
+    .await;
+}
+
+/// Finding 22: a word only of digit lookalikes before `%` or a time unit reads as a number.
+#[tokio::test]
+async fn digit_lookalikes_before_a_unit_are_numbers() {
+    assert_flagged(&[
+        ("Latin", Rule::Numbers, "Cut errors by lOO%."),
+        ("Cyrillic", Rule::Numbers, "Cut errors by ЗО%."),
+        ("with a space", Rule::Numbers, "Cut errors by lO %."),
+        ("the word", Rule::Numbers, "Cut errors by lOO percent."),
+        ("years", Rule::Numbers, "With lO years in freight."),
+        ("German", Rule::Numbers, "Seit lO Jahren dabei."),
+    ])
+    .await;
+}
+
+/// Finding 17: what a source can make the worker send back stays small.
+#[tokio::test]
+async fn diagnostics_and_text_stay_bounded() {
+    let facts = facts_en();
+    let Err(RenderError::Diagnostics(diagnostics)) =
+        render("#panic(\"x\" * 1000000)\n", &facts).await
+    else {
+        panic!("should not compile");
+    };
+    assert!(diagnostics[0].message.chars().count() <= 1001);
+    assert!(diagnostics[0].message.len() < 5000);
+
+    let many: String = (0..500).map(|i| format!("#unknown{i}\n")).collect();
+    let Err(RenderError::Diagnostics(diagnostics)) = render(&many, &facts).await else {
+        panic!("should not compile");
+    };
+    assert!(diagnostics.len() <= 20, "{}", diagnostics.len());
+
+    let hints = "#assert(false, message: \"x\" * 1000000)\n";
+    let Err(RenderError::Diagnostics(diagnostics)) = render(hints, &facts).await else {
+        panic!("should not compile");
+    };
+    assert!(diagnostics.iter().all(|d| d.message.len() < 5000));
+
+    let warnings: String = (0..500)
+        .map(|i| format!("#text(font: \"none{i}\")[x]\n"))
+        .collect();
+    let rendered = render(&warnings, &facts).await.unwrap();
+    assert!(rendered.warnings.len() <= 20, "{}", rendered.warnings.len());
+
+    let title = "#set document(title: \"x\" * 2000000)\nWork.\n";
+    assert_eq!(
+        render(title, &facts).await.unwrap_err(),
+        RenderError::TooManyPages
+    );
+}
+
+/// Previews are limited with the PDF, by the child, so that they never reach the parent.
+#[tokio::test]
+async fn a_result_over_its_limit_is_refused_in_the_worker() {
+    // Printable noise repeated past deflate's window, so that nothing compresses it much.
+    let noise = "#let noise = range(65536).map(i => str.from-unicode(33 + calc.rem(i * i * 31 + i * 7 + calc.quo(i * i, 257), 90))).join()\n#let pixels = bytes(noise * 94).slice(0, 6120000)\n#let picture = image(pixels, format: (encoding: \"rgb8\", width: 1200, height: 1700), width: 100%, scaling: \"pixelated\")\n#set page(margin: 0pt)\n#picture\n#pagebreak()\n#picture\n#pagebreak()\n#picture\n#pagebreak()\n#picture\n#pagebreak()\n#picture\n";
+    let pages = noise.to_owned();
+    let result = Renderer::InProcess
+        .render(RenderRequest {
+            source: pages,
+            facts: Facts::default(),
+            pdf: true,
+            preview_pages: 5,
+        })
+        .await;
+    assert_eq!(result.unwrap_err(), RenderError::ResultTooLarge);
+}
+
+/// The check reads the same on the page as `check` does for links it never saw.
+#[tokio::test]
+async fn links_are_read_with_the_text_they_cover() {
+    let facts = facts_en();
+    let source = format!("{START}Before #link(\"https://example.org/x\")[the link] after.\n");
+    let rendered = render(&source, &facts).await.unwrap();
+    let link = rendered
+        .text
+        .links
+        .iter()
+        .find(|link| link.target == "https://example.org/x")
+        .unwrap();
+    assert_eq!(link.text, "the link");
+    assert_eq!(check(&rendered.text, &facts, None).violations, []);
 }

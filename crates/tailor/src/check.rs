@@ -24,6 +24,12 @@ pub enum Rule {
     HiddenText,
     /// One word mixing Latin with Cyrillic or Greek lookalikes, which has no honest use on a CV.
     MixedScript,
+    /// A bidi control character: the page then draws text in another order than the check reads it.
+    BidiControl,
+    /// Text rotated, mirrored, skewed or stretched: it can draw as something else, like 6 as 9.
+    Transform,
+    /// An email, URL or link target the contact facts don't back. A reply goes to whoever it names.
+    ContactDetails,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -738,11 +744,15 @@ impl Known {
             .then(|| Regex::new(&format!("(?i){}", alternatives.join("|"))).ok())
             .flatten();
         let c = &facts.contact;
-        let whole = [&c.email, &c.phone, &c.linkedin, &c.github, &c.location]
+        let mut whole: Vec<String> = [&c.email, &c.phone, &c.linkedin, &c.github, &c.location]
             .into_iter()
             .map(|value| normalize(value.trim()))
             .filter(|value| !value.is_empty())
             .collect();
+        // A `tel:` link's target, which `check_links` compares by its digits.
+        if !c.phone.trim().is_empty() {
+            whole.push(format!("tel:{}", normalize(&c.phone).replace(' ', "")));
+        }
         Self {
             tokens: tokens_known,
             words: known_words,
@@ -1075,9 +1085,10 @@ fn check_binding(document: &Document, facts: &Facts, findings: &mut Findings) {
             || contains_word(&document.body, &anchor.name.to_uppercase());
         let same_name = anchors.iter().filter(|a| a.lower == anchor.lower);
         if rendered
-            && !same_name
-                .clone()
-                .any(|a| present(&a.detail) && (a.date.is_empty() || present(&a.date)))
+            && !same_name.clone().any(|a| {
+                (a.detail.is_empty() || present(&a.detail))
+                    && (a.date.is_empty() || present(&a.date))
+            })
         {
             findings.add(
                 Rule::EntityBinding,
@@ -1115,6 +1126,192 @@ pub fn unverified_numbers(text: &str, facts: &Facts) -> Vec<String> {
     findings.violations.into_iter().map(|v| v.token).collect()
 }
 
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Right-to-left scripts order themselves by the Unicode algorithm and need none of these. On raw
+/// text, because `normalize` removes them.
+fn check_bidi(text: &RenderedText, findings: &mut Findings) {
+    for item in text.lines.iter().chain(&text.metadata) {
+        if let Some((at, control)) = item.char_indices().find(|(_, c)| is_bidi_control(*c)) {
+            findings.add(
+                Rule::BidiControl,
+                &format!("U+{:04X}", control as u32),
+                context(item, at, at + control.len_utf8()),
+            );
+        }
+    }
+    for run in &text.reversed {
+        findings.add(
+            Rule::BidiControl,
+            run,
+            "a bidi override draws this back to front".to_owned(),
+        );
+    }
+}
+
+/// A word only of letters that read as digits, directly before `%` or a time unit: `lOO%`, `lO years`.
+/// `IO` and `CI` elsewhere are ordinary words, and `Team of lO` gets past this.
+fn check_digit_lookalikes(masked: &str, known: &Known, findings: &mut Findings) {
+    static LOOKALIKE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b([lIOЗО]{2,})\s?(%|\p{L}+)").expect("the lookalike pattern is valid")
+    });
+    for caps in LOOKALIKE.captures_iter(masked) {
+        let unit = caps[2].to_lowercase();
+        let is_unit = matches!(unit.as_str(), "%" | "percent" | "prozent")
+            || TIME_UNITS.contains(&unit.as_str());
+        let word = caps.get(1).expect("group 1 always exists");
+        if is_unit && !known.words.contains(&word.as_str().to_lowercase()) {
+            findings.add(
+                Rule::Numbers,
+                word.as_str(),
+                context(masked, word.start(), word.end()),
+            );
+        }
+    }
+}
+
+static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)[\p{L}\p{N}._%+'-]+\s?(?:@|[\[(]at[\])])\s?[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+",
+    )
+    .expect("the email pattern is valid")
+});
+/// A scheme or `www.`, or a host in a top-level domain common enough, and not a name of something in
+/// tech: `Node.js`, `socket.io`. Upper-case `.NET` is the platform.
+static URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:[a-z][a-z0-9+-]*://|www\.)[^\s]+|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:com|org|(?-i:net)|info|biz|eu|de|at|ch|uk|dev|app|xyz|example|test)\b(?:[/?#][^\s]*)?",
+    )
+    .expect("the URL pattern is valid")
+});
+
+/// A URL as it compares: no scheme, no `www.`, no case, no slash at the end.
+fn url_key(url: &str) -> String {
+    let lower = url.trim().to_lowercase();
+    let bare = lower
+        .split_once("://")
+        .map_or(lower.as_str(), |(_, rest)| rest);
+    bare.strip_prefix("www.")
+        .unwrap_or(bare)
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+/// `url` is `base` or a page under it.
+fn is_under(url: &str, base: &str) -> bool {
+    !base.is_empty()
+        && url
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+fn digits_of(text: &str) -> String {
+    text.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// Emails and URLs in `text`, trimmed of the punctuation around them, emails first. An email's domain
+/// is not a URL of its own.
+fn addresses(text: &str) -> (Vec<String>, Vec<String>) {
+    const AROUND: &[char] = &[
+        '.', ',', ';', ':', '!', '?', ')', ']', '}', '\'', '"', '»', '”',
+    ];
+    let trimmed = |found: &str| found.trim_end_matches(AROUND).to_owned();
+    let emails = EMAIL.find_iter(text).map(|m| trimmed(m.as_str())).collect();
+    let rest = EMAIL.replace_all(text, " ");
+    let urls = URL.find_iter(&rest).map(|m| trimmed(m.as_str())).collect();
+    (emails, urls)
+}
+
+/// The URLs a CV may show: the owner's profiles and pages under them, what the owner listed, and what
+/// a fact holds.
+fn url_allowed(url: &str, facts: &Facts, known: &Known) -> bool {
+    let key = url_key(url);
+    let contact = [&facts.contact.linkedin, &facts.contact.github];
+    let listed = facts.allowed_tokens.iter().chain(&facts.vocabulary);
+    contact
+        .into_iter()
+        .chain(listed)
+        .any(|base| is_under(&key, &url_key(base)))
+        || known.phrases.contains(&key)
+}
+
+/// A link's target and what it shows must agree with the contact facts. Any `http` or `https` target
+/// is fine behind other text: a project's URL comes from the wording, and its name is what shows.
+fn check_links(text: &RenderedText, facts: &Facts, findings: &mut Findings) {
+    let contact = &facts.contact;
+    let email = contact.email.trim().to_lowercase();
+    let phone = digits_of(&contact.phone);
+    let profiles = [&contact.linkedin, &contact.github].map(|url| url_key(url));
+    for link in &text.links {
+        let target = link.target.trim().to_lowercase();
+        let (mail, tel) = (target.strip_prefix("mailto:"), target.strip_prefix("tel:"));
+        let web = target.starts_with("http://") || target.starts_with("https://");
+        let target_ok = match (mail, tel) {
+            (Some(address), _) => !email.is_empty() && address == email,
+            (_, Some(number)) => !phone.is_empty() && digits_of(number) == phone,
+            _ => web,
+        };
+        let shown = normalize(&link.text).to_lowercase();
+        let shows = |value: &str| !value.is_empty() && shown.contains(value);
+        let key = url_key(&target);
+        let shown_ok = !(shows(&email) && mail.is_none())
+            && !(shows(&normalize(contact.phone.trim()).to_lowercase()) && tel.is_none())
+            && profiles
+                .iter()
+                .all(|profile| !shows(profile) || (web && is_under(&key, profile)));
+        if !target_ok || !shown_ok {
+            findings.add(
+                Rule::ContactDetails,
+                &link.target,
+                format!("a link showing \"{}\"", link.text),
+            );
+        }
+    }
+}
+
+fn check_contact(
+    text: &RenderedText,
+    document: &Document,
+    facts: &Facts,
+    known: &Known,
+    findings: &mut Findings,
+) {
+    let email = facts.contact.email.trim().to_lowercase();
+    // The targets have their own rule. The rest of the metadata is text like any other.
+    let metadata = text
+        .metadata
+        .iter()
+        .filter(|item| !text.links.iter().any(|link| link.target == **item))
+        .map(|item| normalize(item));
+    for said in std::iter::once(document.body.clone()).chain(metadata) {
+        let (emails, urls) = addresses(&said);
+        for found in emails {
+            let key: String = found.split_whitespace().collect::<String>().to_lowercase();
+            if key != email && !known.phrases.contains(&key) {
+                findings.add(Rule::ContactDetails, &found, found.clone());
+            }
+        }
+        for found in urls {
+            if !url_allowed(&found, facts, known) {
+                findings.add(Rule::ContactDetails, &found, found.clone());
+            }
+        }
+    }
+    check_links(text, facts, findings);
+}
+
+/// The URLs in `text` that the facts don't vouch for, as written there. Each one, added to
+/// `allowed_tokens`, passes the check.
+pub fn unverified_urls(text: &str, facts: &Facts) -> Vec<String> {
+    let known = Known::new(facts);
+    let (_, urls) = addresses(&normalize(text));
+    urls.into_iter()
+        .filter(|url| !url_allowed(url, facts, &known))
+        .collect()
+}
+
 /// Judges a rendered document against the facts. `previous` is the parent revision's text, for
 /// `review_tokens`. Linear in the text, for facts of a fixed size.
 pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>) -> Report {
@@ -1126,8 +1323,11 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
     };
     let body = known.mask_contact(&document.body);
     let metadata = known.mask_contact(&document.metadata);
+    check_bidi(text, &mut findings);
+    check_contact(text, &document, facts, &known, &mut findings);
     for masked in [&body, &metadata] {
         check_numbers(masked, &known, &mut findings);
+        check_digit_lookalikes(masked, &known, &mut findings);
         check_mixed_script(masked, &known, &mut findings);
         let prepared = prepare_for_words(masked);
         check_number_words(&prepared, &known, &mut findings);
@@ -1148,6 +1348,13 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
             Rule::HiddenText,
             run,
             "white, tiny, clipped or off-page text: a CV shows everything it says".to_owned(),
+        );
+    }
+    for run in &text.transformed {
+        findings.add(
+            Rule::Transform,
+            run,
+            "rotated, mirrored, skewed or stretched text can draw as something else".to_owned(),
         );
     }
 

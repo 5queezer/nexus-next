@@ -175,3 +175,21 @@ async fn a_crash_and_garbage_are_worker_errors() {
         );
     }
 }
+
+/// A worker never sends this much: `compile` refuses a larger result itself. So the parent, which
+/// holds it all in memory, doesn't read further.
+#[tokio::test]
+async fn too_much_output_is_cut_off() {
+    let scratch = scratch();
+    let exe = script(
+        scratch.path(),
+        "cat >/dev/null\nhead -c 20971520 /dev/zero",
+    );
+    let result = renderer(exe, u64::MAX, Duration::from_secs(20))
+        .render(request())
+        .await;
+    assert_eq!(
+        result,
+        Err(RenderError::Worker("too much output".to_owned()))
+    );
+}

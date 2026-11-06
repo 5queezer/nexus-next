@@ -360,3 +360,127 @@ async fn limits_without_a_child() {
         Err(RenderError::TooManyPages)
     );
 }
+
+/// Right-to-left text needs no control characters: the Unicode algorithm orders it.
+#[tokio::test]
+async fn natural_right_to_left_text_passes() {
+    let facts = facts_en();
+    for body in [
+        "Spricht auch שלום עולם.",
+        "#set text(lang: \"he\")\nשלום עולם, Kubernetes.",
+        "#text(dir: rtl)[שלום עולם]",
+        "#set text(dir: rtl)\nשלום עולם",
+        "שלום 2019 עולם, 2019.",
+        "#set text(lang: \"ar\")\nمرحبا 2019 بالعالم.",
+        "مرحبا ٢٠١٩",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+#[tokio::test]
+async fn translation_and_a_uniform_scale_stay_readable() {
+    let facts = facts_en();
+    for body in [
+        "#scale(150%)[Work]",
+        "#scale(50%, reflow: true)[#text(size: 21pt)[Work]]",
+        "#rotate(0deg)[Work]",
+        "#rotate(360deg)[Work]",
+        "#move(dx: 1cm, dy: 1pt)[Work]",
+        "#scale(x: 100%, y: 100%)[Work]",
+        "#block(clip: true)[Work]",
+        "#box(clip: true, height: 1.5em)[Gap]",
+        "#place(bottom + right)[Work]",
+        "#super[Work] and #sub[work]",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+/// Finding 11: what a CV says about its owner's contact details and projects must keep working.
+#[tokio::test]
+async fn honest_links_and_skills_pass() {
+    let mut facts = facts_en();
+    facts
+        .allowed_tokens
+        .push("docs.example.org/guide".to_owned());
+    facts.vocabulary.push("status.example.com".to_owned());
+    for body in [
+        "#contact()",
+        "#project(\"Pallet\", stack: \"Rust\", url: \"example.org/pallet\")[A tracker.]",
+        "#project(\"Pallet\", url: \"https://github.com/someone/pallet\")[A tracker.]",
+        "#link(\"https://example.org/pallet\")[Pallet]",
+        "#link(\"https://github.com/maraexample\")[github.com/maraexample]",
+        "#link(\"https://www.github.com/maraexample/\")[github.com/maraexample]",
+        "#link(\"https://github.com/maraexample/pallet\")[github.com/maraexample/pallet]",
+        "#link(\"mailto:MARA@example.org\")[mara\\@example.org]",
+        "#link(\"tel:+491705550137\")[+49 170 5550137]",
+        "Code at github.com/maraexample/pallet and https://github.com/maraexample.",
+        "See docs.example.org/guide and https://status.example.com.",
+        "#skills(\"Web\")[Node.js, Next.js/React, ASP.NET, ADO.NET/EF, socket.io, Vue.js, net/http]",
+        "#skills(\"Other\")[e.g. this, i.e. that, C\\#/.NET, CI/CD, I/O, a.m., z.B. so]",
+        "Rust \\@ home, on call via pager.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+#[tokio::test]
+async fn words_like_digits_pass_when_they_are_words() {
+    let mut facts = facts_en();
+    facts.vocabulary.push("Ill".to_owned());
+    for body in [
+        "Tuned IO on the routing nodes.",
+        "Improved I/O by 40%.",
+        "Improved IO latency.",
+        "Ran CI for days.",
+        "IO, 40% of it.",
+        "Oil prices.",
+        "I worked for days.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+/// Finding 15: facts that are valid must render, from the generated source, without an edit.
+#[tokio::test]
+async fn valid_facts_with_odd_shapes_render() {
+    let mut no_title = facts_en();
+    no_title.employment[0].title = String::new();
+    let mut no_degree = facts_en();
+    no_degree.education[0].qualification = String::new();
+    let mut long_title = facts_en();
+    long_title.employment[0].title =
+        "Software Engineer, Cloud Infrastructure and Platform Reliability".to_owned();
+    let mut longer_title = facts_en();
+    longer_title.employment[0].title =
+        "Software Engineer, Cloud Infrastructure and Platform Reliability, Developer Experience and Internal Tooling for the Whole Company Across All Regions".to_owned();
+    for facts in [no_title, no_degree, long_title, longer_title] {
+        let source = default_source(&facts);
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+        let full = source_from_profile(&content_en());
+        let report = render_and_check(&full, &facts).await;
+        clean(&report, &full);
+    }
+    let mut no_title = facts_en();
+    no_title.employment[0].title = String::new();
+    let rendered = render(&default_source(&no_title), &no_title).await.unwrap();
+    assert!(
+        rendered
+            .text
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Brightpath Logistics · Hamburg 03/2019")),
+        "no dangling separator: {:?}",
+        rendered.text.lines
+    );
+}
