@@ -887,7 +887,7 @@ async fn generate_keeps_a_document_another_application_still_links() {
             ids
         }
     };
-    assert_eq!(linked_to(&b).await, [shared.clone()]);
+    assert_eq!(linked_to(&b).await, std::slice::from_ref(&shared));
     assert_eq!(
         linked_to(&a).await,
         [second["documentId"].as_str().unwrap().to_owned()]
