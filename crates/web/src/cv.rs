@@ -392,6 +392,8 @@ struct VariantQuery {
 #[derive(Default)]
 struct Outcome {
     flash: Option<Flash>,
+    /// `done` from the query, which is anyone's to send: see [`done_notice`].
+    done: Option<String>,
     violations: Vec<Value>,
     diagnostics: Vec<Value>,
     typed_source: Option<String>,
@@ -422,17 +424,28 @@ async fn variant_page(
     Extension(FormToken(token)): Extension<FormToken>,
 ) -> Result<Response, PageError> {
     let outcome = Outcome {
-        flash: query.done.as_deref().and_then(done_notice),
+        done: query.done,
         ..Outcome::default()
     };
     render_variant(&cv, &variant, query.page.unwrap_or(1), &token, outcome).await
 }
 
-fn done_notice(done: &str) -> Option<Flash> {
-    let text = match done {
-        "saved" => "Saved and approved: you wrote this, and you are looking at it.",
-        "reverted" => "Reverted: the old text is now a new revision.",
-        "approved" => "Approved. The PDF of this revision now has no stamp.",
+/// What a form just sent did. An agent sends the owner links, so the query claims nothing by itself: a
+/// notice shows only when the head says the same. `origin` is the head's on this page, and no tool call
+/// can send the ones asked for here.
+fn done_notice(done: &str, approved: bool, origin: Option<&str>) -> Option<Flash> {
+    let text = match (done, approved, origin) {
+        ("saved", true, Some("dashboard")) => {
+            "Saved and approved: you changed text you had approved, so the change is yours."
+        }
+        ("saved", false, Some("dashboard")) => {
+            "Saved as a draft: it started from text that isn't approved. Read it under Approval, and approve it there."
+        }
+        ("reverted", true, Some("revert")) => "Reverted: the old text is now a new revision.",
+        ("reverted", false, Some("revert")) => {
+            "Reverted: the old text is now a new revision. It isn't the text you last approved, so read it under Approval and approve it to use it."
+        }
+        ("approved", true, _) => "Approved. The PDF of this revision now has no stamp.",
         _ => return None,
     };
     Some(Flash {
@@ -482,6 +495,16 @@ async fn render_variant(
         .cloned()
         .unwrap_or_default();
     let voice_config = cv.voice.config();
+    let head_origin = items
+        .first()
+        .filter(|_| page == 1)
+        .and_then(|revision| revision["origin"].as_str());
+    let done = outcome
+        .done
+        .as_deref()
+        .and_then(|done| done_notice(done, approved, head_origin));
+    // A save approves only on an approved base, so the button can say which this one does.
+    let saves_approved = approved && expected == head;
     let body = view! {
         <p><a class="crumb" href="/cv">"\u{2190} CV"</a></p>
         <div class="hero">
@@ -503,7 +526,7 @@ async fn render_variant(
                     <a href="/cv/facts">"Check and lock them"</a>
                 </p>
             })}
-            {outcome.typed_source.is_none().then(|| flash_view(outcome.flash.as_ref()))}
+            {outcome.typed_source.is_none().then(|| flash_view(outcome.flash.as_ref().or(done.as_ref())))}
             <p class="banner" id="cv-live-note" role="status" hidden></p>
             {approval_view(variant, token, &review)}
             <div class="cv-grid">
@@ -511,7 +534,7 @@ async fn render_variant(
                     {preview_view(variant, head, approved)}
                     {voice_view(variant, voice_config, token)}
                 </div>
-                {editor_view(variant, token, &text, expected, &outcome)}
+                {editor_view(variant, token, &text, expected, saves_approved, &outcome)}
             </div>
             {revisions_view(variant, token, head, page, &revisions, &items, cv.tz)}
         </div>
@@ -687,7 +710,7 @@ fn approval_view(
                 |at| format!("Compared with revision {at}, the last you approved, however many drafts came between."),
             );
             let action = if review.revision == 0 {
-                view! { <p class="hint">"This is the starting text, not stored yet. Saving it below stores and approves it."</p> }.into_any()
+                view! { <p class="hint">"This is the starting text, not stored yet. Saving it below stores it as a draft, for you to read and approve here."</p> }.into_any()
             } else if !review.locked {
                 view! {
                     <p class="hint">"You can approve once the facts are locked. " <a href="/cv/facts">"Check and lock them"</a></p>
@@ -705,17 +728,32 @@ fn approval_view(
                 }
                 .into_any()
             };
+            // The words a reader gets match the baseline, and the source doesn't: `#strike`, or a job
+            // set nearly invisible, reads as nothing changed.
+            let looks_only = review.baseline.is_some()
+                && review_diff(review.baseline.as_deref(), &review.rendered_text)
+                    .iter()
+                    .all(|line| line.change == LineChange::Same);
             view! {
-                <p>"An agent wrote or changed this. Nothing leaves here as a final CV until you approve exactly this text."</p>
+                <p>"This revision isn't the text you last approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
                 {(!review.items.is_empty()).then(|| view! {
                     <h3>"Check these first"</h3>
                     {review_items_view(&review.items)}
                 })}
                 <h3>"What a reader sees"</h3>
                 <p class="hint">{against}</p>
-                {rendered_diff_view(review)}
+                {if looks_only {
+                    view! {
+                        <p class="banner warn" id="cv-looks-only" role="status">
+                            "The wording is unchanged, but the source isn't. What changed is how it looks: read the source below, and look at the picture."
+                        </p>
+                    }
+                    .into_any()
+                } else {
+                    rendered_diff_view(review).into_any()
+                }}
                 {action}
-                <details>
+                <details open=looks_only>
                     <summary>"Source changes"</summary>
                     {diff_view(&review.source_diff)}
                 </details>
@@ -809,6 +847,7 @@ fn editor_view(
     token: &str,
     text: &str,
     expected: i64,
+    saves_approved: bool,
     outcome: &Outcome,
 ) -> impl IntoView + use<> {
     view! {
@@ -828,7 +867,6 @@ fn editor_view(
                         rows="24"
                         spellcheck="false"
                         autocapitalize="off"
-                        data-kept=outcome.typed_source.is_some().then_some("1")
                     >{views::textarea_text(text)}</textarea>
                 </label>
                 <label>"What changed"
@@ -840,7 +878,9 @@ fn editor_view(
                         placeholder="Edited by hand"
                     />
                 </label>
-                <button type="submit">"Save and approve as a new revision"</button>
+                <button type="submit" id="cv-save">
+                    {if saves_approved { "Save and approve as a new revision" } else { "Save draft" }}
+                </button>
             </form>
         </section>
     }
@@ -1035,9 +1075,9 @@ async fn save(
     }
     let base_source = base.value["source"].as_str().unwrap_or_default();
     // The caller is what grants this: the owner's session, in this handler. Not `origin`, which is
-    // text any caller can send.
+    // text any caller can send. It approves only on an approved base, and otherwise stores a draft.
     let told = told(
-        owner::save_as_approved(
+        owner::save(
             cv.mcp.clone(),
             &whole_source_edit(&variant, expected, base_source, &source, &summary),
         )

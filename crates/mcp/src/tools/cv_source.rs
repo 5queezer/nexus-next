@@ -43,6 +43,9 @@ const MAX_DIFF_BYTES_PER_PAGE: usize = 1024 * 1024;
 /// Past this a diff gets coarser, not wrong. A page holds up to 50 of them, on a runtime thread.
 const DIFF_TIMEOUT: Duration = Duration::from_millis(200);
 const RESERVED_VARIANT_PREFIX: &str = "application-";
+/// Origins that say the owner acted, or that the revert tool did. A page shows them as such, so a tool
+/// call can't send them: the owner's own paths and `revert_cv` write them.
+const RESERVED_ORIGINS: [&str; 4] = ["dashboard", "revert", "cli", "lock"];
 
 pub(super) fn error_with(code: &str, details: Value) -> CallToolResult {
     let mut error = json!({"code": code});
@@ -109,15 +112,19 @@ pub(super) fn state_name(approved: bool) -> &'static str {
     if approved { "approved" } else { "draft" }
 }
 
-/// A source is approved when the owner has approved exactly it under exactly these facts, and the
-/// facts are locked. Computed each time: never stored on a revision, never passed by a caller.
+/// A source is approved in a variant when it is the text the owner approved there last, or for a
+/// variant with no approval of its own, text still standing as approved elsewhere, under exactly these
+/// facts, and the facts are locked. Computed each time: never stored on a revision, never passed by a
+/// caller. `variant_id` is none for a variant that doesn't exist yet.
 pub(super) async fn is_approved(
     conn: &mut SqliteConnection,
     state: &FactsState,
+    variant_id: Option<i64>,
     source_sha256: &str,
 ) -> nexus_core::Result<bool> {
     Ok(state.is_locked()
-        && approvals::is_approved(conn, source_sha256, &facts_sha256(&state.facts)).await?)
+        && approvals::is_approved(conn, variant_id, source_sha256, &facts_sha256(&state.facts))
+            .await?)
 }
 
 /// `state` and what comes with it, for a reply about a revision.
@@ -409,7 +416,13 @@ pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(base) => base,
         Err(missing) => return Ok(missing.error()),
     };
-    let approved = is_approved(&mut conn, &state, &sha256_hex(base.source.as_bytes())).await?;
+    let approved = is_approved(
+        &mut conn,
+        &state,
+        Some(base.variant.id),
+        &sha256_hex(base.source.as_bytes()),
+    )
+    .await?;
     // The owner's banned phrases stay in the database: an agent only hears of one it has used.
     let mut facts = serde_json::to_value(&state.facts).expect("facts serialize");
     if let Some(facts) = facts.as_object_mut() {
@@ -491,9 +504,10 @@ pub(super) struct Known {
 pub(super) async fn known_to_owner(
     conn: &mut SqliteConnection,
     variant: Option<&Variant>,
+    facts: &Facts,
 ) -> nexus_core::Result<Known> {
     let approved = match variant {
-        Some(variant) => approvals::last_approved(&mut *conn, variant)
+        Some(variant) => approvals::last_approved(&mut *conn, variant, &facts_sha256(facts))
             .await?
             .map(|(text, _)| text),
         None => None,
@@ -507,7 +521,8 @@ pub(super) async fn known_to_owner(
 }
 
 fn valid_new_variant_name(name: &str) -> bool {
-    !name.is_empty()
+    // A browser resolves `.` and `..` away, so a page of that name could never be opened.
+    !name.chars().all(|c| c == '.')
         && !name.starts_with(RESERVED_VARIANT_PREFIX)
         && name
             .chars()
@@ -518,8 +533,9 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
     patch_as(ctx, args, None).await
 }
 
-/// `approved_by` is for the owner's own edit, which they are looking at as they save it. Only the web
-/// handler passes it: no tool argument and no `origin` reaches it.
+/// `approved_by` is for the owner's own edit. It approves only if the base was approved, because only
+/// then is the whole difference theirs: a save on an agent's draft stays a draft. Only the web handler
+/// passes it: no tool argument and no `origin` reaches it.
 pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) -> ToolResult {
     let name = req_str(args, "variant");
     let expected = args["expectedRevision"].as_i64().unwrap_or_default();
@@ -527,11 +543,18 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
     let summary = req_str(args, "summary");
     let origin = req_str(args, "origin");
     let edits = args["edits"].as_array().map_or(&[][..], Vec::as_slice);
+    if approved_by.is_none()
+        && RESERVED_ORIGINS
+            .iter()
+            .any(|reserved| origin.trim().eq_ignore_ascii_case(reserved))
+    {
+        return Ok(code_error("cv_origin_reserved"));
+    }
     let state = match locked_facts(ctx).await? {
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let (base, known) = {
+    let (base, known, base_approved) = {
         let mut conn = ctx.state.db.conn().await?;
         if create_from.is_some() {
             if !valid_new_variant_name(name) {
@@ -548,8 +571,15 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
         };
         // A variant made with `createFrom` has no approved text of its own yet.
         let own = create_from.is_none().then_some(&base.variant);
-        let known = known_to_owner(&mut conn, own).await?;
-        (base, known)
+        let known = known_to_owner(&mut conn, own, &state.facts).await?;
+        let base_approved = is_approved(
+            &mut conn,
+            &state,
+            Some(base.variant.id),
+            &sha256_hex(base.source.as_bytes()),
+        )
+        .await?;
+        (base, known, base_approved)
     };
     if base.number != expected {
         return Ok(conflict(expected, base.number));
@@ -597,7 +627,7 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
         },
     )
     .await?;
-    if let Some(approved_by) = approved_by {
+    if let Some(approved_by) = approved_by.filter(|_| base_approved) {
         approvals::record(
             &mut tx,
             &NewApproval {
@@ -611,7 +641,7 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
         )
         .await?;
     }
-    let approved = is_approved(&mut tx, &state, &revision.source_sha256).await?;
+    let approved = is_approved(&mut tx, &state, Some(variant_id), &revision.source_sha256).await?;
     tx.commit().await?;
     publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
@@ -669,7 +699,7 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         if head.number != expected {
             return Ok(conflict(expected, head.number));
         }
-        let known = known_to_owner(&mut conn, Some(&head.variant)).await?;
+        let known = known_to_owner(&mut conn, Some(&head.variant), &state.facts).await?;
         match resolve(&mut conn, &state.facts, name, Some(to)).await? {
             Ok(target) => (head, target, known),
             Err(missing) => return Ok(missing.error()),
@@ -702,7 +732,13 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         },
     )
     .await?;
-    let approved = is_approved(&mut tx, &state, &revision.source_sha256).await?;
+    let approved = is_approved(
+        &mut tx,
+        &state,
+        Some(head.variant.id),
+        &revision.source_sha256,
+    )
+    .await?;
     tx.commit().await?;
     publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
@@ -733,7 +769,7 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
         let mut item = json!({
             "revision": revision.number,
             "sourceSha256": revision.source_sha256,
-            "state": state_name(is_approved(&mut conn, &facts, &revision.source_sha256).await?),
+            "state": state_name(is_approved(&mut conn, &facts, Some(variant.id), &revision.source_sha256).await?),
             "factsVersion": revision.facts_version,
             "origin": revision.origin,
             "summary": revision.summary,
@@ -861,11 +897,17 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
             Ok(base) => base,
             Err(missing) => return Ok(missing.error()),
         };
-        let approved = is_approved(&mut conn, &state, &sha256_hex(base.source.as_bytes())).await?;
+        let approved = is_approved(
+            &mut conn,
+            &state,
+            Some(base.variant.id),
+            &sha256_hex(base.source.as_bytes()),
+        )
+        .await?;
         if application.is_some() && !approved {
             return Ok(approval_required(&base.variant.name, base.number));
         }
-        let known = known_to_owner(&mut conn, Some(&base.variant)).await?;
+        let known = known_to_owner(&mut conn, Some(&base.variant), &state.facts).await?;
         (state, base, application, approved, known)
     };
     let wants_pdf = approved || stamped_pdf;
@@ -954,8 +996,9 @@ pub(crate) async fn review(
         Err(missing) => return Ok(Err(missing.error())),
     };
     let source_sha256 = sha256_hex(base.source.as_bytes());
-    let approved = is_approved(&mut conn, &state, &source_sha256).await?;
-    let last = approvals::last_approved(&mut conn, &base.variant).await?;
+    let approved = is_approved(&mut conn, &state, Some(base.variant.id), &source_sha256).await?;
+    let last =
+        approvals::last_approved(&mut conn, &base.variant, &facts_sha256(&state.facts)).await?;
     let (baseline, baseline_revision) =
         last.map_or((None, None), |(text, at)| (Some(text), Some(at)));
     let baseline_source = match baseline_revision {
@@ -964,7 +1007,7 @@ pub(crate) async fn review(
             .map(|revision| revision.source),
         None => None,
     };
-    let known = known_to_owner(&mut conn, None).await?;
+    let known = known_to_owner(&mut conn, None, &state.facts).await?;
     drop(conn);
     let mut review = Review {
         variant: base.variant.name.clone(),

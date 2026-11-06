@@ -186,15 +186,13 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
         .unwrap();
     assert_eq!(history, 2, "the first profile write, then the lock");
     let source_hash = nexus_core::blob::sha256_hex(b"= CV");
-    let still_approved = cv_approvals::is_approved(
-        &mut conn,
-        &source_hash,
-        &cv_approvals::facts_sha256(&state.facts),
-    )
-    .await
-    .unwrap();
+    let facts_hash = cv_approvals::facts_sha256(&state.facts);
+    let still_approved =
+        cv_approvals::is_approved(&mut conn, Some(variant.id), &source_hash, &facts_hash)
+            .await
+            .unwrap();
     assert!(still_approved, "an approval survives a restore");
-    let (text, at) = cv_approvals::last_approved(&mut conn, &variant)
+    let (text, at) = cv_approvals::last_approved(&mut conn, &variant, &facts_hash)
         .await
         .unwrap()
         .unwrap();

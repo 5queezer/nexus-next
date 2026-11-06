@@ -1,5 +1,4 @@
-//! What only the owner can do to a CV: approve it, save their own edit as approved, and download a
-//! stamped draft. Plain functions for the web handlers and `nexus cv-facts`. None of this is a tool:
+//! What only the owner can do to a CV: approve it, save their own edit, and download a stamped draft. Plain functions for the web handlers and `nexus cv-facts`. None of this is a tool:
 //! `tools/list` names nothing here and no argument of a tool call reaches it, which
 //! `crates/server/tests/cv_gate.rs` tests. Callers must have established the owner first.
 
@@ -76,9 +75,10 @@ pub async fn approve(
     outcome(approved.await)
 }
 
-/// The owner's edit on the dashboard, which they are looking at as they save it: stored and approved
-/// in one step. `args` are `patch_cv`'s, and validated the same.
-pub async fn save_as_approved(state: Arc<McpState>, args: &Value) -> CallToolResult {
+/// The owner's edit on the dashboard. Stored and approved in one step if its base was approved, since
+/// the whole difference is then theirs. On a draft it stores a draft, for the review like any other.
+/// `args` are `patch_cv`'s, and validated the same.
+pub async fn save(state: Arc<McpState>, args: &Value) -> CallToolResult {
     let schema = all_tools()
         .iter()
         .find(|tool| tool["name"] == "patch_cv")

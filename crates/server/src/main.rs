@@ -177,7 +177,25 @@ fn tool_failure(result: &nexus_mcp::CallToolResult) -> anyhow::Error {
         .first()
         .and_then(|block| serde_json::to_value(block).ok());
     let text = said.as_ref().and_then(|block| block["text"].as_str());
-    anyhow::anyhow!("{}", text.unwrap_or("it failed"))
+    anyhow::anyhow!("{}", printable(text.unwrap_or("it failed")))
+}
+
+/// `text` for the owner's terminal. An agent can write nearly all of what these commands print, and a
+/// control character could rewrite what the owner reads before confirming it. Line breaks stay.
+fn printable(text: &str) -> String {
+    let unsafe_to_print = |c: char| {
+        (c.is_control() && c != '\n')
+            || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    };
+    text.chars()
+        .map(|c| {
+            if unsafe_to_print(c) {
+                c.escape_debug().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> anyhow::Result<()> {
@@ -211,15 +229,20 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
         Some(at) => println!("compared with revision {at}, the last you approved:"),
         None => println!("nothing is approved yet, so this is the whole CV:"),
     }
-    for line in review_diff(review.baseline.as_deref(), &review.rendered_text) {
+    let lines = review_diff(review.baseline.as_deref(), &review.rendered_text);
+    for line in &lines {
         match line.change {
-            LineChange::Added => println!("+ {}", line.text),
-            LineChange::Removed => println!("- {}", line.text),
+            LineChange::Added => println!("+ {}", printable(&line.text)),
+            LineChange::Removed => println!("- {}", printable(&line.text)),
             LineChange::Same => {}
         }
     }
+    if lines.iter().all(|line| line.change == LineChange::Same) {
+        println!("The wording is unchanged, but the source isn't. Read how it changed:");
+        println!("{}", printable(&review.source_diff));
+    }
     for item in &review.items {
-        println!("check {:?}: {}", item.rule, item.token);
+        println!("check {:?}: {}", item.rule, printable(&item.token));
     }
     if !confirm {
         bail!(
@@ -270,16 +293,23 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
         CvFactsAction::Lock { confirm } => {
             let preview = cv_facts::lock_preview(&mut tx).await?;
             for change in &preview.changes {
-                println!("changed {}: {} -> {}", change.field, change.old, change.new);
+                println!(
+                    "changed {}: {} -> {}",
+                    printable(&change.field),
+                    printable(&change.old),
+                    printable(&change.new)
+                );
             }
             for change in &preview.wording {
                 println!(
                     "wording changed {}: {} -> {}",
-                    change.field, change.old, change.new
+                    printable(&change.field),
+                    printable(&change.old),
+                    printable(&change.new)
                 );
             }
             for token in &preview.added {
-                println!("added to allowed tokens: {token}");
+                println!("added to allowed tokens: {}", printable(token));
             }
             let hash = preview.hash();
             if preview.needs_confirmation() && confirm.as_deref() != Some(hash.as_str()) {

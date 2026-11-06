@@ -133,7 +133,8 @@ pub async fn set_owner_facts(
 }
 
 /// One fact field or piece of wording that differs from the last locked state. `old` and `new` are quoted and escaped, so
-/// that an agent's text can't rewrite the owner's terminal, and `(none)` when there is no value.
+/// that an agent's text can't rewrite the owner's terminal, and `(none)` when there is no value. `field`
+/// can hold an ID an agent chose, raw: escape it when printing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange {
     pub field: String,

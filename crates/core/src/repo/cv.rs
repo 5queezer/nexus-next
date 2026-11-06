@@ -168,16 +168,33 @@ pub async fn get_profile(conn: &mut SqliteConnection) -> Result<Option<CvProfile
     }))
 }
 
-fn strings_in<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
+/// Every value in `value`, each with the path that says what part it plays: the same words in other
+/// places say something else. Keys in order, since their order says nothing.
+fn pieces_of(path: &str, value: &Value, out: &mut Vec<(String, String)>) {
     match value {
-        Value::String(text) => out.push(text),
-        Value::Array(items) => items.iter().for_each(|item| strings_in(item, out)),
-        Value::Object(map) => map.values().for_each(|item| strings_in(item, out)),
-        _ => {}
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                pieces_of(&format!("{path}[{index}]"), item, out);
+            }
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            for key in keys {
+                pieces_of(&format!("{path}.{key}"), &map[key.as_str()], out);
+            }
+        }
+        Value::String(text) => out.push((path.to_owned(), text.clone())),
+        Value::Number(number) => out.push((path.to_owned(), number.to_string())),
+        Value::Bool(flag) => out.push((path.to_owned(), flag.to_string())),
+        Value::Null => {}
     }
 }
 
-/// Every piece of a profile's wording, with the field it sits in.
+/// Every piece of a profile's wording, with its path: a regroup, a moved string or a changed `tier` is
+/// a change to the generate comparison, the lock's list and its hash alike. An entry's path holds its
+/// position and ID, because IDs can repeat, and it counts even with no words, since leaving it out
+/// changes what a CV can show. An ID is raw here: print these through something that escapes it.
 fn wording_pieces(
     profile: &str,
     skills: &Value,
@@ -185,22 +202,25 @@ fn wording_pieces(
     projects: &Value,
 ) -> Vec<(String, String)> {
     let mut pieces = vec![("profile".to_owned(), profile.to_owned())];
-    let mut add = |field: String, value: &Value| {
-        let mut strings = Vec::new();
-        strings_in(value, &mut strings);
-        pieces.extend(strings.into_iter().map(|s| (field.clone(), s.to_owned())));
-    };
-    add("skills".to_owned(), skills);
-    for entry in experience.as_array().map_or(&[][..], Vec::as_slice) {
+    pieces_of("skills", skills, &mut pieces);
+    let entries = experience.as_array().map_or(&[][..], Vec::as_slice);
+    for (index, entry) in entries.iter().enumerate() {
         let id = entry["id"].as_str().unwrap_or_default();
-        add(format!("experience.{id}.bullets"), &entry["bullets"]);
+        let path = format!("experience[{index}:{id}]");
+        pieces.push((path.clone(), String::new()));
+        let mut wording = entry.as_object().cloned().unwrap_or_default();
+        wording.remove("id");
+        for fact in EXPERIENCE_FACTS {
+            wording.remove(fact);
+        }
+        pieces_of(&path, &Value::Object(wording), &mut pieces);
     }
-    add("projects".to_owned(), projects);
+    pieces_of("projects", projects, &mut pieces);
     pieces
 }
 
 /// A read profile's wording, as [`stored_wording`] has it. Experience there is merged with its facts,
-/// and only `bullets` of it is wording.
+/// which are no wording.
 #[must_use]
 pub fn wording_of(profile: &CvProfile) -> Vec<(String, String)> {
     wording_pieces(

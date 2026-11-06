@@ -100,12 +100,35 @@ fn strings(args: &Args, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A lock confirms wording, not how a call arranges it. Picking from the locked jobs and categories, in
+/// any order, is what the tool is for. A job or category shown twice, or a CV with no job, is something
+/// the owner hasn't seen, so it needs reading like any other draft.
+fn plain_selection(profile: &CvProfile, jobs: &[String], categories: &[String]) -> bool {
+    let distinct = |names: &[String]| {
+        let mut sorted: Vec<&String> = names.iter().collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        sorted.len() == names.len()
+    };
+    let entries = profile
+        .experience
+        .0
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    distinct(jobs)
+        && distinct(categories)
+        && jobs
+            .iter()
+            .any(|id| entries.iter().any(|entry| entry["id"] == id.as_str()))
+}
+
 /// How a generated source stands with the owner, under locked facts.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Generated {
     /// The owner approved this text.
     Approved,
-    /// This text comes from just the wording the last lock confirmed, so the lock approved it.
+    /// This text is a plain selection from just the wording the last lock confirmed, and the owner
+    /// hasn't approved anything else in this variant since, so the lock approved it.
     ApprovedByLock,
     /// An agent's wording: a revision to approve, and no document.
     Draft,
@@ -175,12 +198,23 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
     let (standing, known) = {
         let mut conn = ctx.state.db.conn().await?;
         let variant = revisions::get_variant(&mut conn, &name).await?;
-        let known = known_to_owner(&mut conn, variant.as_ref()).await?;
+        let known = known_to_owner(&mut conn, variant.as_ref(), &state.facts).await?;
+        let variant_id = variant.as_ref().map(|variant| variant.id);
+        let owner_approved_here = match variant_id {
+            Some(id) => approvals::newest_approved_by(&mut conn, id, &facts_sha256(&state.facts))
+                .await?
+                .is_some_and(|by| by != "lock"),
+            None => false,
+        };
         let standing = if !state.is_locked() {
             Generated::Unlocked
-        } else if is_approved(&mut conn, &state, &source_sha256).await? {
+        } else if is_approved(&mut conn, &state, variant_id, &source_sha256).await? {
             Generated::Approved
-        } else if profile_override.is_none() && repo::wording_of(&profile) == locked_wording {
+        } else if profile_override.is_none()
+            && repo::wording_of(&profile) == locked_wording
+            && plain_selection(&profile, &experience_ids, &skill_categories)
+            && !owner_approved_here
+        {
             Generated::ApprovedByLock
         } else {
             Generated::Draft

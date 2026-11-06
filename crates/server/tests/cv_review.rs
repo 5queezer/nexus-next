@@ -335,3 +335,96 @@ async fn a_crowd_of_compiles_is_refused_at_once_and_other_tools_keep_working() {
     )
     .await;
 }
+
+/// Finding 7: nothing an agent wrote reaches the owner's terminal raw, in anything these print or ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_an_agent_wrote_reaches_the_owners_terminal_raw() {
+    const ESC: &str = "\u{1b}[2K\r\u{1b}[?7l\u{202e}";
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    let raw = |output: &Output| {
+        let bytes = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(
+            !text.contains(['\u{1b}', '\r', '\u{7}', '\u{202e}']),
+            "raw control characters in {text:?}"
+        );
+        text
+    };
+    let mut hostile = profile();
+    hostile["experience"][0]["id"] = format!("job{ESC}").into();
+    hostile["profile"] =
+        format!("Backend engineer{ESC}, see https://tool.example.test/{ESC}x").into();
+    hostile["skills"] =
+        json!([{"category": format!("Tools{ESC}"), "items": [format!("Rust{ESC}")]}]);
+    hostile["contact"]["location"] = format!("Hamburg{ESC}").into();
+    agent.ok("upsert_cv_profile", hostile).await;
+
+    let refused = cv_facts(&node.dir, &["lock"]);
+    assert!(!refused.status.success());
+    let shown = raw(&refused);
+    assert!(
+        shown.contains("job\\u{1b}[2K"),
+        "still says what is there: {shown}"
+    );
+    assert!(shown.contains("added to allowed tokens"), "{shown}");
+    let hash = shown
+        .split("--confirm ")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap();
+    let locked = cv_facts(&node.dir, &["lock", "--confirm", hash]);
+    assert!(locked.status.success(), "{locked:?}");
+
+    let source = agent.ok("get_cv_source", json!({})).await;
+    let source = source["source"].as_str().unwrap().to_owned();
+    let drafted = format!("{source}\n#\"One{ESC}Two\"\n");
+    let patched = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": 0, "summary": format!("Typo{ESC}"),
+                "edits": [{"oldText": source, "newText": drafted}]}),
+        )
+        .await;
+    assert_eq!(patched["state"], "draft", "{patched}");
+    let read = cv_facts(
+        &node.dir,
+        &["approve", "--variant", "default", "--revision", "1"],
+    );
+    assert!(!read.status.success());
+    raw(&read);
+    let done = cv_facts(
+        &node.dir,
+        &[
+            "approve",
+            "--variant",
+            "default",
+            "--revision",
+            "1",
+            "--confirm",
+        ],
+    );
+    assert!(done.status.success(), "{done:?}");
+    raw(&done);
+
+    // A change only in looks has only the source to show, and this prints that too.
+    let (from, to) = ("#header()", "#strong[#header()]");
+    let looks = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": 1, "summary": "tidy",
+                "edits": [{"oldText": from, "newText": to}]}),
+        )
+        .await;
+    assert_eq!(looks["state"], "draft", "{looks}");
+    let read = cv_facts(
+        &node.dir,
+        &["approve", "--variant", "default", "--revision", "2"],
+    );
+    let shown = raw(&read);
+    assert!(shown.contains("The wording is unchanged"), "{shown}");
+    assert!(shown.contains("+#strong[#header()]"), "{shown}");
+}

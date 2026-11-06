@@ -250,8 +250,8 @@ async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
     );
 
     let (_, _, page) = get(&f.app, "/cv/variants/default?done=saved").await;
-    assert!(page.contains("Saved and approved"), "{page}");
-    assert_eq!(badge(&page), "Approved");
+    assert!(page.contains("Saved as a draft"), "{page}");
+    assert_eq!(badge(&page), "Draft, not approved");
     assert_eq!(editor_text(&page), changed, "the editor holds the head");
     assert_eq!(hidden(&page, "expected"), "1");
     assert!(page.contains("class=\"da\""), "added lines are marked");
@@ -1104,4 +1104,209 @@ async fn editing_sets_only_what_nexus_cv_facts_set_can_and_keeps_typing_on_a_ref
     assert!(page.contains("German without a level"));
     assert!(page.contains("Keep me"), "what was typed stays");
     assert_eq!(facts_row(&f.db).await.version, after.version);
+}
+
+/// Saves the starting text, then approves it: an approved revision 1 to work from.
+async fn approved_start(f: &Fixture) -> String {
+    let (_, source) = head_of(f).await;
+    assert_eq!(save(f, 0, &source).await.0, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let (status, _, _) = post(
+        &f.app,
+        &format!("{VARIANT}/approve"),
+        &[
+            ("csrf", TOKEN),
+            ("revision", &hidden(&page, "revision")),
+            ("sourceSha256", &hidden(&page, "sourceSha256")),
+            ("factsSha256", &hidden(&page, "factsSha256")),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    source
+}
+
+async fn agent_call(f: &Fixture, tool: &str, args: Value) -> nexus_mcp::CallToolResult {
+    nexus_mcp::call_tool(
+        std::sync::Arc::new(f.state.clone()),
+        &[SCOPE_TOOLS],
+        "test",
+        tool,
+        args,
+    )
+    .await
+}
+
+/// Finding 6, as the owner sees it: the button says what a save does, and it does that.
+#[tokio::test]
+async fn the_save_button_says_whether_it_approves_and_a_draft_save_stays_a_draft() {
+    let f = locked().await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains(">Save draft<"), "nothing is approved yet");
+    assert!(!page.contains("Save and approve"), "{page}");
+
+    let (_, source) = head_of(&f).await;
+    let (status, headers, _) = save(&f, 0, &source).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, headers["location"].to_str().unwrap()).await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(page.contains("Saved as a draft"), "{page}");
+    assert!(!page.contains("Saved and approved"), "{page}");
+    assert_eq!(approvals(&f.db).await, 0);
+
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let (status, _, _) = post(
+        &f.app,
+        &format!("{VARIANT}/approve"),
+        &[
+            ("csrf", TOKEN),
+            ("revision", &hidden(&page, "revision")),
+            ("sourceSha256", &hidden(&page, "sourceSha256")),
+            ("factsSha256", &hidden(&page, "factsSha256")),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(
+        page.contains(">Save and approve as a new revision<"),
+        "{page}"
+    );
+
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    let (status, headers, _) = save(&f, 1, &edited).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, headers["location"].to_str().unwrap()).await;
+    assert_eq!(badge(&page), "Approved");
+    assert!(page.contains("Saved and approved"), "{page}");
+}
+
+/// An agent's draft under an owner's old page: the stale editor's save is the conflict it always was.
+#[tokio::test]
+async fn a_stale_editor_gets_the_conflict_and_never_approves_what_landed() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let draft = source.replace(
+        "Built the routing service.",
+        "Holds a Doctorate from Stanford.",
+    );
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "small fix",
+            "edits": [{"oldText": source, "newText": draft}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let edited = source.replace("Backend engineer", "Backend developer");
+    let (status, _, page) = save(&f, 1, &edited).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(page.contains("landed while you were working"), "{page}");
+    assert_eq!(hidden(&page, "expected"), "2");
+    assert!(
+        page.contains(">Save draft<"),
+        "the base is now a draft: {page}"
+    );
+    assert_eq!(approvals(&f.db).await, 1);
+    assert_eq!(revision_rows(&f.db).await.len(), 2);
+}
+
+/// Finding 9: a change only in how text looks never shows Approve under an empty panel.
+#[tokio::test]
+async fn a_change_in_looks_says_so_and_opens_the_source() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("cv-looks-only"), "approved: nothing to say");
+    let changed = source.replace("#education(\"edu-1\")", "#strike[#education(\"edu-1\")]");
+    assert_ne!(changed, source);
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "tidy",
+            "edits": [{"oldText": source, "newText": changed}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains("id=\"cv-looks-only\""), "{page}");
+    assert!(page.contains("The wording is unchanged"), "{page}");
+    assert!(page.contains("<details open"), "{page}");
+    assert!(page.contains("#strike"), "the source diff is on the page");
+
+    // With a real wording change, the source stays folded and nothing is claimed.
+    let (_, now) = head_of(&f).await;
+    let worded = now.replace("Built the routing service.", "Built the routing engine.");
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 2, "summary": "tidy",
+            "edits": [{"oldText": now, "newText": worded}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("cv-looks-only"), "{page}");
+}
+
+/// Finding 16: a link an agent sends can't make the page claim what didn't happen.
+#[tokio::test]
+async fn a_done_banner_shows_only_when_the_state_agrees() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let draft = source.replace("Built the routing service.", "Built the routing engine.");
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "Edited by hand",
+            "edits": [{"oldText": source, "newText": draft}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    for done in ["approved", "saved", "reverted"] {
+        let (_, _, page) = get(&f.app, &format!("{VARIANT}?done={done}")).await;
+        assert_eq!(badge(&page), "Draft, not approved", "{done}");
+        for claim in [
+            "Approved. The PDF",
+            "Saved and approved",
+            "Saved as a draft",
+            "Reverted:",
+        ] {
+            assert!(!page.contains(claim), "{done}: {claim}");
+        }
+    }
+    // On approved text an agent reached by a revert, there is still no saving to speak of.
+    let undone = agent_call(
+        &f,
+        "revert_cv",
+        json!({"toRevision": 1, "expectedRevision": 2}),
+    )
+    .await;
+    assert_ne!(undone.is_error, Some(true));
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?done=saved")).await;
+    assert_eq!(badge(&page), "Approved");
+    assert!(!page.contains("Saved and approved"), "{page}");
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?done=reverted")).await;
+    assert!(page.contains("Reverted:"), "true here: {page}");
+}
+
+/// The dashboard's revert to replaced text is a draft too, and its banner says what to do next.
+#[tokio::test]
+async fn reverting_to_replaced_text_on_the_dashboard_asks_for_approval() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_eq!(save(&f, 1, &edited).await.0, StatusCode::SEE_OTHER);
+    let (status, headers, _) = post(
+        &f.app,
+        &format!("{VARIANT}/revert"),
+        &[("csrf", TOKEN), ("expected", "2"), ("to", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, headers["location"].to_str().unwrap()).await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(page.contains("Reverted:"), "{page}");
+    assert!(page.contains("approve it"), "{page}");
+    assert!(page.contains("Compared with revision 2"), "{page}");
 }

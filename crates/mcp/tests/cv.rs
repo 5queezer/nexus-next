@@ -1106,10 +1106,13 @@ async fn generate_stores_a_document_only_for_what_the_owner_approved() {
     assert_eq!(listed["total"], 3, "the same text adds no revision");
     assert_eq!(listed["revisions"][0]["state"], "approved");
     assert_eq!(listed["revisions"][1]["state"], "draft");
-    assert_eq!(listed["revisions"][2]["state"], "approved");
+    assert_eq!(
+        listed["revisions"][2]["state"], "draft",
+        "what the lock approved here, the owner has now replaced"
+    );
 }
 
-/// Text identical to approved text is approved: no re-approval loop, on any path.
+/// Text identical to the newest approved text is approved: no re-approval loop, on any path.
 #[tokio::test]
 async fn identical_text_is_approved_however_it_arrives() {
     let server = locked_server().await;
@@ -1420,7 +1423,7 @@ async fn nothing_a_caller_says_about_itself_approves() {
         &["mcp:tools"],
         "dashboard",
         "patch_cv",
-        json!({"expectedRevision": 0, "summary": "s", "origin": "dashboard",
+        json!({"expectedRevision": 0, "summary": "s", "origin": "from the dashboard",
             "edits": [{"oldText": "Backend engineer", "newText": "Freight engineer"}]}),
     )
     .await;
@@ -1430,32 +1433,46 @@ async fn nothing_a_caller_says_about_itself_approves() {
 }
 
 #[tokio::test]
-async fn the_owners_save_is_stored_and_approved_in_one_step() {
+async fn the_owners_save_on_approved_text_is_stored_and_approved_in_one_step() {
     let server = locked_server().await;
     let (number, source) = head(&server, "default").await;
     assert_eq!(number, 0);
-    let unchanged = owner::save_as_approved(
+    let unchanged = owner::save(
         server.state.clone(),
         &json!({"variant": "default", "expectedRevision": 0, "summary": "Edited by hand",
             "origin": "dashboard", "edits": [{"oldText": source, "newText": source}]}),
     )
     .await;
     let reply = unchanged.structured_content.unwrap();
-    assert_eq!(reply["state"], "approved", "{reply}");
+    assert_eq!(reply["state"], "draft", "{reply}");
     assert_eq!(
         reply["revision"], 1,
         "the starting text can be stored as it stands"
     );
-    let by: String = sqlx::query_scalar("SELECT approved_by FROM cv_approvals")
-        .fetch_one(server.db.pool())
-        .await
-        .unwrap();
+    owner_approve(&server, "default").await;
+    let edited = owner::save(
+        server.state.clone(),
+        &json!({"variant": "default", "expectedRevision": 1, "summary": "Edited by hand",
+            "origin": "dashboard", "edits": [{"oldText": "Backend engineer", "newText": "Freight engineer"}]}),
+    )
+    .await;
+    let reply = edited.structured_content.unwrap();
+    assert_eq!(
+        (&reply["state"], &reply["revision"]),
+        (&json!("approved"), &json!(2)),
+        "{reply}"
+    );
+    let by: String =
+        sqlx::query_scalar("SELECT approved_by FROM cv_approvals ORDER BY id DESC LIMIT 1")
+            .fetch_one(server.db.pool())
+            .await
+            .unwrap();
     assert_eq!(by, "dashboard");
 
-    let hard = owner::save_as_approved(
+    let hard = owner::save(
         server.state.clone(),
-        &json!({"variant": "default", "expectedRevision": 1, "summary": "s", "origin": "dashboard",
-            "edits": [{"oldText": "Backend engineer", "newText": "A team player"}]}),
+        &json!({"variant": "default", "expectedRevision": 2, "summary": "s", "origin": "dashboard",
+            "edits": [{"oldText": "Freight engineer", "newText": "A team player"}]}),
     )
     .await;
     let refused = hard.structured_content.unwrap();
@@ -1463,7 +1480,7 @@ async fn the_owners_save_is_stored_and_approved_in_one_step() {
         refused["error"]["code"], "cv_fact_violation",
         "an approval overrides no hard rule"
     );
-    assert_eq!(approvals(&server).await, 1);
+    assert_eq!(approvals(&server).await, 2);
 }
 
 /// Hard rules are read again at approval: the owner's approval overrides none of them.
@@ -1741,13 +1758,14 @@ async fn the_transport_carries_a_pdf_at_its_limit() {
     server.call("upsert_cv_profile", profile()).await.ok();
     owner_lock(&server).await;
     let (_, source) = head(&server, "default").await;
-    let saved = owner::save_as_approved(
+    let saved = owner::save(
         server.state.clone(),
         &json!({"variant": "default", "expectedRevision": 0, "summary": "s", "origin": "dashboard",
             "edits": [{"oldText": source, "newText": source}]}),
     )
     .await;
     assert_ne!(saved.is_error, Some(true), "{saved:?}");
+    owner_approve(&server, "default").await;
     let done = render(&server, json!({})).await;
     assert!(!done.is_error, "{:?}", done.content.first());
     let returned = STANDARD
@@ -1762,4 +1780,559 @@ async fn the_transport_carries_a_pdf_at_its_limit() {
     )
     .await;
     assert!(!saved.is_error);
+}
+
+// The second gate review, and the rule that a replaced approval stops counting.
+
+fn generate_all(app: &str) -> Value {
+    json!({"applicationId": app, "experienceIds": ["brightpath", "harborline"],
+        "skillCategories": ["Languages"], "includeProjects": true})
+}
+
+async fn owner_unlock(server: &Server) {
+    let mut tx = server.db.begin_write().await.unwrap();
+    cv_facts::unlock(&mut tx, "test").await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+async fn lock_preview(server: &Server) -> cv_facts::LockPreview {
+    let mut conn = server.db.conn().await.unwrap();
+    cv_facts::lock_preview(&mut conn).await.unwrap()
+}
+
+async fn document_count(server: &Server) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM documents")
+        .fetch_one(server.db.pool())
+        .await
+        .unwrap()
+}
+
+/// Finding 1: which string plays which part is wording too, on every path that compares it.
+#[tokio::test]
+async fn a_regroup_a_move_or_a_tier_is_a_change_of_wording_everywhere() {
+    let cases: [(&str, fn(&mut Value), &str); 8] = [
+        (
+            "a skill moved into another group",
+            |p| {
+                p["skills"] = json!([
+                    {"category": "Languages", "items": ["Rust", "Go", "Tools", "Docker"]},
+                ]);
+            },
+            "skills[0].items[2]",
+        ),
+        (
+            "two skills swapped",
+            |p| p["skills"][0]["items"] = json!(["Go", "Rust"]),
+            "skills[0].items[0]",
+        ),
+        (
+            "a category renamed to another's name",
+            |p| p["skills"][0]["category"] = "Tools".into(),
+            "skills[0].category",
+        ),
+        (
+            "two bullets swapped",
+            |p| {
+                let bullets = p["experience"][0]["bullets"].as_array_mut().unwrap();
+                bullets.swap(0, 1);
+            },
+            "experience[0:brightpath].bullets[0]",
+        ),
+        (
+            "a bullet moved to another job",
+            |p| {
+                let moved = p["experience"][0]["bullets"].as_array_mut().unwrap().pop();
+                p["experience"][1]["bullets"] = json!([moved]);
+            },
+            "experience[1:harborline].bullets[0]",
+        ),
+        (
+            "a tier",
+            |p| p["experience"][0]["tier"] = 3.into(),
+            "experience[0:brightpath].tier",
+        ),
+        (
+            "a job left out with no words of its own",
+            |p| {
+                p["experience"].as_array_mut().unwrap().pop();
+            },
+            "experience[1:harborline]",
+        ),
+        (
+            "a project's parts swapped",
+            |p| {
+                p["projects"][0]["name"] = "Rust".into();
+                p["projects"][0]["stack"] = "tidy".into();
+            },
+            "projects[0].name",
+        ),
+    ];
+    for (name, change, field) in cases {
+        let server = locked_server().await;
+        let mut changed = profile();
+        change(&mut changed);
+        let upserted = server.call("upsert_cv_profile", changed).await;
+        assert!(!upserted.is_error, "{name}: {}", upserted.json());
+        let app = server.application("Acme").await;
+        let generated = server
+            .call("generate_tailored_cv", generate_all(&app))
+            .await;
+        assert_eq!(generated.code(), "cv_approval_required", "{name}");
+        assert_eq!(document_count(&server).await, 0, "{name}");
+        owner_unlock(&server).await;
+        let preview = lock_preview(&server).await;
+        assert!(
+            preview.wording.iter().any(|change| change.field == field),
+            "{name}: {:?}",
+            preview.wording
+        );
+        assert!(preview.needs_confirmation(), "{name}");
+    }
+}
+
+/// The hash names the list, so a regroup after a printout is seen, not confirmed.
+#[tokio::test]
+async fn a_regroup_moves_the_locks_hash() {
+    let server = locked_server().await;
+    owner_unlock(&server).await;
+    let mut once = profile();
+    once["profile"] = "Backend engineer for freight.".into();
+    server.call("upsert_cv_profile", once.clone()).await.ok();
+    let shown = lock_preview(&server).await.hash();
+    once["skills"] = json!([{"category": "Languages", "items": ["Rust", "Go", "Tools", "Docker"]}]);
+    server.call("upsert_cv_profile", once).await.ok();
+    assert_ne!(lock_preview(&server).await.hash(), shown);
+}
+
+/// A row locked before wording had structure shows as changed, and nothing counts as approved by it.
+#[tokio::test]
+async fn wording_locked_as_a_flat_list_shows_as_changed() {
+    let server = locked_server().await;
+    sqlx::query(
+        r#"UPDATE cv_facts SET locked_wording = '[["profile","Backend engineer building freight software."],["skills","Languages"]]'"#,
+    )
+    .execute(server.db.pool())
+    .await
+    .unwrap();
+    let app = server.application("Acme").await;
+    let generated = server
+        .call("generate_tailored_cv", generate_all(&app))
+        .await;
+    assert_eq!(generated.code(), "cv_approval_required");
+    owner_unlock(&server).await;
+    assert!(lock_preview(&server).await.needs_confirmation());
+}
+
+/// A lock approves wording, not arrangement.
+#[tokio::test]
+async fn a_lock_approves_a_plain_selection_and_no_other_arrangement() {
+    let server = locked_server().await;
+    for (name, jobs, categories) in [
+        (
+            "a job twice",
+            json!(["brightpath", "brightpath"]),
+            json!([]),
+        ),
+        ("no jobs", json!([]), json!(["Languages"])),
+        ("only unknown jobs", json!(["ghost"]), json!(["Languages"])),
+        (
+            "a category twice",
+            json!(["brightpath"]),
+            json!(["Tools", "Tools"]),
+        ),
+    ] {
+        let app = server.application(name).await;
+        let reply = server
+            .call(
+                "generate_tailored_cv",
+                json!({"applicationId": app, "experienceIds": jobs, "skillCategories": categories}),
+            )
+            .await;
+        assert_eq!(reply.code(), "cv_approval_required", "{name}");
+    }
+    assert_eq!(document_count(&server).await, 0);
+    for (name, jobs) in [
+        ("as locked", json!(["brightpath", "harborline"])),
+        ("in another order", json!(["harborline", "brightpath"])),
+        ("some of them", json!(["harborline"])),
+    ] {
+        let app = server.application(name).await;
+        let reply = server
+            .call(
+                "generate_tailored_cv",
+                json!({"applicationId": app, "experienceIds": jobs, "skillCategories": ["Tools"]}),
+            )
+            .await;
+        assert_eq!(reply.ok()["message"], "CV generated successfully", "{name}");
+    }
+    assert_eq!(document_count(&server).await, 3);
+}
+
+/// Text A approved, corrected to B and approved: revisions 1 and 2.
+async fn replaced_once(server: &Server) {
+    patch(
+        server,
+        0,
+        "Built the routing service.",
+        "Led a team of 20 engineers.",
+    )
+    .await
+    .ok();
+    owner_approve(server, "default").await;
+    patch(server, 1, "a team of 20", "a team of 12").await.ok();
+    owner_approve(server, "default").await;
+}
+
+async fn revert(server: &Server, to: i64, expected: i64) -> Value {
+    server
+        .call(
+            "revert_cv",
+            json!({"variant": "default", "toRevision": to, "expectedRevision": expected}),
+        )
+        .await
+        .ok()
+}
+
+/// The owner's correction holds: a revert to what they replaced is a draft to read, with the
+/// difference in view, and no path gives a real PDF of the old text by naming its revision.
+#[tokio::test]
+async fn an_approval_the_owner_replaced_stops_counting_in_that_variant() {
+    let server = locked_server().await;
+    replaced_once(&server).await;
+    let app = server.application("Acme").await;
+
+    let reverted = revert(&server, 1, 2).await;
+    assert_eq!(reverted["state"], "draft", "{reverted}");
+    assert_eq!(reverted["approvalPath"], "/cv/variants/default#cv-approval");
+    assert!(
+        item_tokens(&reverted).contains(&"20".to_owned()),
+        "{reverted}"
+    );
+
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert!(!review.approved);
+    assert_eq!(review.baseline_revision, Some(2));
+    assert!(review.baseline.as_deref().unwrap().contains("a team of 12"));
+    assert!(review.rendered_text.contains("a team of 20"));
+
+    let by_number = render(&server, json!({"revision": 1, "previewPages": 1})).await;
+    assert_eq!(by_number.text_json()["state"], "draft");
+    assert!(
+        by_number
+            .content
+            .iter()
+            .all(|block| block["type"] != "resource"),
+        "no real PDF of replaced text"
+    );
+    let head = render(&server, json!({"previewPages": 1})).await;
+    assert!(head.content.iter().all(|block| block["type"] != "resource"));
+    let saved = render(&server, json!({"revision": 1, "saveToApplicationId": app})).await;
+    assert_eq!(saved.text_json()["error"]["code"], "cv_approval_required");
+    assert_eq!(document_count(&server).await, 0);
+
+    let listed = server
+        .call("list_cv_revisions", json!({"variant": "default"}))
+        .await
+        .ok();
+    let states: Vec<&str> = listed["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|revision| revision["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["draft", "approved", "draft"], "newest first");
+
+    // The newest approved text keeps working by its number.
+    let newest = render(&server, json!({"revision": 2, "saveToApplicationId": app})).await;
+    assert_eq!(newest.text_json()["state"], "approved");
+    assert_eq!(document_count(&server).await, 1);
+
+    // Undoing back to the newest approved text needs no tap, which dictation's undo relies on.
+    let undone = revert(&server, 2, 3).await;
+    assert_eq!(undone["state"], "approved", "{undone}");
+    let before = approvals(&server).await;
+    assert_eq!(before, 2, "no approval was written by reverting");
+
+    // The owner can choose the old text again. Only then does it count, and the other stops.
+    assert_eq!(revert(&server, 1, 4).await["state"], "draft");
+    owner_approve(&server, "default").await;
+    assert_eq!(approvals(&server).await, 3);
+    assert_eq!(head_state(&server, "default").await, "approved");
+    let old_again = render(&server, json!({"revision": 1, "previewPages": 0})).await;
+    assert_eq!(old_again.text_json()["state"], "approved");
+    let now_replaced = render(&server, json!({"revision": 2, "previewPages": 0})).await;
+    assert_eq!(now_replaced.text_json()["state"], "draft");
+}
+
+async fn head_state(server: &Server, variant: &str) -> String {
+    let got = server
+        .call("get_cv_source", json!({"variant": variant}))
+        .await
+        .ok();
+    got["state"].as_str().unwrap().to_owned()
+}
+
+/// A variant with no approval of its own takes approved text from elsewhere, unless that text has
+/// been replaced there too: otherwise a new variant would bring back any text ever approved.
+#[tokio::test]
+async fn a_new_variant_takes_approved_text_but_not_replaced_text() {
+    let server = locked_server().await;
+    replaced_once(&server).await;
+    let copied = server
+        .call(
+            "patch_cv",
+            json!({"variant": "platform", "createFrom": "default", "expectedRevision": 2,
+                "edits": [], "summary": "New variant"}),
+        )
+        .await
+        .ok();
+    assert_eq!(copied["state"], "approved", "{copied}");
+
+    let replaced = server
+        .call(
+            "patch_cv",
+            json!({"variant": "older", "createFrom": "default", "expectedRevision": 2,
+                "edits": [{"oldText": "a team of 12", "newText": "a team of 20"}],
+                "summary": "The old text, in a new variant"}),
+        )
+        .await
+        .ok();
+    assert_eq!(replaced["state"], "draft", "{replaced}");
+    let app = server.application("Acme").await;
+    let saved = render(
+        &server,
+        json!({"variant": "older", "saveToApplicationId": app}),
+    )
+    .await;
+    assert_eq!(saved.text_json()["error"]["code"], "cv_approval_required");
+
+    // Once a variant has an approval of its own, only that counts there.
+    owner_approve(&server, "older").await;
+    assert_eq!(head_state(&server, "older").await, "approved");
+    assert_eq!(
+        head_state(&server, "default").await,
+        "approved",
+        "each its own"
+    );
+}
+
+/// An approval under facts the owner has since changed is no baseline: the line it holds may be one
+/// the owner corrected, and would read as unchanged. The whole CV shows instead.
+#[tokio::test]
+async fn an_approval_under_old_facts_is_no_baseline_and_no_approval() {
+    let server = locked_server().await;
+    patch(
+        &server,
+        0,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await
+    .ok();
+    owner_approve(&server, "default").await;
+    owner_set(
+        &server,
+        json!({"languages": [{"name": "German", "level": "B2"}]}),
+    )
+    .await;
+    assert_eq!(head_state(&server, "default").await, "draft");
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert_eq!(review.baseline, None);
+    assert_eq!(review.baseline_revision, None);
+    patch(
+        &server,
+        1,
+        "Built the routing engine.",
+        "Built the routing core.",
+    )
+    .await
+    .ok();
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert_eq!(review.baseline, None);
+    let reverted = revert(&server, 1, 2).await;
+    assert_eq!(reverted["state"], "draft");
+}
+
+/// Generating follows the same rule: wording the owner has replaced doesn't come back by generating
+/// from it, in this application or a new one.
+#[tokio::test]
+async fn generating_from_replaced_wording_is_a_draft() {
+    let server = locked_server().await;
+    let app = server.application("Acme").await;
+    let args = generate_all(&app);
+    server.call("generate_tailored_cv", args.clone()).await.ok();
+
+    let old_bullet = "Built the routing service.";
+    let new_bullet = "Built the routing engine.";
+    owner_unlock(&server).await;
+    let mut corrected = profile();
+    corrected["experience"][0]["bullets"][1] = new_bullet.into();
+    server.call("upsert_cv_profile", corrected).await.ok();
+    owner_lock(&server).await;
+    let second = server.call("generate_tailored_cv", args.clone()).await.ok();
+    assert_eq!(second["message"], "CV generated successfully");
+    let documents = document_count(&server).await;
+
+    // The old wording again, while locked: wording is free, so this is allowed, and it is a draft.
+    let mut back = profile();
+    back["experience"][0]["bullets"][1] = old_bullet.into();
+    server.call("upsert_cv_profile", back).await.ok();
+    let again = server.call("generate_tailored_cv", args).await;
+    assert_eq!(again.code(), "cv_approval_required");
+    let other = server.application("Beta").await;
+    let elsewhere = server
+        .call("generate_tailored_cv", generate_all(&other))
+        .await;
+    assert_eq!(elsewhere.code(), "cv_approval_required");
+    assert_eq!(document_count(&server).await, documents);
+}
+
+/// The lock speaks for the wording, not over the owner's own later approval in that variant.
+#[tokio::test]
+async fn a_lock_does_not_approve_over_the_owners_own_approval_in_a_variant() {
+    let server = locked_server().await;
+    let app = server.application("Acme").await;
+    let variant = format!("application-{app}");
+    let plain = generate_all(&app);
+    server
+        .call("generate_tailored_cv", plain.clone())
+        .await
+        .ok();
+
+    let mut edited = plain.clone();
+    edited["profileOverride"] = "Backend engineer, corrected by hand.".into();
+    let held = server.call("generate_tailored_cv", edited.clone()).await;
+    assert_eq!(held.code(), "cv_approval_required");
+    owner_approve(&server, &variant).await;
+    let approved = server.call("generate_tailored_cv", edited).await.ok();
+    assert_eq!(approved["message"], "CV generated successfully");
+
+    let documents = document_count(&server).await;
+    let back = server.call("generate_tailored_cv", plain.clone()).await;
+    assert_eq!(back.code(), "cv_approval_required");
+    let mut reordered = plain;
+    reordered["experienceIds"] = json!(["harborline", "brightpath"]);
+    let other = server.call("generate_tailored_cv", reordered).await;
+    assert_eq!(other.code(), "cv_approval_required");
+    assert_eq!(document_count(&server).await, documents);
+}
+
+/// Selections of locked wording alternate freely: the lock approved them all.
+#[tokio::test]
+async fn a_lock_keeps_approving_its_own_selections_in_turn() {
+    let server = locked_server().await;
+    let app = server.application("Acme").await;
+    let first = generate_all(&app);
+    let mut second = first.clone();
+    second["experienceIds"] = json!(["harborline", "brightpath"]);
+    for args in [&first, &second, &first] {
+        let reply = server.call("generate_tailored_cv", args.clone()).await;
+        assert_eq!(reply.ok()["message"], "CV generated successfully");
+    }
+}
+
+/// Finding 6: a save approves only where the diff is the owner's own.
+#[tokio::test]
+async fn a_save_approves_only_on_an_approved_base() {
+    let server = locked_server().await;
+    let (_, source) = head(&server, "default").await;
+    let save = async |expected: i64, old: &str, new: &str| {
+        owner::save(
+            server.state.clone(),
+            &json!({"variant": "default", "expectedRevision": expected, "summary": "By hand",
+                "origin": "dashboard", "edits": [{"oldText": old, "newText": new}]}),
+        )
+        .await
+        .structured_content
+        .unwrap()
+    };
+
+    // The starting text isn't approved, whoever wrote the profile.
+    let first = save(0, &source, &source).await;
+    assert_eq!(
+        (&first["state"], &first["revision"]),
+        (&json!("draft"), &json!(1)),
+        "{first}"
+    );
+    assert_eq!(approvals(&server).await, 0);
+
+    // An agent's draft: one word by hand doesn't approve the rest.
+    patch(
+        &server,
+        1,
+        "Built the routing service.",
+        "Holds a Doctorate from Stanford.",
+    )
+    .await
+    .ok();
+    let on_a_draft = save(2, "freight software", "freight systems").await;
+    assert_eq!(on_a_draft["state"], "draft", "{on_a_draft}");
+    assert_eq!(approvals(&server).await, 0);
+
+    // Approved base: the change is the owner's own.
+    owner_approve(&server, "default").await;
+    let on_approved = save(3, "freight systems", "freight platforms").await;
+    assert_eq!(on_approved["state"], "approved", "{on_approved}");
+    let by: Vec<String> = sqlx::query_scalar("SELECT approved_by FROM cv_approvals ORDER BY id")
+        .fetch_all(server.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(by, ["cli", "dashboard"]);
+}
+
+/// Finding 15.
+#[tokio::test]
+async fn a_variant_name_of_only_dots_is_refused() {
+    let server = locked_server().await;
+    for name in [".", "..", "...", "...."] {
+        let reply = server
+            .call(
+                "patch_cv",
+                json!({"variant": name, "createFrom": "default", "expectedRevision": 0,
+                    "edits": [], "summary": "s"}),
+            )
+            .await;
+        assert_eq!(reply.code(), "cv_variant_name_invalid", "{name}");
+    }
+    let dotted = server
+        .call(
+            "patch_cv",
+            json!({"variant": "v1.2", "createFrom": "default", "expectedRevision": 0,
+                "edits": [], "summary": "s"}),
+        )
+        .await;
+    assert!(!dotted.is_error, "{}", dotted.json());
+}
+
+/// Finding 16: these say the owner acted, or that the tool did, so no caller can send them.
+#[tokio::test]
+async fn origins_that_claim_the_owner_are_refused_from_a_tool_call() {
+    let server = locked_server().await;
+    for origin in [
+        "dashboard",
+        "Dashboard",
+        " dashboard ",
+        "revert",
+        "REVERT",
+        "cli",
+        "lock",
+    ] {
+        let reply = server
+            .call(
+                "patch_cv",
+                json!({"expectedRevision": 0, "summary": "Edited by hand", "origin": origin,
+                    "edits": [{"oldText": "Backend engineer", "newText": "Backend developer"}]}),
+            )
+            .await;
+        assert_eq!(reply.code(), "cv_origin_reserved", "{origin}");
+    }
+    assert_eq!(head(&server, "default").await.0, 0, "nothing stored");
+    let free = patch(&server, 0, "Backend engineer", "Backend developer").await;
+    assert_eq!(free.ok()["state"], "draft");
 }

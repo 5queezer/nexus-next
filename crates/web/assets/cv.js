@@ -60,9 +60,26 @@
     }
   }
 
-  // Takes the revision list and head from a fresh copy of this page. An untouched editor follows
-  // the head. One holding someone's typing stays, and its old base makes a save a clear conflict.
-  // `kept` marks text a refused save came back with, which is typing though it looks untouched.
+  // A tap can only approve what the owner asked to see. So a form that arrived with a revision by
+  // itself never goes on the page: the old one goes, and this link in its place loads the new text.
+  function askToRead(revision) {
+    const notice = document.createElement("p");
+    notice.className = "banner warn";
+    notice.id = "cv-approval-stale";
+    notice.setAttribute("role", "status");
+    const link = document.createElement("a");
+    link.href = `${base}?read=${revision}#cv-approval`;
+    link.textContent = `Revision ${revision} landed: read it again`;
+    notice.append(link);
+    const panel = byId("cv-approval");
+    const old = byId("cv-approval-stale") || panel.querySelector(".approve-form");
+    if (old) old.replaceWith(notice);
+    else panel.querySelector(".approval").prepend(notice);
+  }
+
+  // Takes the revision list and head from a fresh copy of this page. The approval panel follows only
+  // if it brings no form. The editor stays as it is, typed in or not, and its old base makes a save a
+  // clear conflict: it must never come to hold, and then save, text the owner didn't read.
   async function followHead(revision, note) {
     let fresh;
     try {
@@ -72,23 +89,27 @@
     } catch {
       return;
     }
-    for (const id of ["cv-revisions", "cv-approval", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
+    for (const id of ["cv-revisions", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
       const next = fresh.getElementById(id);
       if (next) byId(id).replaceWith(document.adoptNode(next));
     }
+    const panel = fresh.getElementById("cv-approval");
+    if (panel && panel.querySelector(".approve-form")) {
+      askToRead(fresh.getElementById("cv-workspace").dataset.revision);
+    } else if (panel) {
+      byId("cv-approval").replaceWith(document.adoptNode(panel));
+    }
     const editor = byId("cv-source");
-    const nextEditor = fresh.getElementById("cv-source");
     const nextExpected = fresh.getElementById("cv-expected");
-    if (editor && nextEditor && nextExpected) {
-      if (editor.value === editor.defaultValue && !("kept" in editor.dataset)) {
-        editor.defaultValue = nextEditor.defaultValue;
-        editor.value = nextEditor.defaultValue;
-        byId("cv-expected").value = nextExpected.value;
+    if (editor && nextExpected) {
+      if (byId("cv-expected").value === nextExpected.value) {
+        // The same base, approved since: the button says what a save does now.
+        byId("cv-save").replaceWith(document.adoptNode(fresh.getElementById("cv-save")));
         setNote(byId("cv-live-note"), note);
       } else {
         setNote(
           byId("cv-live-note"),
-          `${note} Your unsaved text is untouched and still based on the older revision.`,
+          `${note} The source below stays on the older revision, so saving it is refused until you reload. Nothing you typed is lost.`,
         );
       }
     }
@@ -116,8 +137,13 @@
       const response = await fetch(`/api/cv/${encodeURIComponent(variant)}/head`);
       if (response.ok) {
         const { revision, state } = await response.json();
-        arrived(revision, `Revision ${revision} landed.`);
-        if (state === "approved") approved(revision);
+        if (revision > shown) {
+          shownState = state;
+          root.dataset.state = state;
+          arrived(revision, `Revision ${revision} landed.`);
+        } else if (state === "approved") {
+          approved(revision);
+        }
       }
     } catch {
       // Still offline: the next round tries again.

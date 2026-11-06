@@ -734,7 +734,6 @@ async fn approvals_are_append_only() {
     for (sql, wanted) in [
         ("UPDATE cv_approvals SET rendered_text = 'x'", "append-only"),
         ("DELETE FROM cv_approvals", "append-only"),
-        (row, "UNIQUE"),
         (
             "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
              revision_number, approved_by, approved_at)
@@ -748,4 +747,6 @@ async fn approvals_are_append_only() {
             .unwrap_err();
         assert!(error.to_string().contains(wanted), "{sql}: {error}");
     }
+    // The owner can approve text again after replacing it, which makes it the newest there.
+    sqlx::query(row).execute(db.pool()).await.unwrap();
 }

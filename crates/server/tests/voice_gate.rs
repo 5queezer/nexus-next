@@ -1369,3 +1369,83 @@ async fn a_local_stand_in_can_not_be_named_on_a_real_server() {
     let help = nexus().args(["serve", "--help"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&help.stdout).contains("voice-test-base-url"));
 }
+
+/// The owner's correction holds against a voice session too: its revert is a draft, and naming the old
+/// revision gets no approved state. Its undo back to the newest approved text needs no tap.
+#[tokio::test(flavor = "multi_thread")]
+async fn voice_cannot_bring_back_text_the_owner_replaced() {
+    let h = start(Duration::from_secs(900), true).await;
+    h.seed().await;
+    let state = control_state(&h.db);
+    let login = h.login().await;
+    let voice = login.voice_id().await;
+    let output =
+        |body: &Value| -> Value { serde_json::from_str(body["output"].as_str().unwrap()).unwrap() };
+    let source = {
+        let (_, body) = login.tool(&voice, "get_cv_source", json!({})).await;
+        output(&body)["source"].as_str().unwrap().to_owned()
+    };
+    let approve = async |revision: i64| {
+        let review = nexus_mcp::owner::review(state.clone(), "default")
+            .await
+            .unwrap();
+        assert_eq!(review.revision, revision);
+        let done = nexus_mcp::owner::approve(
+            state.clone(),
+            "default",
+            revision,
+            &review.source_sha256,
+            &review.facts_sha256,
+            "dashboard",
+        )
+        .await;
+        assert_ne!(done.is_error, Some(true), "{done:?}");
+    };
+    let patch = async |expected: i64, old: &str, new: &str| {
+        let (status, body) = login
+            .tool(
+                &voice,
+                "patch_cv",
+                json!({"expectedRevision": expected, "summary": "By voice",
+                    "edits": [{"oldText": old, "newText": new}]}),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        output(&body)
+    };
+    assert!(source.contains("Built the routing service."), "{source}");
+    patch(
+        0,
+        "Built the routing service.",
+        "Led a team of 20 engineers.",
+    )
+    .await;
+    approve(1).await;
+    patch(1, "a team of 20", "a team of 12").await;
+    approve(2).await;
+
+    let revert = async |to: i64, expected: i64| {
+        let (status, body) = login
+            .tool(
+                &voice,
+                "revert_cv",
+                json!({"toRevision": to, "expectedRevision": expected}),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        output(&body)
+    };
+    let reverted = revert(1, 2).await;
+    assert_eq!(reverted["state"], "draft", "{reverted}");
+    let (_, body) = login
+        .tool(&voice, "render_cv_pdf", json!({"revision": 1}))
+        .await;
+    assert_eq!(output(&body)["state"], "draft", "{body}");
+    let (_, body) = login
+        .tool(&voice, "get_cv_source", json!({"revision": 1}))
+        .await;
+    assert_eq!(output(&body)["state"], "draft", "{body}");
+
+    let undone = revert(2, 3).await;
+    assert_eq!(undone["state"], "approved", "{undone}");
+}
