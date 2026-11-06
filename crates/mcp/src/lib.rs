@@ -15,8 +15,9 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
+use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, broadcast};
 
 pub use http::router;
 pub use nexus_tailor::Renderer;
@@ -73,6 +74,20 @@ pub fn all_tools() -> &'static [Value] {
     &ALL_TOOLS
 }
 
+/// A revision that has just been committed. Live pages hear of it from whichever writer stored it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CvRevisionEvent {
+    pub variant: String,
+    pub revision: i64,
+    pub origin: String,
+    pub summary: String,
+    pub review_tokens: Vec<String>,
+}
+
+/// A page that misses more than this reads the head again.
+const CV_EVENT_BACKLOG: usize = 16;
+
 /// What tool calls need. Responses still carry the owner's `userId`, and events record the owner's
 /// email as `actor`, so both stay as they were when old Nexus wrote the imported rows.
 #[derive(Clone, Debug)]
@@ -83,6 +98,8 @@ pub struct McpState {
     pub renderer: Renderer,
     /// One compile at a time. Taken only around the compile itself, never across other work.
     render_slot: Arc<Semaphore>,
+    /// Sent after commit by every path that stores a revision. No receiver is fine.
+    pub cv_events: broadcast::Sender<CvRevisionEvent>,
 }
 
 impl McpState {
@@ -93,6 +110,7 @@ impl McpState {
             owner_email,
             renderer,
             render_slot: Arc::new(Semaphore::new(1)),
+            cv_events: broadcast::channel(CV_EVENT_BACKLOG).0,
         }
     }
 }

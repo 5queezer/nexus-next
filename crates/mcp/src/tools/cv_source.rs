@@ -25,6 +25,7 @@ use sqlx::SqliteConnection;
 
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, req_str, str_arg};
+use crate::CvRevisionEvent;
 
 /// With a compile's 30 s, this stays inside the MCP route's 60 s deadline.
 const RENDER_QUEUE_WAIT: Duration = Duration::from_secs(20);
@@ -270,6 +271,17 @@ fn unified_diff(old: &str, new: &str, old_label: &str, new_label: &str) -> Strin
         .to_string()
 }
 
+/// Call after commit: a page that hears of a revision reads it back at once.
+pub(super) fn publish(ctx: &Ctx, variant: &str, revision: &Revision, review_tokens: &[String]) {
+    let _ = ctx.state.cv_events.send(CvRevisionEvent {
+        variant: variant.to_owned(),
+        revision: revision.number,
+        origin: revision.origin.clone(),
+        summary: revision.summary.clone(),
+        review_tokens: review_tokens.to_owned(),
+    });
+}
+
 fn head_number(head: Option<&Revision>) -> i64 {
     head.map_or(0, |revision| revision.number)
 }
@@ -440,6 +452,7 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
     )
     .await?;
     tx.commit().await?;
+    publish(ctx, name, &revision, &review_tokens);
     Ok(written(
         name,
         &revision,
@@ -526,6 +539,7 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
     )
     .await?;
     tx.commit().await?;
+    publish(ctx, name, &revision, &review_tokens);
     Ok(written(
         name,
         &revision,
