@@ -56,6 +56,7 @@ age = { version = "0.12.1", default-features = false }
 tar = { version = "0.4.46", default-features = false }
 tower-http = { version = "0.6.11", default-features = false, features = ["limit", "timeout"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry"] }
+ttf-parser = "0.25"
 typst = "=0.15.1"
 typst-layout = "=0.15.1"
 typst-pdf = "=0.15.1"

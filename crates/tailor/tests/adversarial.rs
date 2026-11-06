@@ -4,7 +4,7 @@
 mod common;
 
 use common::{facts_en, render, render_and_check};
-use nexus_tailor::{Facts, RenderError, RenderRequest, Renderer, Rule, Severity, check};
+use nexus_tailor::{Contact, Facts, RenderError, RenderRequest, Renderer, Rule, Severity, check};
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
 /// The smallest valid PNG, one pixel.
@@ -1699,31 +1699,212 @@ async fn a_stroke_cannot_hide_the_text_it_outlines() {
     }
 }
 
-/// Decorations are shapes drawn after the text, like the white rectangle SPEC lists as a limit. This
-/// pins what that limit says: the check still reads the word, and only the stamped picture shows
-/// the blank. Close the limit and this should change.
+/// The owner's decision: text covered by a shape is refused, whatever the shape, and wherever in the
+/// source or the page it comes from. Black on black from beneath is the same trick the other way up.
 #[tokio::test]
-async fn a_shape_over_text_stays_the_limit_spec_lists() {
-    for body in [
-        "I am #strike(stroke: 14pt + white)[not] certified.",
-        "I am #underline(stroke: 14pt + white, offset: -4pt)[not] certified.",
-        "I am #overline(stroke: 14pt + white, offset: -8pt)[not] certified.",
-        "I am #highlight(fill: black)[not] certified.",
-        "I am #place(dx: 1.2em, rect(width: 2em, height: 1em, fill: white))not certified.",
-    ] {
+async fn text_covered_by_a_shape_is_refused() {
+    let word = "I am not certified.";
+    // Painted after the word, over it.
+    let after =
+        |shape: &str| format!("I am not#box(place(dx: -1.6em, dy: -0.8em, {shape})) certified.");
+    let cases: Vec<(&str, String)> = vec![
+        ("strike white", "I am #strike(stroke: 14pt + white)[not] certified.".into()),
+        ("strike black", "I am #strike(stroke: 14pt + black)[not] certified.".into()),
+        ("strike red", "I am #strike(stroke: 14pt + red)[not] certified.".into()),
+        (
+            "underline white",
+            "I am #underline(stroke: 14pt + white, offset: -3pt, evade: false)[not] certified.".into(),
+        ),
+        ("overline white", "I am #overline(stroke: 14pt + white, offset: -9pt)[not] certified.".into()),
+        (
+            "place rect white",
+            after("rect(width: 2em, height: 1.1em, fill: white)"),
+        ),
+        (
+            "place rect black",
+            after("rect(width: 2em, height: 1.1em, fill: black)"),
+        ),
+        (
+            "rect in the page's colour",
+            format!("#set page(fill: rgb(\"#fbf6e9\"))\n{}", after("rect(width: 2em, height: 1.1em, fill: rgb(\"#fbf6e9\"))")),
+        ),
+        (
+            "a later place from elsewhere on the page",
+            format!("{word}\n#lorem(30)\n#place(top + left, dx: 0pt, dy: 0pt, rect(width: 100%, height: 30%, fill: white))"),
+        ),
+        ("painted in a box", after("box(rect(width: 2em, height: 1.1em, fill: white))")),
+        (
+            "under an allowed rotate",
+            after("rotate(360deg, rect(width: 2em, height: 1.1em, fill: white))"),
+        ),
+        (
+            "under a scale",
+            after("scale(200%, origin: top + left, rect(width: 1em, height: 0.55em, fill: white))"),
+        ),
+        (
+            "a rotated bar across the word",
+            after("rotate(5deg, rect(width: 2em, height: 1.1em, fill: white))"),
+        ),
+        (
+            "a page foreground",
+            format!("#set page(foreground: place(top + left, rect(width: 100%, height: 40%, fill: white)))\n{word}"),
+        ),
+        ("a line", after("move(dy: 0.5em, line(length: 2em, stroke: 12pt + white))")),
+        (
+            "a curve",
+            after("curve(fill: white, curve.move((0pt, 0pt)), curve.line((24pt, 0pt)), curve.line((24pt, 12pt)), curve.line((0pt, 12pt)), curve.close())"),
+        ),
+        (
+            "a polygon",
+            after("polygon(fill: white, (0pt, 0pt), (24pt, 0pt), (24pt, 12pt), (0pt, 12pt))"),
+        ),
+        (
+            "a gradient",
+            after("rect(width: 2em, height: 1.1em, fill: gradient.linear(white, luma(95%)))"),
+        ),
+        (
+            "a tiling",
+            after("rect(width: 2em, height: 1.1em, fill: tiling(size: (4pt, 4pt), rect(width: 4pt, height: 4pt, fill: white)))"),
+        ),
+        (
+            "a dashed stroke",
+            "I am #strike(stroke: (paint: white, thickness: 14pt, dash: \"dashed\"))[not] certified.".into(),
+        ),
+        ("a stroke with a gap", after("line(length: 2em, stroke: (paint: white, thickness: 12pt, dash: (2pt, 0.5pt)))")),
+        ("text over text", "I am not#box(place(dx: -1.5em, dy: -1.3em, text(size: 40pt, fill: black)[■])) certified.".into()),
+        (
+            "translucent layers that add up",
+            after(&["rect(width: 2em, height: 1.1em, fill: rgb(255, 255, 255, 60%))"; 4].map(|layer| format!("place({layer})")).join(" + ")),
+        ),
+        // Getting past the rule.
+        (
+            "many small shapes",
+            after(&(0..16).map(|i| format!("place(dy: {}em, rect(width: 2em, height: 0.08em, fill: white))", f64::from(i) * 0.07)).collect::<Vec<_>>().join(" + ")),
+        ),
+        (
+            "a grid of small squares",
+            after(&(0..50).flat_map(|x| (0..16).map(move |y| format!("place(dx: {}em, dy: {}em, square(size: 0.05em, fill: white))", f64::from(x) * 0.04, f64::from(y) * 0.07))).collect::<Vec<_>>().join(" + ")),
+        ),
+        (
+            "the last letter gone: not as no",
+            "I am not#box(place(dx: -0.35em, dy: -0.8em, rect(width: 0.35em, height: 1.1em, fill: white))) certified.".into(),
+        ),
+        (
+            "half of it, from the right",
+            "I am not#box(place(dx: -0.15em, dy: -0.8em, rect(width: 0.15em, height: 1.1em, fill: white))) certified.".into(),
+        ),
+        (
+            "its top half",
+            "I am not#box(place(dx: -0.35em, dy: -0.8em, rect(width: 0.35em, height: 0.55em, fill: white))) certified.".into(),
+        ),
+        (
+            "half of it under a black bar, and most of the next",
+            "I am not#box(place(dx: -0.35em, dy: -0.8em, rect(width: 0.35em, height: 1.1em, fill: black))) certified.".into(),
+        ),
+        (
+            "E as F, the eraser taking little",
+            "Grade #box[E#place(bottom + left, dy: 0.02em, rect(width: 0.6em, height: 0.09em, fill: white))].".into(),
+        ),
+        (
+            "a dot erased from a number",
+            "Rated 4#box[.#place(top + left, dy: 0.5em, rect(width: 0.3em, height: 0.2em, fill: white))]9 stars.".into(),
+        ),
+        (
+            "an umlaut erased: schön as schon",
+            "Sehr sch#box[ö#place(top + left, dy: -0.1em, rect(width: 0.6em, height: 0.25em, fill: white))]n.".into(),
+        ),
+        // The shape beneath.
+        ("black on a black highlight", "I am #highlight(fill: black)[not] certified.".into()),
+        (
+            "dark on a dark band",
+            "#block(fill: rgb(\"#222\"), inset: 3pt)[I am #text(fill: rgb(\"#111\"))[not] certified.]".into(),
+        ),
+        (
+            "text of the band's colour",
+            "#block(fill: rgb(\"#1f3a5f\"), inset: 3pt)[I am #text(fill: rgb(\"#1f3a5f\"))[not] certified.]".into(),
+        ),
+        (
+            "text of the page's colour",
+            "#set page(fill: rgb(\"#303030\"))\n#text(fill: rgb(\"#303030\"))[not] certified.".into(),
+        ),
+        (
+            "on a tiling",
+            "#block(fill: tiling(size: (4pt, 4pt), rect(width: 4pt, height: 4pt, fill: black)), inset: 3pt)[not certified]".into(),
+        ),
+    ];
+    let cases: Vec<(&str, Rule, &str)> = cases
+        .iter()
+        .map(|(name, body)| (*name, Rule::HiddenText, body.as_str()))
+        .collect();
+    assert_flagged(&cases).await;
+}
+
+/// What a normal CV draws must stay allowed, however close to its text it draws it.
+#[tokio::test]
+async fn ordinary_lines_fills_and_borders_near_text_stay_allowed() {
+    let all =
+        "abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789 .,;:!?-–—\\_=+()/%\\@";
+    let cases = [
+        format!("#underline[{all}]"),
+        format!("#underline(evade: false)[{all}]"),
+        format!("#strike[{all}]"),
+        format!("#overline[{all}]"),
+        format!("#strike(stroke: 1pt + red)[{all}]"),
+        format!("#underline(stroke: 1.5pt + blue)[{all}]"),
+        format!("#text(size: 18pt, weight: \"bold\")[#strike[{all}]]"),
+        format!("#underline(stroke: 0.5pt + luma(80%))[{all}]"),
+        format!("#overline(stroke: 0.5pt + luma(80%))[{all}]"),
+        format!("#highlight[{all}]"),
+        format!("#highlight(fill: rgb(\"#ffe066\"))[{all}]"),
+        format!("#highlight(fill: rgb(255, 224, 102, 50%))[{all}]"),
+        "#table(columns: 3, fill: (x, y) => if y == 0 { luma(90%) }, stroke: 0.5pt, [*Skill*], [*Years*], [*Level*], [Rust], [5], [Expert])".to_owned(),
+        "#table(columns: 2, fill: luma(92%), stroke: white, [Rust], [5], [Go], [3])".to_owned(),
+        "#table(columns: 2, fill: (x, y) => if y == 0 { rgb(\"#dde6f0\") }, stroke: none, table.hline(), [Rust], [5], table.hline(), [Go], [3], table.hline())".to_owned(),
+        "#line(length: 100%)\nText after a line.\n#line(length: 100%, stroke: 2pt + rgb(\"#1f3a5f\"))".to_owned(),
+        "#rect(stroke: 1pt, inset: 0pt)[Tight box gypq]\n#box(stroke: 1pt)[Inline box gypq]\n#rect(stroke: 0.5pt)[Normal box]".to_owned(),
+        "#set page(fill: rgb(\"#fbf6e9\"))\nOn cream. #text(fill: rgb(\"#55606e\"))[Muted on cream.]\n#highlight(fill: rgb(\"#f3e7c4\"))[A shade.]".to_owned(),
+        "#block(fill: rgb(\"#eef2f7\"), inset: 6pt, radius: 4pt)[A shaded callout with #text(fill: rgb(\"#1f3a5f\"))[blue words].]".to_owned(),
+        "#block(fill: gradient.linear(white, rgb(\"#dde6f0\")), inset: 6pt)[On a pale gradient.]".to_owned(),
+        "#box(fill: luma(90%), inset: 2pt, radius: 2pt)[`code`] and #box(fill: luma(95%), outset: 2pt)[a tag]".to_owned(),
+        "#show raw: it => box(fill: luma(94%), outset: 2pt, it)\n`let a = 1;`\n```rust\nfn main() {}\n```".to_owned(),
+        "$ sqrt(x^2 + y^2) = sum_(i=0)^n hat(a)_i / (b + 1) $\nInline $x^2$ and H#sub[2]O and E=mc#super[2].".to_owned(),
+        "#smallcaps[Small Caps] #underline[link_with_under-score] #link(\"https://example.org\")[#underline[example.org]]".to_owned(),
+        "#set par(leading: 0.2em)\nTight gypq lines of text.\\\nOn top of gypq each other.\\\nThird of gypq them.".to_owned(),
+        "#text(size: 28pt, weight: \"bold\")[Large gypq title]\n#v(-0.8em)\nA line drawn close under it.".to_owned(),
+        "A white square away from any text.#place(bottom + right, rect(width: 1em, height: 1em, fill: white))".to_owned(),
+        "#text(fill: rgb(0, 0, 0, 60%))[Translucent text.] Marked over.#box(place(dx: -4em, dy: -0.8em, rect(width: 4em, height: 1.1em, fill: rgb(255, 224, 102, 60%))))".to_owned(),
+        "#set page(fill: rgb(\"#1f3a5f\"))\n#text(fill: rgb(\"#a8b6c8\"))[Pale blue on a dark page reads, and stays below the white rule.]".to_owned(),
+    ];
+    let mut refused = Vec::new();
+    for body in &cases {
         let source = format!("{START}{body}\n");
-        let rendered = render(&source, &facts_en()).await.unwrap();
-        let report = check(&rendered.text, &facts_en(), None, "");
-        assert_eq!(report.violations, [], "{body}");
-        assert!(
-            rendered
-                .text
-                .lines
-                .iter()
-                .any(|l| l.contains("not certified")),
-            "{body}"
-        );
+        let report = render_and_check(&source, &facts_en()).await;
+        let hidden: Vec<_> = report
+            .violations
+            .iter()
+            .filter(|violation| violation.rule == Rule::HiddenText)
+            .collect();
+        if !hidden.is_empty() {
+            refused.push(format!("{body}\n  {hidden:?}"));
+        }
     }
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
+
+/// A draft is stamped after its text has been read, so the stamp can't refuse every draft.
+#[tokio::test]
+async fn the_stamp_refuses_no_draft() {
+    let source = format!("{START}#header()\n= Work\n#lorem(200)\n");
+    let request = RenderRequest {
+        source,
+        facts: facts_en(),
+        pdf: false,
+        preview_pages: 1,
+        stamp: true,
+    };
+    let rendered = Renderer::InProcess.render(request).await.unwrap();
+    assert_eq!(rendered.text.hidden, Vec::<String>::new());
+    assert_eq!(rendered.previews.len(), 1);
 }
 
 /// Finding 5: tracking short of negative still stacks digits. `1000` draws as `10`, and well before
@@ -1936,5 +2117,150 @@ async fn the_low_rules_hold_at_their_edges() {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;
         assert_eq!(report.violations, [], "{body}");
+    }
+}
+
+/// Honest links on neighbouring lines are two links, however tall their boxes are.
+#[tokio::test]
+async fn honest_contact_links_that_wrap_or_stack_are_read_apart() {
+    let mut facts = facts_en();
+    facts.contact = Contact {
+        email: "mara.testperson@example.test".to_owned(),
+        phone: "+49 170 5550137".to_owned(),
+        location: "Frankfurt am Main, Germany".to_owned(),
+        linkedin: "linkedin.com/in/mara-testperson-4711".to_owned(),
+        github: "github.com/mara-testperson".to_owned(),
+    };
+    let mail = "#link(\"mailto:mara.testperson@example.test\")[mara.testperson\\@example.test]";
+    let linkedin = "#link(\"https://linkedin.com/in/mara-testperson-4711\")[linkedin.com/in/mara-testperson-4711]";
+    let github = "#link(\"https://github.com/mara-testperson\")[github.com/mara-testperson]";
+    let repo =
+        "#link(\"https://github.com/mara-testperson/tally\")[github.com/mara-testperson/tally]";
+    let cases = [
+        ("the template's own, wrapped", "#header()".to_owned()),
+        (
+            "the template's own on A5",
+            "#set page(paper: \"a5\")\n#header()".to_owned(),
+        ),
+        ("mail over GitHub", format!("{mail}\\\n{github}")),
+        ("three stacked", format!("{mail}\\\n{linkedin}\\\n{github}")),
+        ("a repo over the mail", format!("{repo}\\\n{mail}")),
+        (
+            "tight lines",
+            format!("#set par(leading: 0.2em)\n{mail}\\\n{github}\\\n{repo}"),
+        ),
+        (
+            "a short one over a long one",
+            format!("#link(\"https://github.com/mara-testperson\")[GitHub]\\\n{mail}"),
+        ),
+        ("separate paragraphs", format!("{mail}\n\n{github}")),
+        ("one line, with a separator", format!("{mail} | {github}")),
+        ("one line, a word space apart", format!("{mail} {github}")),
+    ];
+    let mut refused = Vec::new();
+    for (name, body) in &cases {
+        let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
+        if !report.violations.is_empty() {
+            refused.push(format!("{name}: {:?}", report.violations));
+        }
+    }
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
+
+/// The other side of the same rule: links side by side on one line stay one link to a reader, whatever
+/// their sizes do to the boxes, and whichever order those boxes sort in.
+#[tokio::test]
+async fn links_side_by_side_read_as_one_at_any_size() {
+    let evil = "https://evil.example";
+    let other = "https://other.example";
+    assert_flagged(&[
+        (
+            "two targets, the second larger",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[#text(size: 8pt)[mara\\@ex]]#link(\"{other}\")[#text(size: 16pt)[ample.org]]"),
+        ),
+        (
+            "two targets, the first larger",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[#text(size: 16pt)[mara\\@ex]]#link(\"{other}\")[#text(size: 8pt)[ample.org]]"),
+        ),
+        (
+            "two targets, tiny beside large",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[#text(size: 5pt)[mara\\@ex]]#link(\"{other}\")[#text(size: 24pt)[ample.org]]"),
+        ),
+        (
+            "two targets, the same size",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara\\@ex]#link(\"{other}\")[ample.org]"),
+        ),
+        (
+            "three links",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara]#link(\"{other}\")[\\@ex]#link(\"{evil}\")[ample.org]"),
+        ),
+        (
+            "raised a little",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara\\@ex]#box(baseline: -1pt)[#link(\"{other}\")[ample.org]]"),
+        ),
+    ])
+    .await;
+}
+
+/// Text and strokes pale enough to nearly vanish count as hidden, and ordinary muted colours don't.
+#[tokio::test]
+async fn pale_text_and_strokes_count_as_hidden_and_muted_colours_do_not() {
+    assert_flagged(&[
+        (
+            "fill 88%",
+            Rule::HiddenText,
+            "I am #text(fill: luma(88%))[not] certified.",
+        ),
+        (
+            "fill 80%",
+            Rule::HiddenText,
+            "I am #text(fill: luma(80%))[not] certified.",
+        ),
+        (
+            "stroke 89%",
+            Rule::HiddenText,
+            "I am #text(stroke: 1pt + luma(89%))[not] certified.",
+        ),
+        (
+            "stroke 80%",
+            Rule::HiddenText,
+            "I am #text(stroke: 1pt + luma(80%))[not] certified.",
+        ),
+        (
+            "both",
+            Rule::HiddenText,
+            "I am #text(fill: luma(89%), stroke: 1pt + luma(89%))[not] certified.",
+        ),
+    ])
+    .await;
+    for colour in [
+        "black",
+        "luma(30%)",
+        "luma(50%)",
+        "luma(60%)",
+        "luma(70%)",
+        "gray",
+        "rgb(\"#55606e\")",
+        "rgb(\"#1f3a5f\")",
+        "rgb(\"#666\")",
+        "rgb(\"#777\")",
+        "rgb(\"#888\")",
+        "rgb(\"#999\")",
+        "rgb(\"#aaa\")",
+        "rgb(\"#0a7ea4\")",
+        "rgb(\"#c0392b\")",
+        "rgb(\"#2e7d32\")",
+        "rgb(\"#3498db\")",
+        "rgb(\"#e67e22\")",
+    ] {
+        let source = format!("{START}#text(fill: {colour})[Muted work]\n");
+        let report = render_and_check(&source, &facts_en()).await;
+        assert_eq!(report.violations, [], "{colour}");
     }
 }

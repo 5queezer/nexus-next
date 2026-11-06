@@ -1713,7 +1713,8 @@ pub fn check(
         findings.add(
             Rule::HiddenText,
             run,
-            "white, tiny, clipped or off-page text: a CV shows everything it says".to_owned(),
+            "white, tiny, clipped, off-page or covered text: a CV shows everything it says"
+                .to_owned(),
         );
     }
     for run in &text.transformed {

@@ -13,6 +13,7 @@ serde_json.workspace = true
 similar.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
+ttf-parser.workspace = true
 typst.workspace = true
 typst-layout.workspace = true
 typst-pdf.workspace = true
