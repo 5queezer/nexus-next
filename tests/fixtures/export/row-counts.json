@@ -1,0 +1,11 @@
+{
+ "Application": 4,
+ "ApplicationEvent": 5,
+ "ApplicationSubmission": 2,
+ "ApplicationToDocument": 5,
+ "Contact": 3,
+ "CvPatch": 2,
+ "CvProfile": 2,
+ "Document": 10,
+ "ScannedEmail": 0
+}
