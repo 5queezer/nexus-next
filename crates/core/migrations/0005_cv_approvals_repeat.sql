@@ -18,6 +18,9 @@ INSERT INTO cv_approvals_new SELECT id, source_sha256, facts_sha256, rendered_te
     revision_number, approved_by, approved_at FROM cv_approvals ORDER BY id;
 DROP TABLE cv_approvals;
 ALTER TABLE cv_approvals_new RENAME TO cv_approvals;
+-- The copy leaves a counter even when it copied nothing, and a counter is how an import tells that a
+-- database holds data.
+DELETE FROM sqlite_sequence WHERE name = 'cv_approvals' AND seq = 0;
 
 CREATE INDEX cv_approvals_variant ON cv_approvals (variant_id, facts_sha256, id);
 CREATE INDEX cv_approvals_source ON cv_approvals (source_sha256, facts_sha256);

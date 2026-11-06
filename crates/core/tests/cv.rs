@@ -750,3 +750,62 @@ async fn approvals_are_append_only() {
     // The owner can approve text again after replacing it, which makes it the newest there.
     sqlx::query(row).execute(db.pool()).await.unwrap();
 }
+
+/// Migration 0005 on a database that holds approvals: every row and its id stay, so does the counter
+/// and what makes the table append-only, and a text can now repeat.
+#[tokio::test]
+async fn the_migration_that_lets_a_text_repeat_keeps_what_was_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = migrated_to_m1(dir.path()).await;
+    sqlx::raw_sql(include_str!("../migrations/0004_cv_facts_revisions.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let insert = |source: &str| {
+        format!(
+            "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
+             revision_number, approved_by, approved_at)
+             VALUES ('{source}', 'f', 'text of {source}', 7, 1, 'lock', '2026-11-06T00:00:00.000Z')"
+        )
+    };
+    for source in ["a", "b"] {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(insert(source)))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(include_str!("../migrations/0005_cv_approvals_repeat.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let rows: Vec<(i64, String, String, i64, String)> = sqlx::query_as(
+        "SELECT id, source_sha256, rendered_text, variant_id, approved_by FROM cv_approvals ORDER BY id",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (1, "a".into(), "text of a".into(), 7, "lock".into()),
+            (2, "b".into(), "text of b".into(), 7, "lock".into()),
+        ]
+    );
+    let counter: i64 =
+        sqlx::query_scalar("SELECT seq FROM sqlite_sequence WHERE name = 'cv_approvals'")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+    assert_eq!(counter, 2);
+    sqlx::raw_sql(sqlx::AssertSqlSafe(insert("a")))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    for sql in [
+        "UPDATE cv_approvals SET rendered_text = 'x'",
+        "DELETE FROM cv_approvals",
+    ] {
+        let error = sqlx::raw_sql(sql).execute(&mut conn).await.unwrap_err();
+        assert!(error.to_string().contains("append-only"), "{sql}: {error}");
+    }
+}
