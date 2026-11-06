@@ -130,7 +130,7 @@ fn row(application: &Application, clock: Clock, show_action: bool) -> impl IntoV
                 }}
             </span>
             <span class=when_class>
-                <span class="k">"Follow-up"</span>
+                <span class="k">{if overdue { "Overdue follow-up" } else { "Follow-up" }}</span>
                 {follow_up.unwrap_or_else(|| "\u{2013}".to_owned())}
             </span>
             <span class=contact_class>
@@ -252,7 +252,7 @@ pub fn pipeline(v: PipelineView<'_>) -> impl IntoView {
         {if shown == 0 {
             view! { <p class="empty">"Nothing matches these filters."</p> }.into_any()
         } else {
-            view! { <div class="list" style="margin-top:16px">{list_head()}{sections}</div> }.into_any()
+            view! { <div class="list">{list_head()}{sections}</div> }.into_any()
         }}
     }
 }
@@ -272,7 +272,7 @@ pub fn follow_up_queue(groups: &[(Group, Vec<&Application>)], clock: Clock) -> i
                     "group-title"
                 };
                 view! {
-                    <div class="list" style="margin-bottom:16px">
+                    <div class="list">
                         <h2 class=class>{title}</h2>
                         {rows}
                     </div>
@@ -508,7 +508,7 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
 }
 
 fn none_yet(what: &str) -> impl IntoView {
-    view! { <div class="card"><p class="empty" style="padding:12px 0">{format!("No {what}.")}</p></div> }
+    view! { <div class="card"><p class="empty">{format!("No {what}.")}</p></div> }
 }
 
 fn timeline(events: &[ApplicationEvent], contacts: &[Contact], tz: Tz) -> impl IntoView {
@@ -728,7 +728,7 @@ fn submissions(submissions: &[Submission], documents: &[Document], tz: Tz) -> im
             ]);
             let count = s.answers.0.as_array().map_or(0, Vec::len);
             view! {
-                <div class="card" style="margin-bottom:12px">
+                <div class="card">
                     {overview}
                     <details open>
                         <summary>{format!("Answers ({count})")}</summary>

@@ -127,9 +127,17 @@ async fn full_flow_register_login_consent_token_call_refresh_replay() {
         StatusCode::OK
     );
 
+    // Past the retry grace, presenting the old refresh token again ends the whole grant.
+    h.end_refresh_grace().await;
     h.refresh(client_id, refresh, None)
         .await
         .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(
+        h.whoami(rotated["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[derive(Deserialize)]

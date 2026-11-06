@@ -88,7 +88,7 @@ struct PipelineQuery {
     q: Option<String>,
 }
 
-fn matches_search(application: &Application, term: &str) -> bool {
+pub(crate) fn matches_search(application: &Application, term: &str) -> bool {
     let term = term.to_lowercase();
     [
         Some(application.company.as_str()),

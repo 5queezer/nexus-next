@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use nexus_core::db::Db;
-use nexus_core::repo::api_tokens;
+use nexus_core::repo::{api_tokens, oauth};
 
 use crate::crypto::{generate_token, random_bytes, sha256_hex};
 
@@ -27,6 +27,8 @@ pub enum PassphraseError {
     Io(PathBuf, #[source] std::io::Error),
     #[error("hashing task failed")]
     Task,
+    #[error("revoking credentials failed: {0}")]
+    Storage(#[from] nexus_core::error::Error),
 }
 
 /// Issues a `jt_` API token, storing only its hash, and returns the raw value, which cannot be
@@ -36,6 +38,10 @@ pub async fn issue_api_token(db: &Db, name: &str) -> nexus_core::error::Result<S
     let mut tx = db.begin_write().await?;
     api_tokens::replace(&mut tx, &sha256_hex(&raw), name).await?;
     tx.commit().await?;
+    tracing::info!(
+        event = "api_token_issued",
+        "issued an API token, replacing any earlier one"
+    );
     Ok(raw)
 }
 
@@ -59,10 +65,30 @@ pub async fn hash_passphrase(passphrase: &str) -> Result<String, PassphraseError
     .map_err(|_| PassphraseError::Task)?
 }
 
-/// Writes the owner passphrase's hash to `path`, mode 600, replacing the file atomically. Running
-/// servers read the hash at startup, so restart them for the change to apply.
-pub async fn set_owner_passphrase(path: &Path, passphrase: &str) -> Result<(), PassphraseError> {
+/// Changes the owner passphrase: revokes every OAuth code and token and every API token, then
+/// writes the hash to `path`, mode 600, replacing the file atomically. Credentials go first, so a
+/// failed write can't leave a suspected leak still working. Client registrations stay; each client
+/// authorizes again. Running servers read the hash at startup, so restart them for the new
+/// passphrase to apply, which also ends their sessions.
+pub async fn set_owner_passphrase(
+    db: &Db,
+    path: &Path,
+    passphrase: &str,
+) -> Result<(), PassphraseError> {
     let hash = hash_passphrase(passphrase).await?;
+
+    let mut tx = db.begin_write().await?;
+    let revoked = oauth::revoke_all(&mut tx).await?;
+    api_tokens::delete_all(&mut tx).await?;
+    tx.commit().await.map_err(nexus_core::error::Error::from)?;
+    tracing::warn!(
+        event = "grants_revoked",
+        reason = "passphrase_changed",
+        access_tokens = revoked.access_tokens,
+        refresh_tokens = revoked.refresh_tokens,
+        "owner passphrase is changing: revoked all OAuth grants and API tokens"
+    );
+
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
         write_private(&path, &hash).map_err(|e| PassphraseError::Io(path, e))

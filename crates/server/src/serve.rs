@@ -1,6 +1,7 @@
 //! The HTTP server: router assembly, limits, request logging, health check and graceful shutdown.
 
 use std::future::IntoFuture;
+use std::net::SocketAddr;
 use std::pin::pin;
 use std::time::{Duration, Instant};
 
@@ -8,12 +9,13 @@ use anyhow::Context;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
 use axum::http::StatusCode;
-use axum::middleware::{self, Next};
+use axum::middleware::{self, Next, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::get;
+use nexus_auth::{AuthState, require_owner_session};
 use nexus_core::Db;
 use tokio::net::TcpListener;
-use tower::limit::ConcurrencyLimitLayer;
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tracing::Level;
@@ -23,7 +25,7 @@ use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::config::ServeConfig;
+use crate::config::{Access, ServeConfig};
 
 /// A tool call carrying the largest document: 10 MiB as base64 (old Nexus's
 /// `MAX_DOCUMENT_BASE64_SIZE`, 13,981,020 characters) plus the JSON around it.
@@ -57,7 +59,9 @@ pub fn init_logging(level: Level, writer: impl for<'a> MakeWriter<'a> + Send + S
 }
 
 /// Body limit, handler timeout and concurrency limit around `routes`. axum's own 2 MiB extractor
-/// limit is lifted so `MAX_BODY_BYTES` is the single limit.
+/// limit is lifted so `MAX_BODY_BYTES` is the limit for routes without their own: the auth routes
+/// set tighter ones, which win because they sit further in. The concurrency limit must be the global
+/// kind: `Router::layer` applies a layer once per route, and the plain one would count per route.
 pub fn harden(routes: Router) -> Router {
     routes
         .layer(DefaultBodyLimit::disable())
@@ -66,24 +70,30 @@ pub fn harden(routes: Router) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             HANDLER_TIMEOUT,
         ))
-        .layer(ConcurrencyLimitLayer::new(MAX_IN_FLIGHT))
+        .layer(GlobalConcurrencyLimitLayer::new(MAX_IN_FLIGHT))
 }
 
-/// The routes this build can serve safely, wrapped in limits and request logging.
+/// Every route, wrapped in limits and request logging. The calendar has its own secret URL token.
 /// `/healthz` sits outside the limits so it still answers when the server is saturated.
-pub fn build_app(db: &Db, config: &ServeConfig) -> Router {
+pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     let mut routes = Router::new();
     if let Some(token) = &config.calendar_token {
         routes = routes.merge(nexus_web::calendar_router(db.clone(), token.clone()));
     }
-    if config.insecure_local_only {
-        routes = routes
-            .merge(nexus_web::dashboard_router(db.clone(), config.timezone))
-            .merge(nexus_web::api_router(db.clone()));
-    }
-    harden(routes)
+    let humans = nexus_web::dashboard_router(db.clone(), config.timezone)
+        .merge(nexus_web::api_router(db.clone()));
+    let routes = match &config.access {
+        Access::Owner(auth) => {
+            let auth = AuthState::new(db.clone(), auth.clone())?;
+            routes
+                .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(nexus_auth::router(auth))
+        }
+        Access::InsecureLocalOnly => routes.merge(humans),
+    };
+    Ok(harden(routes)
         .route("/healthz", get(healthz).with_state(db.clone()))
-        .layer(middleware::from_fn(log_request))
+        .layer(middleware::from_fn(log_request)))
 }
 
 /// Liveness plus a database round trip. The body never says what is wrong.
@@ -125,17 +135,22 @@ pub async fn run(
     let db = Db::open(&config.data_dir)
         .await
         .with_context(|| format!("cannot open the database in {}", config.data_dir.display()))?;
-    if !config.insecure_local_only {
-        tracing::warn!("dashboard and API are not served: no authentication layer in this build");
-    }
+    let base_url = match &config.access {
+        Access::Owner(auth) => auth.public_base_url.as_str(),
+        Access::InsecureLocalOnly => {
+            tracing::warn!("dashboard and API are served without login: for local runs only");
+            "unset"
+        }
+    };
+    let app = build_app(&db, &config)?;
     tracing::info!(
         addr = %listener.local_addr()?,
-        base_url = config.base_url.as_deref().unwrap_or("unset"),
+        base_url,
         timezone = %config.timezone,
         calendar = config.calendar_token.is_some(),
         "listening"
     );
-    let result = serve(listener, build_app(&db, &config), shutdown, DRAIN_TIMEOUT).await;
+    let result = serve(listener, app, shutdown, DRAIN_TIMEOUT).await;
     db.close().await;
     tracing::info!("stopped");
     result
@@ -149,12 +164,15 @@ pub async fn serve(
 ) -> anyhow::Result<()> {
     let (signalled_tx, signalled_rx) = tokio::sync::oneshot::channel();
     let mut server = pin!(
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                shutdown.await;
-                let _ = signalled_tx.send(());
-            })
-            .into_future()
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>()
+        )
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            let _ = signalled_tx.send(());
+        })
+        .into_future()
     );
     tokio::select! {
         result = &mut server => result.context("server failed"),

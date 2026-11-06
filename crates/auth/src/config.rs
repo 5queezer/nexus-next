@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use argon2::password_hash::{Ident, PasswordHash};
@@ -10,16 +11,16 @@ const PASSPHRASE_FILE: &str = "owner-passphrase.argon2";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("NEXUS_PUBLIC_BASE_URL is not set")]
-    MissingBaseUrl,
     #[error("public base URL must be https (or http on localhost) with no path, query or userinfo")]
     InvalidBaseUrl,
     #[error(
-        "no owner passphrase hash: set NEXUS_OWNER_PASSPHRASE_HASH or create {0} with the set-passphrase command"
+        "no owner passphrase is configured: run `nexus set-passphrase` to create {0}, or set NEXUS_OWNER_PASSPHRASE_HASH"
     )]
     MissingPassphraseHash(PathBuf),
     #[error("owner passphrase hash must be an argon2id PHC string")]
     InvalidPassphraseHash,
+    #[error("{0} has mode {1:o}, which lets other users read the hash: use 0400 or 0600")]
+    LoosePassphraseFile(PathBuf, u32),
     #[error("NEXUS_TRUSTED_IP_HEADER is not a valid header name")]
     InvalidTrustedHeader,
     #[error("NEXUS_TRUSTED_PROXY_PEERS must be a comma-separated list of IP addresses")]
@@ -48,37 +49,60 @@ pub struct AuthConfig {
     pub trusted_proxy: Option<TrustedProxy>,
 }
 
-pub fn default_passphrase_file(data_dir: &Path) -> PathBuf {
-    data_dir.join(PASSPHRASE_FILE)
+/// Where the owner passphrase's hash lives: `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else the data dir.
+pub fn owner_passphrase_file(data_dir: &Path) -> PathBuf {
+    passphrase_file(&|name: &str| std::env::var(name).ok(), data_dir)
+}
+
+fn passphrase_file(var: &impl Fn(&str) -> Option<String>, data_dir: &Path) -> PathBuf {
+    var("NEXUS_OWNER_PASSPHRASE_HASH_FILE")
+        .map_or_else(|| data_dir.join(PASSPHRASE_FILE), PathBuf::from)
+}
+
+fn read_hash_file(path: &Path) -> Result<String, ConfigError> {
+    let not_read = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ConfigError::MissingPassphraseHash(path.to_owned())
+        } else {
+            ConfigError::Io(path.to_owned(), e)
+        }
+    };
+    let mode = std::fs::metadata(path)
+        .map_err(not_read)?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        return Err(ConfigError::LoosePassphraseFile(
+            path.to_owned(),
+            mode & 0o777,
+        ));
+    }
+    Ok(std::fs::read_to_string(path)
+        .map_err(not_read)?
+        .trim()
+        .to_owned())
 }
 
 impl AuthConfig {
-    /// Reads `NEXUS_PUBLIC_BASE_URL`; `NEXUS_OWNER_PASSPHRASE_HASH`, else the file named by
-    /// `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else `<data_dir>/owner-passphrase.argon2`; and optionally
-    /// `NEXUS_TRUSTED_IP_HEADER` with `NEXUS_TRUSTED_PROXY_PEERS` (default: loopback only).
-    pub fn from_env(data_dir: &Path) -> Result<Self, ConfigError> {
-        Self::from_vars(|name| std::env::var(name).ok(), data_dir)
+    /// Takes the public origin from the caller (the server's `--base-url`), and reads the rest:
+    /// `NEXUS_OWNER_PASSPHRASE_HASH`, else the file named by `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else
+    /// `<data_dir>/owner-passphrase.argon2`; and optionally `NEXUS_TRUSTED_IP_HEADER` with
+    /// `NEXUS_TRUSTED_PROXY_PEERS` (default: loopback only). Everything is checked here.
+    pub fn from_env(public_base_url: &str, data_dir: &Path) -> Result<Self, ConfigError> {
+        Self::from_vars(|name| std::env::var(name).ok(), public_base_url, data_dir)
     }
 
     fn from_vars(
         var: impl Fn(&str) -> Option<String>,
+        public_base_url: &str,
         data_dir: &Path,
     ) -> Result<Self, ConfigError> {
-        let public_base_url = var("NEXUS_PUBLIC_BASE_URL").ok_or(ConfigError::MissingBaseUrl)?;
+        let public_base_url = normalize_base_url(public_base_url)?;
         let owner_passphrase_hash = match var("NEXUS_OWNER_PASSPHRASE_HASH") {
             Some(hash) => hash,
-            None => {
-                let path = var("NEXUS_OWNER_PASSPHRASE_HASH_FILE")
-                    .map_or_else(|| default_passphrase_file(data_dir), PathBuf::from);
-                match std::fs::read_to_string(&path) {
-                    Ok(hash) => hash.trim().to_owned(),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Err(ConfigError::MissingPassphraseHash(path));
-                    }
-                    Err(e) => return Err(ConfigError::Io(path, e)),
-                }
-            }
+            None => read_hash_file(&passphrase_file(&var, data_dir))?,
         };
+        validate_passphrase_hash(&owner_passphrase_hash)?;
         let trusted_proxy = var("NEXUS_TRUSTED_IP_HEADER")
             .map(|header| {
                 let peers = match var("NEXUS_TRUSTED_PROXY_PEERS") {
@@ -106,9 +130,9 @@ impl AuthConfig {
 
 /// The canonical origin of a configured base URL. Cookies use `Path=/` and routes are absolute, so
 /// a path prefix is refused rather than half-supported.
-pub(crate) fn normalize_base_url(raw: &str) -> Result<String, ConfigError> {
+pub fn normalize_base_url(raw: &str) -> Result<String, ConfigError> {
     let url = Url::parse(raw).map_err(|_| ConfigError::InvalidBaseUrl)?;
-    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
     if (url.scheme() != "https" && !(url.scheme() == "http" && local))
         || !url.username().is_empty()
         || url.password().is_some()
@@ -138,70 +162,77 @@ mod tests {
 
     const HASH: &str = "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA";
 
+    const BASE: &str = "https://crm.example.test";
+    const ENV_HASH: (&str, &str) = ("NEXUS_OWNER_PASSPHRASE_HASH", HASH);
+
     fn config(vars: &[(&str, &str)], dir: &Path) -> Result<AuthConfig, ConfigError> {
         let vars: HashMap<String, String> = vars
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        AuthConfig::from_vars(|name| vars.get(name).cloned(), dir)
+        AuthConfig::from_vars(|name| vars.get(name).cloned(), BASE, dir)
     }
 
-    const BASE: (&str, &str) = ("NEXUS_PUBLIC_BASE_URL", "https://crm.example.test");
+    fn write_private(path: &Path, contents: &str) {
+        std::fs::write(path, contents).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
 
     #[test]
-    fn missing_base_url_and_missing_hash_are_errors() {
+    fn a_missing_hash_is_an_error_naming_the_fix() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(matches!(
-            config(&[], dir.path()),
-            Err(ConfigError::MissingBaseUrl)
-        ));
-        assert!(matches!(
-            config(&[BASE], dir.path()),
-            Err(ConfigError::MissingPassphraseHash(_))
-        ));
+        let error = config(&[], dir.path()).unwrap_err();
+        assert!(matches!(error, ConfigError::MissingPassphraseHash(_)));
+        assert!(error.to_string().contains("nexus set-passphrase"));
     }
 
     #[test]
     fn hash_comes_from_env_then_named_file_then_default_file() {
         let dir = tempfile::tempdir().unwrap();
-        let env = ("NEXUS_OWNER_PASSPHRASE_HASH", HASH);
         assert_eq!(
-            config(&[BASE, env], dir.path())
+            config(&[ENV_HASH], dir.path())
                 .unwrap()
                 .owner_passphrase_hash,
             HASH
         );
 
-        std::fs::write(default_passphrase_file(dir.path()), format!("{HASH}\n")).unwrap();
-        assert_eq!(
-            config(&[BASE], dir.path()).unwrap().owner_passphrase_hash,
-            HASH
-        );
+        write_private(&dir.path().join(PASSPHRASE_FILE), &format!("{HASH}\n"));
+        assert_eq!(config(&[], dir.path()).unwrap().owner_passphrase_hash, HASH);
 
         let named = dir.path().join("elsewhere");
-        std::fs::write(&named, "$argon2id$other").unwrap();
+        let other = "$argon2id$v=19$m=8,t=1,p=1$b3RoZXJzYWx0$AAAAAAAAAAAAAAAAAAAAAA";
+        write_private(&named, other);
         let file = ("NEXUS_OWNER_PASSPHRASE_HASH_FILE", named.to_str().unwrap());
         assert_eq!(
-            config(&[BASE, file], dir.path())
-                .unwrap()
-                .owner_passphrase_hash,
-            "$argon2id$other"
+            config(&[file], dir.path()).unwrap().owner_passphrase_hash,
+            other
         );
+    }
+
+    #[test]
+    fn a_hash_file_others_can_read_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PASSPHRASE_FILE);
+        write_private(&path, HASH);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(matches!(
+            config(&[], dir.path()),
+            Err(ConfigError::LoosePassphraseFile(_, 0o640))
+        ));
     }
 
     #[test]
     fn forwarded_headers_are_ignored_unless_configured() {
         let dir = tempfile::tempdir().unwrap();
-        let env = ("NEXUS_OWNER_PASSPHRASE_HASH", HASH);
         assert!(
-            config(&[BASE, env], dir.path())
+            config(&[ENV_HASH], dir.path())
                 .unwrap()
                 .trusted_proxy
                 .is_none()
         );
 
         let header = ("NEXUS_TRUSTED_IP_HEADER", "CF-Connecting-IP");
-        let proxy = config(&[BASE, env, header], dir.path())
+        let proxy = config(&[ENV_HASH, header], dir.path())
             .unwrap()
             .trusted_proxy
             .unwrap();
@@ -215,7 +246,7 @@ mod tests {
         );
 
         let peers = ("NEXUS_TRUSTED_PROXY_PEERS", "10.0.0.1, 10.0.0.2");
-        let proxy = config(&[BASE, env, header, peers], dir.path())
+        let proxy = config(&[ENV_HASH, header, peers], dir.path())
             .unwrap()
             .trusted_proxy
             .unwrap();
@@ -223,7 +254,7 @@ mod tests {
 
         let bad = ("NEXUS_TRUSTED_PROXY_PEERS", "not-an-ip");
         assert!(matches!(
-            config(&[BASE, env, header, bad], dir.path()),
+            config(&[ENV_HASH, header, bad], dir.path()),
             Err(ConfigError::InvalidTrustedPeers)
         ));
     }
@@ -236,6 +267,7 @@ mod tests {
             "https://crm.example.test:8443",
             "http://localhost:3000",
             "http://127.0.0.1:3000/",
+            "http://[::1]:3000",
         ] {
             assert!(normalize_base_url(good).is_ok(), "{good}");
         }
