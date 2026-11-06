@@ -72,7 +72,7 @@
     } catch {
       return;
     }
-    for (const id of ["cv-revisions", "cv-approval", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption"]) {
+    for (const id of ["cv-revisions", "cv-approval", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
       const next = fresh.getElementById(id);
       if (next) byId(id).replaceWith(document.adoptNode(next));
     }

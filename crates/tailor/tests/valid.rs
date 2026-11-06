@@ -318,7 +318,7 @@ fn new_words_compare_with_the_approved_text_in_any_case() {
     assert_eq!(report.violations, []);
     assert_eq!(
         tokens_of(&report, Rule::NewWords),
-        ["Initech", "google", "and", "again"]
+        ["Initech", "google", "again"]
     );
     // A first approval has only the wording the owner locked to go by, as in finding 12.
     let report = check(

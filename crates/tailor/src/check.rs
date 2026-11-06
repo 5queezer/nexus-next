@@ -1493,6 +1493,9 @@ pub fn unverified_urls(text: &str, facts: &Facts) -> Vec<String> {
 
 const LINK_LABEL: &str = "Link: ";
 const PDF_INFO_LABEL: &str = "PDF info: ";
+/// Words that can't state a fact by themselves, in the CV's two languages. Listing them would bury the
+/// ones that can.
+const FUNCTION_WORDS: &str = "a an and at as by for from in into of on or the to with und oder bei bis der die das den dem des ein eine einen einem einer für im in mit nach von vor zu zum zur";
 /// What the template and these lines write themselves, which is no one's new word.
 const TEMPLATE_WORDS: &str = "Summary Skills Experience Projects Education Languages Profil Kenntnisse Berufserfahrung Projekte Ausbildung Sprachen https http mailto tel www";
 
@@ -1596,6 +1599,7 @@ fn review(
     let mut familiar = known.words.clone();
     add_words(&mut familiar, &known.whole.join(" "));
     add_words(&mut familiar, TEMPLATE_WORDS);
+    add_words(&mut familiar, FUNCTION_WORDS);
     add_words(&mut familiar, &normalize(owners_wording));
     if let Some(previous) = previous {
         add_words(&mut familiar, &normalize(&previous.replace('\n', " ")));

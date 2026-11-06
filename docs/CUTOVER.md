@@ -35,6 +35,8 @@ The Ethernet link dropped for 22 minutes on 2026-11-06, cause unknown, taking th
 
 Check that nothing still needs old Nexus's `/resume` and `/tailor` routes (SPEC section 10), because they disappear at cutover.
 
+Apply `SKILL-CHANGES.md` to the skills on Hermes before they use the new server, above all its rule that a submission must only use a document made from an approved revision. CV tables are empty in production, so an agent's first `generate_tailored_cv` runs with unlocked facts and stores a PDF stamped `DRAFT, NOT APPROVED`. Before any real application uses a generated CV, the owner runs `nexus cv-facts lock` (SPEC section 9a), and each draft then waits for their approval.
+
 ## 2. Install
 
 Follow `deploy/README.md` sections 1 to 3: build, install, calendar token, `nexus.env`, passphrase, public backup key. For now, set the test origin and the header for the ingress you will test first:

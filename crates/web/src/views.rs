@@ -86,7 +86,7 @@ pub fn page_with_scripts(
                                 "Follow-ups"
                                 {(overdue > 0).then(|| view! { <span class="count">{overdue}</span> })}
                             </a>
-                            <a href="/cv" aria-current=current(Nav::Cv)>
+                            <a href="/cv" id="nav-cv" aria-current=current(Nav::Cv)>
                                 "CV"
                                 {(awaiting > 0).then(|| view! {
                                     <span class="count" title="CV revisions waiting for your approval">{awaiting}</span>

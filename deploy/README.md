@@ -322,7 +322,7 @@ The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass t
 
 **The limit Nexus can't enforce.** Only the page can close a live connection. A browser that ignores the page's timers (altered, or a debugger) could keep talking to OpenAI past the limit, until OpenAI ends the session itself, though its tool calls stop working. The project budget limit is the backstop for that.
 
-**What a voice session can do.** Eight tools and no others, enforced on the server: `get_cv_source`, `patch_cv`, `render_cv_pdf` (no saving), `list_cv_revisions`, `revert_cv`, `list_applications_filtered`, `get_application`, `list_application_events`. It can't change an application or mark one applied, and its edits pass the same integrity check as any other. The log names the tools called, never their arguments.
+**What a voice session can do.** Eight tools and no others, enforced on the server: `get_cv_source`, `patch_cv`, `render_cv_pdf` (no saving), `list_cv_revisions`, `revert_cv`, `list_applications_filtered`, `get_application`, `list_application_events`. It can't change an application or mark one applied. Its edits pass the same hard rules as any other, and stay drafts until you approve them on screen: it can't approve, and its preview stays stamped. The log names the tools called, never their arguments.
 
 ## 8. Upgrade and rollback
 

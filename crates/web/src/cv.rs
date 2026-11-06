@@ -184,7 +184,7 @@ fn rule_text(rule: &str) -> &'static str {
         }
         "languageLevel" => "A language level that differs from your facts",
         "claimWords" => "A degree, title or language claim. Is it true here?",
-        "numbers" => "A number or date. Is it the right one, in the right place?",
+        "numbers" => "A number or date. Is it right, and in the right place?",
         "numberWords" => "A spelled-out count. Is it right?",
         "newWords" => "A new word. Is it true?",
         "bannedPhrases" => "A phrase you have banned",
@@ -636,8 +636,8 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
             let context = item.context.clone();
             view! {
                 <li class=serious.then_some("serious")>
+                    <mark>{item.token.clone()}</mark>" "
                     <b>{rule_text(&rule_of(item))}</b>
-                    ": " <mark>{item.token.clone()}</mark>
                     {(!context.is_empty()).then(|| view! {
                         <small class="context">{marked(&context, &item.token)}</small>
                     })}
@@ -647,7 +647,7 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
         .collect();
     let more = items.len().saturating_sub(MAX_LISTED_ITEMS);
     view! {
-        <ul class="problems" id="cv-review-items">{listed}</ul>
+        <ul class="review-items" id="cv-review-items">{listed}</ul>
         {(more > 0).then(|| view! {
             <p class="hint">{format!("And {more} more. The text below marks them where they stand.")}</p>
         })}

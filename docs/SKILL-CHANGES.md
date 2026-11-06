@@ -32,8 +32,10 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 
 **`resume-tailoring`, `job-application-tracking` and anything else that produces a CV**
 - Typst replaces Reactive Resume once the owner has moved real applications across. Until then Reactive Resume stays usable. Don't remove its steps before the owner says so.
-- `generate_tailored_cv` now works. Its response is the same, but it can refuse with `{"error":{"code":"cv_fact_violation","violations":[...]}}`. Report the violation and stop. Don't reword around it.
-- `upsert_cv_profile` can refuse with `cv_facts_locked` once the owner has locked the facts. Its `fields` say what would have changed and `tokens` which new numbers. Only the owner can change facts: `nexus cv-facts unlock` on the board.
+- `generate_tailored_cv` now works. Its response is the same, but with locked facts it can answer `{"error":{"code":"cv_approval_required","variant":...,"revision":...,"approvalPath":...}}`: the text is a draft, the revision is stored, and no document exists. Tell the owner the path and stop. After they approve, the same call stores the document. It can also refuse with `cv_fact_violation`. Report it and stop. Don't reword around it. A generate from the owner's wording, unchanged since the last lock and with no `profileOverride`, needs no approval.
+- `render_cv_pdf` gives a draft as stamped PNGs with no PDF. Saving a draft to an application answers `cv_approval_required`.
+- `upsert_cv_profile` can refuse with `cv_facts_locked` once the owner has locked the facts. Its `fields` say what would have changed. Only the owner can change facts: `nexus cv-facts unlock` on the board. Wording changes go through, numbers included, and a CV generated from them is a draft.
+- **A rule for every skill that submits an application: a submission must only use a document made from an approved revision.** That means a document stored by `generate_tailored_cv` or `render_cv_pdf` with `saveToApplicationId`. `upload_document_content` is outside the gate, so never upload a CV made elsewhere and submit that. Never call a CV final, ready or approved until a tool says `state: "approved"`.
 
 **A new skill section for dictation, for the Hermes agent on Telegram.** The full text and the reasons are in [`DICTATION.md`](DICTATION.md). In short:
 
@@ -41,9 +43,11 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 >
 > On `cv_compile_failed`, read the `diagnostics`, fix your source and call `patch_cv` again. Don't bother the user with it. On `cv_edit_no_match` or `cv_edit_ambiguous`, fix your `oldText`. On `cv_revision_conflict` or `cv_facts_changed`, read the source again and reapply.
 >
-> On `cv_fact_violation`, tell the user exactly which `token` was refused and that it is a locked fact only they can change, on the board. Never work around it: don't reword it, spell it differently, split it, or try another tool. Nothing was saved. On `cv_facts_not_locked`, tell the user to run `nexus cv-facts lock`, read what it prints, and confirm it with `--confirm`.
+> On success the edit is a **draft**. Call `render_cv_pdf` and send the PNG, which is stamped `DRAFT, NOT APPROVED`. Then name the most important `reviewItems`, which come most serious first, and give the `approvalPath` on the owner's dashboard. You can't tell whether those items are true: ask the user to check them on screen and approve there. **You can't approve, and no tool can. Never say the CV is final, ready or approved until `state` is `approved`.**
 >
-> On success, call `render_cv_pdf` and send the PNG back. If `reviewTokens` isn't empty, ask the user to check those words: the check can't judge them.
+> On `cv_approval_required`, nothing was stored as a document. Give the user its `approvalPath` and stop. After they approve, the same call goes through.
+>
+> On `cv_fact_violation`, tell the user exactly which `token` was refused: a reader would see something other than what they review, or it is a phrase they banned. Never work around it: don't reword it, spell it differently, split it, or try another tool. Nothing was saved. On `cv_facts_not_locked`, tell the user to run `nexus cv-facts lock`, read what it prints, and confirm it with the `--confirm <hash>` it names.
 >
 > On `cv_render_busy`, wait 10 seconds and retry, at most 3 times. If a call gets no answer at all, it may have stored its revision: call `get_cv_source` and see, before you apply the edit again.
 
