@@ -15,6 +15,12 @@ chrono-tz = "0.10.4"
 clap = { version = "4.6", features = ["derive"] }
 hex = "0.4"
 anyhow = "1"
+argon2 = "0.5.3"
+base64 = "0.22.1"
+hmac = "0.12.1"
+percent-encoding = "2.3.2"
+rand = "0.10.3"
+url = "2.5.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.10"
