@@ -263,7 +263,9 @@ async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
         StatusCode::SEE_OTHER
     );
     let (_, _, page) = get(&f.app, VARIANT).await;
-    let diff_of_head = page.split("Revision 1").next().unwrap();
+    // The revision list: a draft's review above it shows the whole CV.
+    let listed = page.split("id=\"cv-revisions\"").nth(1).unwrap();
+    let diff_of_head = listed.split("Revision 1").next().unwrap();
     assert_eq!(
         diff_of_head.matches("class=\"da\"").count(),
         1,
