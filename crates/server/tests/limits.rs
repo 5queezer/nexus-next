@@ -260,10 +260,12 @@ async fn only_a_few_large_bodies_at_once_and_small_calls_still_get_through() {
         });
     }
     tokio::task::yield_now().await;
-    assert!(
-        MAX_LARGE_BODIES < MCP.in_flight,
-        "slots stay for tool calls"
-    );
+    const {
+        assert!(
+            MAX_LARGE_BODIES < MCP.in_flight,
+            "slots stay for tool calls"
+        )
+    };
 
     let call = Request::post("/call").body(Body::from("{}")).unwrap();
     assert_eq!(
