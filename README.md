@@ -7,6 +7,8 @@ Status: the M1 code is in place: storage, importer, the 35-tool MCP server, OAut
 - [`docs/SPEC.md`](docs/SPEC.md): architecture, data model, migration, milestones, open items
 - [`docs/CUTOVER.md`](docs/CUTOVER.md): runbook from today's state to cutover, with what has never been run
 - [`contract/mcp-tools.snapshot.json`](contract/mcp-tools.snapshot.json): frozen MCP tool contract (35 tools, from `nexus-crm` at `235138d`, the deployed commit)
+- [`contract/mcp-tools.additive.json`](contract/mcp-tools.additive.json): the 5 M2 CV tools, listed after the frozen ones
+- [`docs/DICTATION.md`](docs/DICTATION.md): editing the CV by Telegram voice note
 
 ## What's where
 

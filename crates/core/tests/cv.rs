@@ -105,7 +105,7 @@ async fn a_profile_reads_back_exactly_as_written_while_facts_and_wording_part() 
         json!({"id": "brightpath", "tier": 1, "bullets": ["Cut invoice errors by 40% across 3 depots."]}),
         "cv_profile keeps only the wording"
     );
-    let state = cv_facts::get(&mut *db.conn().await.unwrap()).await.unwrap();
+    let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
     assert_eq!(state.facts.name, "Mara Example");
     assert_eq!(state.facts.employment[0].company, "Brightpath Logistics");
     assert_eq!(state.facts.education[0].id, "edu-1");
@@ -116,7 +116,7 @@ async fn a_profile_reads_back_exactly_as_written_while_facts_and_wording_part() 
     assert_eq!(state.version, 2, "the facts changed once");
 
     upsert(&db, &input).await.unwrap();
-    let state = cv_facts::get(&mut *db.conn().await.unwrap()).await.unwrap();
+    let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
     assert_eq!(state.version, 2, "the same facts again are no change");
     assert_eq!(
         count(&db, "SELECT count(*) FROM cv_facts_history").await,
@@ -186,7 +186,7 @@ async fn locking_confirms_the_numbers_in_the_wording_and_records_who() {
     for token in ["40%", "3", "eight years", "S3"] {
         assert!(added.iter().any(|a| a == token), "{token} in {added:?}");
     }
-    let state = cv_facts::get(&mut *db.conn().await.unwrap()).await.unwrap();
+    let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
     assert!(state.is_locked());
     assert_eq!(state.facts.allowed_tokens, added);
     for text in ["40% and 3", "Eight years", "S3"] {
@@ -312,7 +312,7 @@ async fn locked_facts_refuse_every_change_and_write_nothing() {
     let saved = upsert(&db, &fewer).await.unwrap();
     assert_eq!(saved.experience.0.as_array().unwrap().len(), 1);
     assert_eq!(
-        cv_facts::get(&mut *db.conn().await.unwrap())
+        cv_facts::get(&mut db.conn().await.unwrap())
             .await
             .unwrap()
             .facts
@@ -349,7 +349,7 @@ async fn revisions_and_history_cannot_change_and_a_deleted_application_takes_its
     upsert(&db, &input()).await.unwrap();
     lock(&db).await;
     let app = applications::create(
-        &mut *db.conn().await.unwrap(),
+        &mut db.conn().await.unwrap(),
         "Acme",
         "Engineer",
         Default::default(),
@@ -387,7 +387,7 @@ async fn revisions_and_history_cannot_change_and_a_deleted_application_takes_its
         );
     }
 
-    applications::delete(&mut *db.conn().await.unwrap(), app.id)
+    applications::delete(&mut db.conn().await.unwrap(), app.id)
         .await
         .unwrap();
     assert_eq!(

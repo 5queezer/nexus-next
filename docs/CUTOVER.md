@@ -224,7 +224,7 @@ python3 parity/compare.py "$RUN/baseline" "$RUN/rust" --unordered contacts --uno
 git checkout parity/id-floors.json
 ```
 
-Expect 3 documented calls (`generate_tailored_cv`) and 1 failure (`13-read-pagination-filters`, `sort: company`, explained in SPEC section 7). Anything else, including a failed `expect`, is a stop.
+Expect no documented calls and 1 failure (`13-read-pagination-filters`, `sort: company`, explained in SPEC section 7). Anything else, including a failed `expect`, is a stop.
 
 Then **board:** `sudo systemctl start nexus`, and check healthz.
 
@@ -244,7 +244,7 @@ Both clients use OAuth, and **both must authorize again**, because the OAuth tab
 
 1. **Owner:** point `<final-host>` at the chosen ingress. Set `NEXUS_PUBLIC_BASE_URL=https://<final-host>` in `/etc/nexus/nexus.env`, then `sudo systemctl restart nexus`. The issuer must be `https://<final-host>` (check 1 of step 4).
 2. **Claude.ai:** remove the old connector, add `https://<final-host>/api/mcp`, log in, approve, run a read and a harmless write, such as a note on a test application.
-3. **Hermes Career Ops:** point its MCP server URL at the same address, restart it and authorize. On a headless host that means pasting the callback by hand. `oauth.redirect_host` stays `127.0.0.1` or `localhost`. It must list 35 tools. Remove any stored token or registration for the old server first. A stale stored override has broken Hermes OAuth before. Its helper scripts `nexus_refresh.py` and `nexus_mcp_call.py` hold a client registration and tokens of their own, which also end here: they must register again with a loopback or allowed redirect. Apply the skill corrections in [`SKILL-CHANGES.md`](SKILL-CHANGES.md) now too; nobody has applied them yet.
+3. **Hermes Career Ops:** point its MCP server URL at the same address, restart it and authorize. On a headless host that means pasting the callback by hand. `oauth.redirect_host` stays `127.0.0.1` or `localhost`. It must list 40 tools: the 35 frozen ones, then the 5 CV tools. Remove any stored token or registration for the old server first. A stale stored override has broken Hermes OAuth before. Its helper scripts `nexus_refresh.py` and `nexus_mcp_call.py` hold a client registration and tokens of their own, which also end here: they must register again with a loopback or allowed redirect. Apply the skill corrections in [`SKILL-CHANGES.md`](SKILL-CHANGES.md) now too; nobody has applied them yet.
 4. **API token,** only if something uses one: `sudo -u nexus nexus issue-token --data-dir /var/lib/nexus --name <name>`.
 5. **Board:** `sudo -u nexus nexus grants list --data-dir /var/lib/nexus` shows exactly those two grants; `nexus grants revoke <id>` removes one without touching the other. Resume the Hermes pipeline.
 

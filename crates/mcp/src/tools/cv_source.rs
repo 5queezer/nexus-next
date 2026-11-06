@@ -72,13 +72,13 @@ pub(super) async fn compile(
     facts: &Facts,
     pdf: bool,
     preview_pages: u32,
-) -> Result<Rendered, CallToolResult> {
+) -> Result<Rendered, Box<CallToolResult>> {
     let slot = ctx.state.render_slot.clone();
     let Ok(Ok(_slot)) = tokio::time::timeout(RENDER_QUEUE_WAIT, slot.acquire_owned()).await else {
-        return Err(error_with(
+        return Err(Box::new(error_with(
             "cv_render_busy",
             json!({"message": "Other CVs are rendering. Nothing was stored. Try again shortly."}),
-        ));
+        )));
     };
     let request = RenderRequest {
         source: source.to_owned(),
@@ -93,7 +93,7 @@ pub(super) async fn compile(
         .renderer
         .render(request)
         .await
-        .map_err(render_error)
+        .map_err(|error| Box::new(render_error(error)))
 }
 
 /// `true` when the facts moved while a compile ran, so that its check says nothing about them.
@@ -307,21 +307,21 @@ pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
     ))
 }
 
-fn apply_edits(source: &str, edits: &[Value]) -> Result<String, CallToolResult> {
+fn apply_edits(source: &str, edits: &[Value]) -> Result<String, Box<CallToolResult>> {
     let mut edited = source.to_owned();
     for (index, edit) in edits.iter().enumerate() {
         let old = edit["oldText"].as_str().unwrap_or_default();
         let new = edit["newText"].as_str().unwrap_or_default();
         let matches = edited.matches(old).count();
         if matches != 1 {
-            return Err(error_with(
+            return Err(Box::new(error_with(
                 if matches == 0 {
                     "cv_edit_no_match"
                 } else {
                     "cv_edit_ambiguous"
                 },
                 json!({"edit": index, "oldText": old, "matches": matches}),
-            ));
+            )));
         }
         edited = edited.replacen(old, new, 1);
     }
@@ -345,11 +345,11 @@ async fn compile_and_check(
     source: &str,
     previous: &str,
     facts: &Facts,
-) -> Result<(Rendered, Vec<String>), CallToolResult> {
+) -> Result<(Rendered, Vec<String>), Box<CallToolResult>> {
     let rendered = compile(ctx, source, facts, false, 0).await?;
     let report = check(&rendered.text, facts, None);
     if !report.violations.is_empty() {
-        return Err(violation_error(&report.violations));
+        return Err(Box::new(violation_error(&report.violations)));
     }
     let previous: Option<RenderedText> = compile(ctx, previous, facts, false, 0)
         .await
@@ -398,7 +398,7 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
     }
     let source = match apply_edits(&base.source, edits) {
         Ok(source) => source,
-        Err(error) => return Ok(error),
+        Err(error) => return Ok(*error),
     };
     if source == base.source && create_from.is_none() {
         return Ok(code_error("cv_no_change"));
@@ -406,7 +406,7 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
     let (rendered, review_tokens) =
         match compile_and_check(ctx, &source, &base.source, &state.facts).await {
             Ok(done) => done,
-            Err(error) => return Ok(error),
+            Err(error) => return Ok(*error),
         };
 
     let mut tx = ctx.state.db.begin_write().await?;
@@ -500,7 +500,7 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
     let (rendered, review_tokens) =
         match compile_and_check(ctx, &target.source, &head.source, &state.facts).await {
             Ok(done) => done,
-            Err(error) => return Ok(error),
+            Err(error) => return Ok(*error),
         };
 
     let mut tx = ctx.state.db.begin_write().await?;
@@ -660,7 +660,7 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     let rendered = match compile(ctx, &base.source, &state.facts, true, preview_pages).await {
         Ok(rendered) => rendered,
-        Err(error) => return Ok(error),
+        Err(error) => return Ok(*error),
     };
     let report = check(&rendered.text, &state.facts, None);
     if !report.violations.is_empty() {

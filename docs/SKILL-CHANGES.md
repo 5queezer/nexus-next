@@ -27,6 +27,24 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 - **"`MCP error -32602: Required path: [items]`".** The real text is a JSON issue list with `"path": ["items"]` and `"message": "Required"`. Cosmetic, but agents matching on it will miss it.
 - **`/opt/data/nexus_refresh.py` and `nexus_mcp_call.py`.** QA could not read these. They hold a client registration and tokens, which end at cutover: the tables start empty, so they must re-register with a loopback or allowed redirect.
 
+**Every skill or script that counts Nexus's tools**
+- The server now lists 40 tools, not 35: the same 35 in the same order with the same schemas, then `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions` and `revert_cv`. A check for "35 tools" should become "at least these 35", because a client that compares the whole list will fail.
+
+**`resume-tailoring`, `job-application-tracking` and anything else that produces a CV**
+- Typst replaces Reactive Resume once the owner has moved real applications across. Until then Reactive Resume stays usable. Don't remove its steps before the owner says so.
+- `generate_tailored_cv` now works. Its response is the same, but it can refuse with `{"error":{"code":"cv_fact_violation","violations":[...]}}`. Report the violation and stop. Don't reword around it.
+- `upsert_cv_profile` can refuse with `cv_facts_locked` once the owner has locked the facts. Its `fields` say what would have changed and `tokens` which new numbers. Only the owner can change facts: `nexus cv-facts unlock` on the board.
+
+**A new skill section for dictation, for the Hermes agent on Telegram.** The full text and the reasons are in [`DICTATION.md`](DICTATION.md). In short:
+
+> When the user sends a voice note about their CV: transcribe it, call `get_cv_source`, then `patch_cv` with `origin: "telegram"` and the `revision` you read as `expectedRevision`.
+>
+> On `cv_compile_failed`, read the `diagnostics`, fix your source and call `patch_cv` again. Don't bother the user with it. On `cv_edit_no_match` or `cv_edit_ambiguous`, fix your `oldText`. On `cv_revision_conflict` or `cv_facts_changed`, read the source again and reapply.
+>
+> On `cv_fact_violation`, tell the user exactly which `token` was refused and that it is a locked fact only they can change, on the board. Never work around it: don't reword it, spell it differently, split it, or try another tool. Nothing was saved. On `cv_facts_not_locked`, tell the user to run `nexus cv-facts lock`.
+>
+> On success, call `render_cv_pdf` and send the PNG back. If `reviewTokens` isn't empty, ask the user to check those words: the check can't judge them.
+
 **Confirmed accurate, no change:** mixed lifecycle updates failing atomically, `idempotencyKey` needing `occurredAt`, outcome limit 255, omitted `remote` reading `false`, `{id, nextAction: null}`, `status` as an array, `items` as the parameter, event argument names, archived records keeping `inbound`, closure events setting `lastContact`, strict event metadata, `companySize: null` accepted, batch result shape.
 
 **Not checked:** `resume-tailoring` and `job-application-tracking` were not available to QA, so the SPEC's open item about `/resume` and `/tailor` is still open.

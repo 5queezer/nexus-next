@@ -147,7 +147,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
     ));
     let rendered = match compile(ctx, &source, &state.facts, true, 0).await {
         Ok(rendered) => rendered,
-        Err(error) => return Ok(error),
+        Err(error) => return Ok(*error),
     };
     let report = check(
         &rendered.text,

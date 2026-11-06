@@ -201,15 +201,25 @@ fn wording_pieces(
 
 /// The wording of the stored profile, if any: what locking the facts confirms.
 pub(crate) async fn stored_wording(conn: &mut SqliteConnection) -> Result<Vec<(String, String)>> {
-    let row: Option<(String, Json<Value>, Json<Value>, Json<Value>)> =
+    #[derive(sqlx::FromRow)]
+    struct Wording {
+        profile: String,
+        skills: Json<Value>,
+        experience: Json<Value>,
+        projects: Json<Value>,
+    }
+    let row: Option<Wording> =
         sqlx::query_as("SELECT profile, skills, experience, projects FROM cv_profile")
             .fetch_optional(conn)
             .await?;
-    Ok(
-        row.map_or_else(Vec::new, |(profile, skills, experience, projects)| {
-            wording_pieces(&profile, &skills.0, &experience.0, &projects.0)
-        }),
-    )
+    Ok(row.map_or_else(Vec::new, |row| {
+        wording_pieces(
+            &row.profile,
+            &row.skills.0,
+            &row.experience.0,
+            &row.projects.0,
+        )
+    }))
 }
 
 /// Why a profile can't be written over locked facts, per SPEC section 9a.
