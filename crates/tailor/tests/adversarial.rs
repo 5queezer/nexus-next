@@ -899,6 +899,11 @@ async fn squeezed_text_cannot_draw_numbers_the_check_reads_otherwise() {
                 "Served #text(spacing: 0%)[1 2] clients.",
             ),
             (
+                "runs drawn over one another, which a PDF reader joins",
+                Rule::Transform,
+                "Served #box[12]#h(-1.4em)#box[6] clients.",
+            ),
+            (
                 "a thin word space draws 1 2 almost as 12",
                 Rule::Transform,
                 "Served #text(spacing: 30%)[1 2] clients.",

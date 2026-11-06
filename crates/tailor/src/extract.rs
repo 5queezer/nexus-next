@@ -295,7 +295,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
         }
     }
     result.links = links.iter().map(|link| link.read(&runs)).collect();
-    result.lines = lines_from_runs(runs);
+    result.lines = lines_from_runs(runs, &mut result.transformed);
     let info = document.info();
     result
         .metadata
@@ -372,12 +372,30 @@ impl PageLink {
         });
         RenderedLink {
             target: self.target.clone(),
-            text: join_line(inside.cloned().collect()),
+            text: {
+                let mut inside: Vec<Run> = inside.cloned().collect();
+                inside.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+                join_line(inside)
+            },
         }
     }
 }
 
-fn lines_from_runs(mut runs: Vec<Run>) -> Vec<String> {
+/// A line's runs that stand on another's text by more than a word gap's width, as `#h(-1em)` does.
+/// A PDF reader then joins what the lines keep apart. `line` is sorted by where runs start.
+fn overlapping(line: &[Run]) -> impl Iterator<Item = &str> {
+    let mut end = f64::NEG_INFINITY;
+    line.iter()
+        .filter(|run| !run.text.trim().is_empty())
+        .filter(move |run| {
+            let overlaps = run.x < end - WORD_GAP * run.size;
+            end = end.max(run.end_x);
+            overlaps
+        })
+        .map(|run| run.text.as_str())
+}
+
+fn lines_from_runs(mut runs: Vec<Run>, drawn_over: &mut Vec<String>) -> Vec<String> {
     runs.sort_by(|a, b| {
         (a.bucket, a.y, a.x)
             .partial_cmp(&(b.bucket, b.y, b.x))
@@ -385,24 +403,29 @@ fn lines_from_runs(mut runs: Vec<Run>) -> Vec<String> {
     });
     let mut lines = Vec::new();
     let mut line: Vec<Run> = Vec::new();
+    let mut finish = |mut line: Vec<Run>| {
+        line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        drawn_over.extend(overlapping(&line).map(str::to_owned));
+        lines.push(join_line(line));
+    };
     for run in runs {
         let same_line = line.first().is_some_and(|first: &Run| {
             first.bucket == run.bucket
                 && (run.y - first.y).abs() <= LINE_GAP * first.size.max(run.size)
         });
         if !same_line && !line.is_empty() {
-            lines.push(join_line(std::mem::take(&mut line)));
+            finish(std::mem::take(&mut line));
         }
         line.push(run);
     }
     if !line.is_empty() {
-        lines.push(join_line(line));
+        finish(line);
     }
     lines
 }
 
-fn join_line(mut line: Vec<Run>) -> String {
-    line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+/// Joins runs in the order given, which is where they start on the page.
+fn join_line(line: Vec<Run>) -> String {
     let mut text = String::new();
     let mut end = f64::NEG_INFINITY;
     for run in line {

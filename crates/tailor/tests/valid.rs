@@ -397,6 +397,9 @@ async fn translation_and_a_uniform_scale_stay_readable() {
         "#set par(justify: true)\n#box(width: 8cm)[Mentored two colleagues through their first on-call rotation, and they stayed on the team for it.]",
         "*Bold* and _italic_ and #text(fill: blue)[blue] and #text(size: 12pt)[large] words.",
         "#text(tracking: 0.1em)[Spaced out] and #text(tracking: -0.02em)[slightly tight].",
+        "Water#h(-0.1em)fall, x#super[a]#sub[b], and #underline[underlined] text.",
+        "Left #h(1fr) Right",
+        "#grid(columns: (1fr, 1fr), [Left cell], [Right cell])",
     ] {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;
