@@ -140,9 +140,13 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 - Candidates recovered from Hermes data into quarantine: 21 match on size and name, 5 on size only, 6 have none. These rows have no stored hash, so identity can't be proven. They need human confirmation before import, and they stay out of `blobs/`.
 
 **Importer rules from this data:**
-- `contentHash` is null on 35 rows, including 3 with files: compute it from the blob and record that it was computed at import.
-- Unconfirmed rows import with a `blob_missing` state, not as if the file exists.
-- `get_document` and `download_document_content` must return a clear error for them. Compare with old Nexus's behaviour in the parity tests.
+- `contentHash` is null on 35 rows, including 3 with files. Compute it for internal integrity and record that it was computed, but keep returning null to clients until one writes a value, as old Nexus does.
+- Unconfirmed rows import with `blob_state = 'missing'`, not as if the file exists.
+- `get_document` returns normal metadata for them, and only `download_document_content` fails, both as in old Nexus (confirmed by the parity baseline).
+
+**Response compatibility.** Responses keep the fields clients see today even though the model is single-user: `userId` is the imported owner's ID, `isDemo` is false, `demoKey` and `demoWorkspaceId` are null, and `filename` is unchanged.
+
+**Documented difference.** Above 1 MiB, production's `download_document_content` returns a signed GCS URL. The new server has no object store and returns content inline.
 
 **Old Nexus backups.** The bucket also holds `_nexus-backups/pre-deploy/` (62 snapshots, 53 objects) and 14 unreferenced root objects. Review these for retention and secrets when decommissioning.
 
