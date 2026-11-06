@@ -318,7 +318,7 @@ pub(crate) struct EventCommand {
     outcome: Option<String>,
 }
 
-/// Port of `parseApplicationEventCommand`, with `source` always `mcp`.
+/// Port of `parseApplicationEventCommand`, with `source` taken from the caller (`mcp` on the route).
 fn parse_command(
     ctx: &Ctx,
     event_type: &str,
