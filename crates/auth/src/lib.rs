@@ -54,6 +54,7 @@ pub fn router(state: AuthState) -> Router {
             get(oauth::authorize).post(oauth::approve),
         )
         .route("/api/mcp/token", post(oauth::token))
+        .route("/auth.css", get(session::stylesheet))
         .route("/login", get(session::login_page).post(session::login))
         .route("/logout", get(session::logout_page).post(session::logout))
         .layer(DefaultBodyLimit::max(BODY_LIMIT))

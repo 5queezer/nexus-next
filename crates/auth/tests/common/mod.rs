@@ -177,7 +177,11 @@ impl Harness {
                 "/dashboard",
                 get(|| async { "dashboard" })
                     .post(|| async { "dashboard" })
-                    .layer(from_fn_with_state(state, require_owner_session)),
+                    .layer(from_fn_with_state(state.clone(), require_owner_session)),
+            )
+            .route(
+                "/api/applications",
+                get(|| async { "[]" }).layer(from_fn_with_state(state, require_owner_session)),
             );
         Self { app, db, dir }
     }

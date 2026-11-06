@@ -392,7 +392,7 @@ async fn set_passphrase_serve_login_dashboard_and_passphrase_change() {
         404
     );
 
-    // Logged out: the dashboard and API redirect, carrying the page to return to.
+    // Logged out: the dashboard redirects, carrying the page to return to; the API answers 401 JSON.
     let mut browser = Browser::default();
     let dashboard = browser.send(addr, "GET", "/queue", &[], "").await;
     assert_eq!(dashboard.status, 303);
@@ -400,7 +400,9 @@ async fn set_passphrase_serve_login_dashboard_and_passphrase_change() {
     let api = browser
         .send(addr, "GET", "/api/applications", &[], "")
         .await;
-    assert_eq!(api.status, 303);
+    assert_eq!(api.status, 401);
+    assert_eq!(api.header("location"), None);
+    assert!(api.body.contains("Not logged in"), "{}", api.body);
 
     // The issuer comes from configuration, whatever Host says (this client sends a hostile one).
     let metadata = request(
