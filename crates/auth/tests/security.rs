@@ -82,7 +82,7 @@ async fn registration_validates_redirect_uris_like_old_nexus() {
         ),
         (
             "http://[::1]/cb",
-            "redirect_uri must use https (got http:): http://[::1]/cb",
+            "redirect_uri must use 127.0.0.1 or localhost for a loopback address: http://[::1]/cb",
         ),
         (
             "ftp://localhost/cb",
