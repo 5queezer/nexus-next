@@ -114,7 +114,7 @@ h2 {
   font-size: 13px;
 }
 .chip[aria-current="true"] { background: var(--ink); color: var(--bg); }
-.chip small { opacity: 0.7; margin-left: 4px; }
+.chip small { margin-left: 4px; }
 form.search { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 0; }
 input[type="search"], select {
   font: inherit;
@@ -136,6 +136,8 @@ button {
 }
 
 .list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.list { margin-bottom: 16px; }
+form.search + .list { margin-top: 16px; }
 .group-title {
   margin: 0;
   padding: 8px 16px;
@@ -165,13 +167,13 @@ button {
 .row { text-decoration: none; border-bottom: 1px solid var(--line); }
 .list > .row:last-child { border-bottom: 0; }
 .row:hover { background: var(--bg); }
-.row.archived { opacity: 0.6; }
+.row.archived .who b { color: var(--muted); font-weight: 400; }
 .row.overdue { box-shadow: inset 3px 0 0 var(--warn); }
 .id { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .who { min-width: 0; }
 .who b, .who span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who span { color: var(--muted); font-size: 13px; }
-.k { display: none; font-weight: 400; }
+.k { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; font-weight: 400; }
 .num, .when { font-variant-numeric: tabular-nums; font-size: 13px; }
 .when.overdue { color: var(--warn); font-weight: 600; }
 .dim { color: var(--muted); }
@@ -214,6 +216,8 @@ button {
 }
 .banner.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 
+.card + .card { margin-top: 12px; }
+.card > .empty { padding: 12px 0; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 16px; }
 dl.facts { margin: 0; display: grid; grid-template-columns: 11rem minmax(0, 1fr); }
 dl.facts dt, dl.facts dd { padding: 8px 0; border-bottom: 1px solid var(--line); margin: 0; }
@@ -246,6 +250,7 @@ details[open] > summary { border-bottom: 1px solid var(--line); }
 .items { list-style: none; margin: 0; padding: 0; }
 .items li { align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 2px 16px; justify-content: space-between; }
 .items li:last-child { border-bottom: 0; }
+.items li > span { min-width: 0; overflow-wrap: anywhere; }
 .items small { color: var(--muted); display: block; }
 .tag {
   display: inline-block;
@@ -276,7 +281,7 @@ details[open] > summary { border-bottom: 1px solid var(--line); }
   .row > .status { grid-column: 2; }
   .row > .num, .row > .when { grid-column: 2; display: flex; gap: 6px; }
   .row > .none { display: none; }
-  .row .k { display: inline-block; color: var(--muted); min-width: 5.5rem; }
+  .row .k { position: static; width: auto; height: auto; clip-path: none; display: inline-block; color: var(--muted); min-width: 5.5rem; }
   dl.facts { grid-template-columns: 1fr; }
   dl.facts dt { border-bottom: 0; padding-bottom: 0; }
   dl.facts dd { padding-top: 0; }
