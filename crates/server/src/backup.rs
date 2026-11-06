@@ -13,7 +13,7 @@ use std::time::Duration;
 use age::x25519;
 use anyhow::{Context, bail, ensure};
 use nexus_core::BlobStore;
-use nexus_core::db::{DB_FILE, db_path};
+use nexus_core::db::{DB_FILE, db_path, in_use_reason};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, SqliteConnection};
 
@@ -245,9 +245,9 @@ async fn clear_credentials(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Decrypts `from`, verifies it and installs it into `data_dir`. Stop the server first. An
-/// existing database is only replaced with `force`, and is kept as `nexus.db.before-restore`, with
-/// its WAL and SHM if it has them. API
+/// Decrypts `from`, verifies it and installs it into `data_dir`. An existing database is only
+/// replaced with `force` and with the server stopped, and is kept as `nexus.db.before-restore`,
+/// with its WAL and SHM if it still has them. API
 /// tokens and OAuth clients and grants are cleared unless `keep_credentials`, and blobs no document
 /// references are not installed.
 pub async fn restore(
@@ -263,6 +263,11 @@ pub async fn restore(
         "{} already exists: stop the server and pass --force to replace it",
         target.display()
     );
+    if target.exists()
+        && let Some(reason) = in_use_reason(&target).await?
+    {
+        bail!(reason);
+    }
     let identities = age::IdentityFile::from_file(identity_file.to_string_lossy().into_owned())
         .and_then(|f| f.into_identities().map_err(io::Error::other))
         .with_context(|| format!("cannot read identity file {}", identity_file.display()))?;
