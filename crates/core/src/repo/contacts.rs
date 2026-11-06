@@ -1,7 +1,7 @@
 use serde::Serialize;
 use sqlx::{QueryBuilder, SqliteConnection};
 
-use super::{applications, id_string, partial_fields};
+use super::{id_string, partial_fields};
 use crate::error::{Error, Result};
 use crate::time::Timestamp;
 
@@ -73,10 +73,7 @@ pub async fn create(
     application_id: i64,
     contact: &NewContact,
 ) -> Result<Contact> {
-    if !applications::exists(&mut *conn, application_id).await? {
-        return Err(Error::NotFound);
-    }
-    Ok(sqlx::query_as(
+    sqlx::query_as(
         "INSERT INTO contacts (application_id, name, email, phone, role, linked_in)
          VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
     )
@@ -87,7 +84,13 @@ pub async fn create(
     .bind(&contact.role)
     .bind(&contact.linked_in)
     .fetch_one(conn)
-    .await?)
+    .await
+    .map_err(|error| match error {
+        // A caller's own check can't see a delete that lands before this insert. Old Nexus answers
+        // that race with `not_found` too.
+        sqlx::Error::Database(e) if e.is_foreign_key_violation() => Error::NotFound,
+        other => other.into(),
+    })
 }
 
 pub async fn update(

@@ -202,11 +202,25 @@ Reboot test, with `/home` left locked: `sudo reboot`, wait, then `systemctl is-a
 
 ## 6. Backups
 
-`nexus-backup.timer` runs at 03:30 UTC (plus up to 10 minutes of jitter) and writes `/var/lib/nexus-backups/nexus-<UTC timestamp>.tar.age`, then deletes all but the newest 14. Each file is one age-encrypted tar of a consistent `VACUUM INTO` snapshot plus every blob the snapshot references. Before packaging, the copy passes `integrity_check` and `foreign_key_check`, and every referenced blob must exist and match its hash; otherwise the run fails and leaves no file. It is safe while the server runs; a document deleted during a run can fail it this way, and the next run is fine.
+`nexus-backup.timer` runs at 03:30 UTC (plus up to 10 minutes of jitter) and writes `/var/lib/nexus-backups/nexus-<UTC timestamp>.tar.age`, then deletes all but the newest 14. Each file is one age-encrypted tar of a consistent `VACUUM INTO` snapshot plus every blob the snapshot references. Before packaging, the copy passes `integrity_check` and `foreign_key_check`, and every referenced blob must exist and match its hash; otherwise the run fails and leaves no file. It is safe while the server runs. A document deleted during a run makes it snapshot once more, so only a blob still missing fails it, and the error lists every such blob with its document IDs. See "A backup names missing blobs" below.
 
 The plaintext snapshot is staged in a mode 0700 `.backup-*` directory under `/var/lib/nexus`, which holds the same data anyway and is never synced. A kill leaves it there, and the next backup deletes it. It also deletes any older `.backup-*` left in the backup directory. Only one backup of a data directory runs at a time.
 
 Run one now: `sudo systemctl start nexus-backup.service`. Run one before every upgrade.
+
+The database runs with `synchronous=FULL`, so a write acknowledged before a power cut survives it, as long as the drive honours flushes. The off-site copies are still the last line. Costs are in SPEC section 8.
+
+### A backup names missing blobs
+
+One document row without its file blocks every backup. First find out why: a blob can come back from an older backup, and re-uploading the same bytes repairs a row. A file that is truly gone is recorded like this, using the IDs the backup named:
+
+```sh
+sudo systemctl stop nexus
+sudo -u nexus /usr/local/bin/nexus mark-blob-missing --data-dir /var/lib/nexus <document id>...
+sudo systemctl start nexus
+```
+
+It sets `blob_state='missing'` and clears `blob_sha256` on those rows. The document stays listed, and only its download fails, like the documents the import found with no file. It changes nothing unless every row qualifies: it refuses a row whose file exists, an unknown ID, and any run while the server has the database open. A corrupt file counts as existing, so move it aside first if it can't be repaired.
 
 ### Off-site sync
 
@@ -233,7 +247,7 @@ nexus restore --from nexus-20261107T033000Z.tar.age --identity nexus-backup.key 
 nexus serve --data-dir /tmp/nexus-drill --bind 127.0.0.1:8099 --insecure-local-only   # look at it, then Ctrl-C
 ```
 
-Restore verifies everything before touching the target: decryption (a wrong key, truncation or a changed byte installs nothing), `integrity_check`, `foreign_key_check`, and every blob against its hash. It refuses to overwrite an existing `nexus.db` without `--force`; with `--force` the old file is kept as `nexus.db.before-restore`, with its `-wal` and `-shm` if it had them, all mode 600. After a crash the WAL holds committed transactions, and SQLite replays it when the copy is opened, so move or copy those files together. A later restore replaces all three.
+Restore verifies everything before touching the target: decryption (a wrong key, truncation or a changed byte installs nothing), `integrity_check`, `foreign_key_check`, and every blob against its hash. It refuses to overwrite an existing `nexus.db` without `--force`, and even with `--force` it refuses a database another process has open, using the importer's check. The server keeps a connection open for as long as it runs, so this also catches an idle one. The check replays a WAL left by a crash into the old database, which is then kept as `nexus.db.before-restore`, mode 600. Should a `-wal` or `-shm` appear after the check, it moves with the copy, so keep those files together. A later restore replaces them all.
 
 **What this does not prove is who wrote the file.** age encrypts to a public key, so anyone holding that key can build a complete, valid backup with whatever data they like. A file replaced on the backup host restores without complaint, so the off-site host must be trusted not to swap files, or you need your own record of each backup's hash. To limit the damage, restore installs only blobs a document references, and it clears the API token and all OAuth clients and grants: afterwards every client authorizes again and the API token must be reissued. `--keep-credentials` keeps them, for a backup you know you wrote, such as your own pre-upgrade one. A forged database could still hold rows or triggers that restore doesn't look for.
 

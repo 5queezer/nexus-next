@@ -204,7 +204,7 @@ async fn the_safety_copy_opens_with_transactions_only_its_wal_held() {
 }
 
 #[tokio::test]
-async fn the_safety_copys_wal_is_private_and_leaves_with_it() {
+async fn the_safety_copy_is_private_and_no_stale_wal_can_replay_onto_it() {
     use std::os::unix::fs::PermissionsExt;
 
     let keys = new_keys();
@@ -213,34 +213,51 @@ async fn the_safety_copys_wal_is_private_and_leaves_with_it() {
     backup::restore(&out, &keys.identity_file, target.path(), true, false)
         .await
         .unwrap();
-    for name in [
-        "nexus.db.before-restore",
-        "nexus.db.before-restore-wal",
-        "nexus.db.before-restore-shm",
-    ] {
-        let mode = fs::metadata(target.path().join(name))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "{name}");
-    }
+    let replaced = target.path().join("nexus.db.before-restore");
+    let mode = fs::metadata(&replaced).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    // The in-use check already replayed the crash's WAL into the copy.
+    assert!(!target.path().join("nexus.db.before-restore-wal").exists());
     assert!(!target.path().join("nexus.db-wal").exists());
     assert!(!target.path().join("nexus.db-shm").exists());
 
-    // A second restore replaces the safety copy. Its old WAL must not replay onto the new one.
+    // A second restore replaces the safety copy. An old WAL must not replay onto the new one.
+    fs::write(target.path().join("nexus.db.before-restore-wal"), b"stale").unwrap();
     backup::restore(&out, &keys.identity_file, target.path(), true, false)
         .await
         .unwrap();
     assert!(!target.path().join("nexus.db.before-restore-wal").exists());
-    assert!(!target.path().join("nexus.db.before-restore-shm").exists());
-    assert_eq!(
-        scalar(
-            &target.path().join("nexus.db.before-restore"),
-            COUNT_APPLICATIONS
-        )
-        .await,
-        1
-    );
+    assert_eq!(scalar(&replaced, COUNT_APPLICATIONS).await, 1);
+}
+
+#[tokio::test]
+async fn a_forced_restore_refuses_a_database_in_use() {
+    let keys = new_keys();
+    let recipients = read_recipients(&keys.recipient_file).unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    add_application_with_document(&db, 1).await;
+    let out = source.path().join("b.age");
+    backup::backup(source.path(), &out, &recipients)
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    let live = Db::open(target.path()).await.unwrap();
+    add_application_with_document(&live, 7).await;
+    add_application_with_document(&live, 8).await;
+    let refused = backup::restore(&out, &keys.identity_file, target.path(), true, false)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("Stop the server"), "{refused}");
+    assert!(!target.path().join("nexus.db.before-restore").exists());
+    let count: i64 = sqlx::query_scalar(COUNT_APPLICATIONS)
+        .fetch_one(live.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+    live.close().await;
 }
 
 #[tokio::test]

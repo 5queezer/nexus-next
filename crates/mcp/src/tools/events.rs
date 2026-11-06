@@ -103,13 +103,13 @@ impl EventError {
 
 impl From<nexus_core::Error> for EventError {
     fn from(error: nexus_core::Error) -> Self {
-        Self::Code(error.to_string())
+        Self::Code(super::Thrown::from(error).0)
     }
 }
 
 impl From<sqlx::Error> for EventError {
     fn from(error: sqlx::Error) -> Self {
-        Self::Code(error.to_string())
+        nexus_core::Error::Database(error).into()
     }
 }
 

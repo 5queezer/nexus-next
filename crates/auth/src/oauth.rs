@@ -215,6 +215,12 @@ fn validate_registered_redirect(
         .and_then(|text| Url::parse(text).ok())
         .ok_or_else(|| invalid_metadata(&format!("Invalid redirect URI: {shown}")))?;
     let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1"));
+    // RFC 8252 allows it, but old Nexus never did, and any client that can bind it can bind 127.0.0.1.
+    if parsed.scheme() == "http" && parsed.host_str() == Some("[::1]") {
+        return Err(invalid_metadata(&format!(
+            "redirect_uri must use 127.0.0.1 or localhost for a loopback address: {shown}"
+        )));
+    }
     if parsed.scheme() != "https" && !(parsed.scheme() == "http" && local) {
         return Err(invalid_metadata(&format!(
             "redirect_uri must use https (got {}:): {shown}",

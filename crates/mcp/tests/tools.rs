@@ -2173,3 +2173,33 @@ async fn cv_profile_and_generation_gap() {
         .unwrap();
     assert_eq!(patches, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_contact_racing_the_delete_of_its_application_gets_a_clean_error() {
+    let server = Server::start().await;
+    for round in 0..200 {
+        let app = server
+            .call(
+                "create_application",
+                json!({"company": format!("Race {round}"), "role": "Engineer"}),
+            )
+            .await
+            .ok();
+        let (contact, deleted) = tokio::join!(
+            server.call(
+                "create_contact",
+                json!({"applicationId": app["id"], "name": "Ada Example"}),
+            ),
+            server.call("delete_application", json!({"id": app["id"]})),
+        );
+        assert!(!deleted.is_error, "{}", deleted.text);
+        if contact.is_error {
+            assert!(
+                ["not_found", "Application not found or access denied"]
+                    .contains(&contact.text.as_str()),
+                "round {round}: {}",
+                contact.text
+            );
+        }
+    }
+}

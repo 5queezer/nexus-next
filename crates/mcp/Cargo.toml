@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+tracing.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true

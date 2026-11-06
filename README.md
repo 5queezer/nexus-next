@@ -8,6 +8,24 @@ Status: the M1 code is in place: storage, importer, the 35-tool MCP server, OAut
 - [`docs/CUTOVER.md`](docs/CUTOVER.md): runbook from today's state to cutover, with what has never been run
 - [`contract/mcp-tools.snapshot.json`](contract/mcp-tools.snapshot.json): frozen MCP tool contract (35 tools, from `nexus-crm` at `235138d`, the deployed commit)
 
+## What's where
+
+- `docs/`: `SPEC.md`, `CUTOVER.md`, and `SKILL-CHANGES.md` (corrections for the Hermes skills, not yet applied).
+- `deploy/`: `README.md` (install, backups, recovery, ingress), the systemd units, and `export/` (the scripts for the final export from old Nexus).
+- `parity/`: the comparison with old Nexus. `parity/README.md` has the old baseline and the Rust run, which needs a private export:
+
+  ```sh
+  parity/runner-rust.sh target/debug/nexus <export dir> <private out dir>
+  python3 parity/compare.py <baseline dir> <private out dir> --unordered contacts --unordered applications
+  ```
+
+Two slow stress tests are ignored by default. They run the real binary with generated data:
+
+```sh
+cargo test --release -p nexus --test crash_safety -- --ignored --nocapture
+cargo test --release -p nexus --test concurrency -- --ignored --nocapture
+```
+
 ## Build and test
 
 ```sh

@@ -25,8 +25,8 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 - **Section "appliedAt auto-population on inbound leads".** Delete it. Batch doesn't set `appliedAt` on an inbound lead, and its repair call returns `lifecycle_event_required`.
 - **Step 4, partial batches.** Add: an unknown `id` anywhere fails the whole call with `Batch upsert failed` and applies nothing, while lifecycle and URL conflicts fail per item.
 - **"`MCP error -32602: Required path: [items]`".** The real text is a JSON issue list with `"path": ["items"]` and `"message": "Required"`. Cosmetic, but agents matching on it will miss it.
-- **`/opt/data/nexus_refresh.py` and `nexus_mcp_call.py`.** I couldn't read these. They hold a client registration and tokens, which end at cutover: the tables start empty, so they must re-register with a loopback or allowed redirect.
+- **`/opt/data/nexus_refresh.py` and `nexus_mcp_call.py`.** QA could not read these. They hold a client registration and tokens, which end at cutover: the tables start empty, so they must re-register with a loopback or allowed redirect.
 
 **Confirmed accurate, no change:** mixed lifecycle updates failing atomically, `idempotencyKey` needing `occurredAt`, outcome limit 255, omitted `remote` reading `false`, `{id, nextAction: null}`, `status` as an array, `items` as the parameter, event argument names, archived records keeping `inbound`, closure events setting `lastContact`, strict event metadata, `companySize: null` accepted, batch result shape.
 
-**Not checked:** `resume-tailoring` and `job-application-tracking` weren't in the skills I was given, so the SPEC's open item about `/resume` and `/tailor` is still open.
+**Not checked:** `resume-tailoring` and `job-application-tracking` were not available to QA, so the SPEC's open item about `/resume` and `/tailor` is still open.

@@ -202,7 +202,7 @@ sudo rm -rf /var/tmp/nexus-export /var/tmp/nexus-approved-ids.txt
 
 The printed counts must equal `$EXPORT.summary`. `--force` is needed because step 4 wrote OAuth grants, and it empties them.
 
-If the import says the database **is in use**, a process still has it open: find it (`sudo fuser -v /var/lib/nexus/nexus.db`) and stop it. A WAL left by a crash doesn't cause this, because the importer replays it, and it doesn't matter here since the data is being replaced. The in-use check looks for that WAL, and a running server loses it once its pool closes its idle connections, after 10 to 20 idle minutes. So it can't see a server that has been idle that long, which is why the `is-active` line above matters.
+If the import says the database **is in use**, a process still has it open: find it (`sudo fuser -v /var/lib/nexus/nexus.db`) and stop it. A WAL left by a crash doesn't cause this, because the importer replays it, and it doesn't matter here since the data is being replaced. The check runs once at the start, so it can't see a server started during the import, which is why the `is-active` line above matters.
 
 Leave the service stopped until step 10 passes. Starting it during the import would also remove the import's temp files, because `serve` sweeps `blobs/.tmp-*` at startup. One `removed unfinished uploads` warning at a later start only means a write was killed.
 
@@ -236,6 +236,8 @@ sudo systemctl start nexus-backup.service
 
 Copy the file to the workstation and repeat the drill from step 6. This is the fallback from now on. Keep it.
 
+If the backup fails naming missing blobs, stop and work out why before going on: the import just verified them. Only for a file that is truly gone, use `nexus mark-blob-missing` (`deploy/README.md` section 6). The database runs with `synchronous=FULL` from the first start, so a write acknowledged after this point survives a power cut (SPEC section 8; never tested with real power loss).
+
 ## 12. Repoint clients
 
 Both clients use OAuth, and **both must authorize again**, because the OAuth tables start empty.
@@ -244,7 +246,7 @@ Both clients use OAuth, and **both must authorize again**, because the OAuth tab
 2. **Claude.ai:** remove the old connector, add `https://<final-host>/api/mcp`, log in, approve, run a read and a harmless write, such as a note on a test application.
 3. **Hermes Career Ops:** point its MCP server URL at the same address, restart it and authorize. On a headless host that means pasting the callback by hand. `oauth.redirect_host` stays `127.0.0.1` or `localhost`. It must list 35 tools. Remove any stored token or registration for the old server first. A stale stored override has broken Hermes OAuth before. Its helper scripts `nexus_refresh.py` and `nexus_mcp_call.py` hold a client registration and tokens of their own, which also end here: they must register again with a loopback or allowed redirect. Apply the skill corrections in [`SKILL-CHANGES.md`](SKILL-CHANGES.md) now too; nobody has applied them yet.
 4. **API token,** only if something uses one: `sudo -u nexus nexus issue-token --data-dir /var/lib/nexus --name <name>`.
-5. **Board:** `sudo -u nexus nexus grants list --data-dir /var/lib/nexus` shows exactly those two grants. Resume the Hermes pipeline.
+5. **Board:** `sudo -u nexus nexus grants list --data-dir /var/lib/nexus` shows exactly those two grants; `nexus grants revoke <id>` removes one without touching the other. Resume the Hermes pipeline.
 
 Above 1 MiB, `download_document_content` now returns content inline, where old Nexus returned a signed URL (SPEC section 7). Watch that the first large download works in each client.
 
@@ -281,7 +283,7 @@ Old Nexus is the source of truth until step 12. **Nothing syncs back afterwards.
 | Step 12, no client has written yet | As above, and point the host and clients back. Old OAuth state still exists; if auth fails, use the cleanup in `CLAUDE.local.md` | Nothing |
 | After clients have written to the new server | Decide first. Going back loses those writes unless re-entered by hand: list them with `list_application_activity` while the new server is up. Then as above | Anything not re-entered |
 | A bad upgrade later | `deploy/README.md` section 8 | Writes since the backup, if restoring |
-| A bad restore | Stop the service and delete any `nexus.db-wal` and `nexus.db-shm`, which belong to the restored copy. `nexus.db.before-restore` is the replaced database, with its `-wal` and `-shm` if it had them. Rename them all back without `.before-restore`, and start | Nothing |
+| A bad restore | Stop the service and delete any `nexus.db-wal` and `nexus.db-shm`, which belong to the restored copy. `nexus.db.before-restore` is the replaced database, with a `-wal` and `-shm` only in the rare case one appeared after restore's in-use check. Rename them all back without `.before-restore`, and start | Nothing |
 | Within 30 days, new server unusable | Unfreeze old Nexus as above and repoint | All writes since step 12 |
 | After old Nexus is deleted | Restore from a backup (`deploy/README.md` section 6) | Writes since that backup |
 

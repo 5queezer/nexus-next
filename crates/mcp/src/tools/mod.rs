@@ -27,9 +27,18 @@ use crate::{McpState, frozen_tools, zod};
 #[derive(Debug)]
 pub(crate) struct Thrown(pub String);
 
+/// Replaces the text of a storage failure, which can hold SQL details, in what a client sees.
+pub(crate) const INTERNAL_ERROR: &str = "Internal error";
+
 impl From<nexus_core::Error> for Thrown {
     fn from(error: nexus_core::Error) -> Self {
-        Self(error.to_string())
+        match error {
+            nexus_core::Error::Database(_) | nexus_core::Error::Migrate(_) => {
+                tracing::error!(%error, "tool failed on the database");
+                Self(INTERNAL_ERROR.to_owned())
+            }
+            domain => Self(domain.to_string()),
+        }
     }
 }
 
@@ -277,5 +286,17 @@ pub(crate) async fn call(
     match dispatch(&ctx, name, args).await {
         Ok(result) => result,
         Err(Thrown(message)) => text_error(&message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_storage_failure_never_shows_its_text_but_a_domain_code_does() {
+        let raw = nexus_core::Error::Database(sqlx::Error::PoolTimedOut);
+        assert_eq!(Thrown::from(raw).0, INTERNAL_ERROR);
+        assert_eq!(Thrown::from(nexus_core::Error::NotFound).0, "not_found");
     }
 }
