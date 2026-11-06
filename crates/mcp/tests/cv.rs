@@ -1807,10 +1807,12 @@ async fn document_count(server: &Server) -> i64 {
         .unwrap()
 }
 
+type ProfileChange = fn(&mut Value);
+
 /// Finding 1: which string plays which part is wording too, on every path that compares it.
 #[tokio::test]
 async fn a_regroup_a_move_or_a_tier_is_a_change_of_wording_everywhere() {
-    let cases: [(&str, fn(&mut Value), &str); 8] = [
+    let cases: [(&str, ProfileChange, &str); 8] = [
         (
             "a skill moved into another group",
             |p| {

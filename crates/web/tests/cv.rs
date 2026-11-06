@@ -1312,3 +1312,19 @@ async fn reverting_to_replaced_text_on_the_dashboard_asks_for_approval() {
     assert!(page.contains("approve it"), "{page}");
     assert!(page.contains("Compared with revision 2"), "{page}");
 }
+
+/// A revision's state can now flip with no change of facts, so its clean picture must not outlive it.
+#[tokio::test]
+async fn a_cached_clean_preview_is_not_served_for_text_since_replaced() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let png = format!("{VARIANT}/preview.png?revision=1&page=1");
+    let picture = async |uri: &str| {
+        let request = Request::get(uri).body(Body::empty()).unwrap();
+        send(&f.app, request).await.2
+    };
+    let clean = picture(&png).await;
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    assert_eq!(save(&f, 1, &edited).await.0, StatusCode::SEE_OTHER);
+    assert_ne!(picture(&png).await, clean, "revision 1 has a stamp again");
+}
