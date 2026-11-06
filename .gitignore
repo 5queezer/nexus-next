@@ -6,9 +6,11 @@
 *.sqlite-*
 *.db
 *.db-*
+*.db.*
 /data/
 /blobs/
 /export/
 *.dump
 *.jsonl
 *.log
+!/tests/fixtures/**/*.jsonl
