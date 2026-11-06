@@ -129,7 +129,11 @@ impl Live {
             };
             match received {
                 Ok(event) if event.variant == self.variant => {
-                    let name = if event.approval { "approved" } else { "revision" };
+                    let name = if event.approval {
+                        "approved"
+                    } else {
+                        "revision"
+                    };
                     return Event::default().event(name).json_data(&event).ok();
                 }
                 Ok(_) => {}

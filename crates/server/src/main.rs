@@ -172,7 +172,10 @@ const CV_FACTS_ACTOR: &str = "cli";
 
 /// The error a tool result says, in its own words.
 fn tool_failure(result: &nexus_mcp::CallToolResult) -> anyhow::Error {
-    let said = result.content.first().and_then(|block| serde_json::to_value(block).ok());
+    let said = result
+        .content
+        .first()
+        .and_then(|block| serde_json::to_value(block).ok());
     let text = said.as_ref().and_then(|block| block["text"].as_str());
     anyhow::anyhow!("{}", text.unwrap_or("it failed"))
 }
@@ -200,7 +203,9 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
         return Ok(());
     }
     if !review.locked {
-        bail!("nothing was approved: the facts aren't locked. Check them, then `nexus cv-facts lock`");
+        bail!(
+            "nothing was approved: the facts aren't locked. Check them, then `nexus cv-facts lock`"
+        );
     }
     match review.baseline_revision {
         Some(at) => println!("compared with revision {at}, the last you approved:"),

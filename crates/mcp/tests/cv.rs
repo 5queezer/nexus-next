@@ -186,7 +186,10 @@ async fn patching_needs_locked_facts_and_the_right_head() {
         .await
         .ok();
     assert_eq!(flagged["revision"], 2);
-    assert!(item_tokens(&flagged).contains(&"Kubernetes".to_owned()), "{flagged}");
+    assert!(
+        item_tokens(&flagged).contains(&"Kubernetes".to_owned()),
+        "{flagged}"
+    );
     assert!(flagged.get("reviewTokens").is_none());
     let stored: String = sqlx::query_scalar("SELECT warnings FROM cv_revisions WHERE number = 2")
         .fetch_one(server.db.pool())
@@ -303,7 +306,11 @@ async fn hard_rules_refuse_and_store_nothing() {
             "1",
         ),
         ("Backend engineer, by lOO%", "digitLookalike", "lOO"),
-        ("Backend engineer at evil.example", "contactDetails", "evil.example"),
+        (
+            "Backend engineer at evil.example",
+            "contactDetails",
+            "evil.example",
+        ),
         ("Backend #rotate(90deg)[engineer]", "transform", "engineer"),
     ] {
         let reply = patch(&server, 0, "Backend engineer", new).await;
@@ -589,9 +596,14 @@ async fn revisions_list_newest_first_with_diffs_and_a_revert_adds_one() {
 #[tokio::test]
 async fn a_revert_and_a_render_are_judged_by_todays_facts() {
     let server = locked_server().await;
-    let one = patch(&server, 0, "Backend engineer", "Backend engineer of frobnicators")
-        .await
-        .ok();
+    let one = patch(
+        &server,
+        0,
+        "Backend engineer",
+        "Backend engineer of frobnicators",
+    )
+    .await
+    .ok();
     assert_eq!(one["revision"], 1);
     patch(&server, 1, " of frobnicators", "").await.ok();
     assert!(!render(&server, json!({"revision": 1})).await.is_error);
@@ -1027,7 +1039,8 @@ async fn generate_stores_a_document_only_for_what_the_owner_approved() {
     let server = locked_server().await;
     let app = server.application("Acme").await;
     let variant = format!("application-{app}");
-    let args = json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
+    let args =
+        json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
     let documents = async |server: &Server| {
         let listed = server
             .call("list_documents", json!({"applicationId": app}))
@@ -1049,15 +1062,26 @@ async fn generate_stores_a_document_only_for_what_the_owner_approved() {
     // An override is an agent's wording.
     let mut with_override = args.clone();
     with_override["profileOverride"] = "Stanford alumnus with 12 years at Google".into();
-    let held = server.call("generate_tailored_cv", with_override.clone()).await;
+    let held = server
+        .call("generate_tailored_cv", with_override.clone())
+        .await;
     assert_eq!(held.code(), "cv_approval_required");
     let error = &held.json()["error"];
     assert_eq!(error["variant"], variant);
     assert_eq!(error["revision"], 2);
-    assert_eq!(error["approvalPath"], format!("/cv/variants/{variant}#cv-approval"));
-    assert_eq!(documents(&server).await, 1, "no document, and the old one stays");
+    assert_eq!(
+        error["approvalPath"],
+        format!("/cv/variants/{variant}#cv-approval")
+    );
+    assert_eq!(
+        documents(&server).await,
+        1,
+        "no document, and the old one stays"
+    );
     // Trying again adds nothing to approve.
-    let again = server.call("generate_tailored_cv", with_override.clone()).await;
+    let again = server
+        .call("generate_tailored_cv", with_override.clone())
+        .await;
     assert_eq!(again.json()["error"]["revision"], 2);
 
     // So is a locked upsert: this is the laundering of finding 12.
@@ -1136,9 +1160,14 @@ async fn items_and_the_diff_compare_with_the_last_approved_text_not_the_parent()
         .await
         .ok();
     owner_approve(&server, "default").await;
-    let one = patch(&server, 1, "Freight engineer", "Freight engineer with 11 cats")
-        .await
-        .ok();
+    let one = patch(
+        &server,
+        1,
+        "Freight engineer",
+        "Freight engineer with 11 cats",
+    )
+    .await
+    .ok();
     let two = patch(&server, 2, "with 11 cats", "with 11 cats and 22 dogs")
         .await
         .ok();
@@ -1151,9 +1180,17 @@ async fn items_and_the_diff_compare_with_the_last_approved_text_not_the_parent()
     }
     assert!(item_tokens(&one).contains(&"11".to_owned()));
     assert!(item_tokens(&two).contains(&"11".to_owned()));
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
     assert_eq!(review.baseline_revision, Some(1));
-    assert!(review.baseline.as_deref().unwrap().contains("Freight engineer"));
+    assert!(
+        review
+            .baseline
+            .as_deref()
+            .unwrap()
+            .contains("Freight engineer")
+    );
     assert!(!review.baseline.as_deref().unwrap().contains("cats"));
     assert!(review.rendered_text.contains("33 owls"));
     assert!(review.source_diff.contains("-") && review.source_diff.contains("33 owls"));
@@ -1165,12 +1202,12 @@ async fn approval_is_bound_to_the_exact_revision_and_facts() {
     patch(&server, 0, "Backend engineer", "Freight engineer")
         .await
         .ok();
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
     let approve = |revision: i64, source: String, facts: String| {
         let state = server.state.clone();
-        async move {
-            owner::approve(state, "default", revision, &source, &facts, "dashboard").await
-        }
+        async move { owner::approve(state, "default", revision, &source, &facts, "dashboard").await }
     };
     let code = |result: &nexus_mcp::CallToolResult| {
         result
@@ -1187,7 +1224,10 @@ async fn approval_is_bound_to_the_exact_revision_and_facts() {
         let refused = approve(revision, source_hash, facts_hash).await;
         assert_eq!(code(&refused), "cv_approval_stale");
     }
-    assert_eq!(code(&approve(9, source.clone(), facts.clone()).await), "cv_revision_not_found");
+    assert_eq!(
+        code(&approve(9, source.clone(), facts.clone()).await),
+        "cv_revision_not_found"
+    );
     assert_eq!(approvals(&server).await, 0);
 
     // A patch landing after the page loaded: the page's revision is no longer the one to approve.
@@ -1216,7 +1256,9 @@ async fn a_patch_landing_during_approval_is_never_approved_by_accident() {
         .ok();
     for round in 0..6_i64 {
         let number = round + 1;
-        let review = owner::review(server.state.clone(), "default").await.unwrap();
+        let review = owner::review(server.state.clone(), "default")
+            .await
+            .unwrap();
         assert_eq!(review.revision, number);
         let new = format!("Freight engineer {}", "x".repeat(round as usize + 1));
         let old = if round == 0 {
@@ -1242,13 +1284,12 @@ async fn a_patch_landing_during_approval_is_never_approved_by_accident() {
             "draft",
             "round {round}: the head is the patch, which no one approved"
         );
-        let approved_row: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM cv_approvals WHERE revision_number = ?",
-        )
-        .bind(number)
-        .fetch_one(server.db.pool())
-        .await
-        .unwrap();
+        let approved_row: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM cv_approvals WHERE revision_number = ?")
+                .bind(number)
+                .fetch_one(server.db.pool())
+                .await
+                .unwrap();
         assert_eq!(
             approved.is_error != Some(true),
             approved_row == 1,
@@ -1278,7 +1319,10 @@ async fn approval_is_bound_to_the_facts_it_was_given_under() {
     let mut tx = server.db.begin_write().await.unwrap();
     cv_facts::unlock(&mut tx, "test").await.unwrap();
     tx.commit().await.unwrap();
-    assert!(!is_approved(&server).await, "no approval without locked facts");
+    assert!(
+        !is_approved(&server).await,
+        "no approval without locked facts"
+    );
     let unlocked = render(&server, json!({})).await;
     assert_eq!(unlocked.text_json()["state"], "draft");
     owner_lock(&server).await;
@@ -1332,7 +1376,10 @@ async fn the_owners_save_is_stored_and_approved_in_one_step() {
     .await;
     let reply = unchanged.structured_content.unwrap();
     assert_eq!(reply["state"], "approved", "{reply}");
-    assert_eq!(reply["revision"], 1, "the starting text can be stored as it stands");
+    assert_eq!(
+        reply["revision"], 1,
+        "the starting text can be stored as it stands"
+    );
     let by: String = sqlx::query_scalar("SELECT approved_by FROM cv_approvals")
         .fetch_one(server.db.pool())
         .await
@@ -1346,7 +1393,10 @@ async fn the_owners_save_is_stored_and_approved_in_one_step() {
     )
     .await;
     let refused = hard.structured_content.unwrap();
-    assert_eq!(refused["error"]["code"], "cv_fact_violation", "an approval overrides no hard rule");
+    assert_eq!(
+        refused["error"]["code"], "cv_fact_violation",
+        "an approval overrides no hard rule"
+    );
     assert_eq!(approvals(&server).await, 1);
 }
 
@@ -1357,7 +1407,9 @@ async fn approving_rechecks_the_hard_rules() {
     patch(&server, 0, "Backend engineer", "Frobnicating engineer")
         .await
         .ok();
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
     owner_set(&server, json!({"bannedPhrases": ["Frobnicating"]})).await;
     let refused = owner::approve(
         server.state.clone(),
@@ -1386,8 +1438,14 @@ async fn a_source_cannot_print_what_the_facts_hash_does_not_cover() {
     .await;
     let new = "Engineer #json(\"/facts.json\").vocabulary.len() #json(\"/facts.json\").allowedTokens.len()";
     patch(&server, 0, "Backend engineer", new).await.ok();
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
-    assert!(review.rendered_text.contains("Engineer 0 0"), "{}", review.rendered_text);
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert!(
+        review.rendered_text.contains("Engineer 0 0"),
+        "{}",
+        review.rendered_text
+    );
 }
 
 /// Arguments that satisfy a tool's schema, built from the schema itself, with the given overrides.

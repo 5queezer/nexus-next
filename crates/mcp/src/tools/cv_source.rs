@@ -461,28 +461,49 @@ async fn locked_facts(ctx: &Ctx) -> Result<Result<FactsState, CallToolResult>, s
     })
 }
 
-/// Compiles and checks a source about to become a revision. `baseline` is the text last approved.
+/// Compiles and checks a source about to become a revision.
 async fn compile_and_check(
     ctx: &Ctx,
     source: &str,
-    baseline: Option<&str>,
+    known: &Known,
     facts: &Facts,
 ) -> Result<(Rendered, Report), Box<CallToolResult>> {
     let rendered = compile(ctx, source, facts, false, 0, false).await?;
-    let report = check(&rendered.text, facts, baseline);
+    let report = check(
+        &rendered.text,
+        facts,
+        known.approved.as_deref(),
+        &known.wording,
+    );
     if !report.violations.is_empty() {
         return Err(Box::new(violation_error(&report.violations)));
     }
     Ok((rendered, report))
 }
 
-async fn baseline_of(
+/// What a revision is read against: the text last approved of its variant, and the wording last
+/// locked. Whoever is reading has seen those.
+pub(super) struct Known {
+    pub(super) approved: Option<String>,
+    pub(super) wording: String,
+}
+
+pub(super) async fn known_to_owner(
     conn: &mut SqliteConnection,
-    variant: &Variant,
-) -> nexus_core::Result<Option<String>> {
-    Ok(approvals::last_approved(conn, variant)
-        .await?
-        .map(|(text, _)| text))
+    variant: Option<&Variant>,
+) -> nexus_core::Result<Known> {
+    let approved = match variant {
+        Some(variant) => approvals::last_approved(&mut *conn, variant)
+            .await?
+            .map(|(text, _)| text),
+        None => None,
+    };
+    let wording = cv_facts::locked_wording(conn).await?;
+    let wording: Vec<String> = wording.into_iter().map(|(_, text)| text).collect();
+    Ok(Known {
+        approved,
+        wording: wording.join(" "),
+    })
 }
 
 fn valid_new_variant_name(name: &str) -> bool {
@@ -510,7 +531,7 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let (base, baseline) = {
+    let (base, known) = {
         let mut conn = ctx.state.db.conn().await?;
         if create_from.is_some() {
             if !valid_new_variant_name(name) {
@@ -520,17 +541,15 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
                 return Ok(code_error("cv_variant_exists"));
             }
         }
-        let base = match resolve(&mut conn, &state.facts, create_from.unwrap_or(name), None).await? {
+        let base = match resolve(&mut conn, &state.facts, create_from.unwrap_or(name), None).await?
+        {
             Ok(base) => base,
             Err(missing) => return Ok(missing.error()),
         };
         // A variant made with `createFrom` has no approved text of its own yet.
-        let baseline = if create_from.is_some() {
-            None
-        } else {
-            baseline_of(&mut conn, &base.variant).await?
-        };
-        (base, baseline)
+        let own = create_from.is_none().then_some(&base.variant);
+        let known = known_to_owner(&mut conn, own).await?;
+        (base, known)
     };
     if base.number != expected {
         return Ok(conflict(expected, base.number));
@@ -544,11 +563,10 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
     if source == base.source && create_from.is_none() && !stores_start {
         return Ok(code_error("cv_no_change"));
     }
-    let (rendered, report) =
-        match compile_and_check(ctx, &source, baseline.as_deref(), &state.facts).await {
-            Ok(done) => done,
-            Err(error) => return Ok(*error),
-        };
+    let (rendered, report) = match compile_and_check(ctx, &source, &known, &state.facts).await {
+        Ok(done) => done,
+        Err(error) => return Ok(*error),
+    };
 
     let mut tx = ctx.state.db.begin_write().await?;
     if facts_moved(&mut tx, state.version).await? {
@@ -642,7 +660,7 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let (head, target, baseline) = {
+    let (head, target, known) = {
         let mut conn = ctx.state.db.conn().await?;
         let head = match resolve(&mut conn, &state.facts, name, None).await? {
             Ok(head) => head,
@@ -651,14 +669,14 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         if head.number != expected {
             return Ok(conflict(expected, head.number));
         }
-        let baseline = baseline_of(&mut conn, &head.variant).await?;
+        let known = known_to_owner(&mut conn, Some(&head.variant)).await?;
         match resolve(&mut conn, &state.facts, name, Some(to)).await? {
-            Ok(target) => (head, target, baseline),
+            Ok(target) => (head, target, known),
             Err(missing) => return Ok(missing.error()),
         }
     };
     let (rendered, report) =
-        match compile_and_check(ctx, &target.source, baseline.as_deref(), &state.facts).await {
+        match compile_and_check(ctx, &target.source, &known, &state.facts).await {
             Ok(done) => done,
             Err(error) => return Ok(*error),
         };
@@ -823,7 +841,7 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
     let name = req_str(args, "variant");
     let number = args.get("revision").and_then(Value::as_i64);
     let preview_pages = args["previewPages"].as_u64().unwrap_or(1) as u32;
-    let (state, base, application, approved, baseline) = {
+    let (state, base, application, approved, known) = {
         let mut conn = ctx.state.db.conn().await?;
         let application = match str_arg(args, "saveToApplicationId") {
             Some(id) => match find_application(&mut conn, id).await? {
@@ -847,8 +865,8 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
         if application.is_some() && !approved {
             return Ok(approval_required(&base.variant.name, base.number));
         }
-        let baseline = baseline_of(&mut conn, &base.variant).await?;
-        (state, base, application, approved, baseline)
+        let known = known_to_owner(&mut conn, Some(&base.variant)).await?;
+        (state, base, application, approved, known)
     };
     let wants_pdf = approved || stamped_pdf;
     let rendered = match compile(
@@ -864,7 +882,12 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
-    let report = check(&rendered.text, &state.facts, baseline.as_deref());
+    let report = check(
+        &rendered.text,
+        &state.facts,
+        known.approved.as_deref(),
+        &known.wording,
+    );
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
@@ -920,7 +943,10 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
 }
 
 /// What the owner looks at before approving a variant's head. `Err` is why it can't be looked at.
-pub(crate) async fn review(ctx: &Ctx, name: &str) -> Result<Result<Review, CallToolResult>, super::Thrown> {
+pub(crate) async fn review(
+    ctx: &Ctx,
+    name: &str,
+) -> Result<Result<Review, CallToolResult>, super::Thrown> {
     let mut conn = ctx.state.db.conn().await?;
     let state = cv_facts::get(&mut conn).await?;
     let base = match resolve(&mut conn, &state.facts, name, None).await? {
@@ -930,13 +956,15 @@ pub(crate) async fn review(ctx: &Ctx, name: &str) -> Result<Result<Review, CallT
     let source_sha256 = sha256_hex(base.source.as_bytes());
     let approved = is_approved(&mut conn, &state, &source_sha256).await?;
     let last = approvals::last_approved(&mut conn, &base.variant).await?;
-    let (baseline, baseline_revision) = last.map_or((None, None), |(text, at)| (Some(text), Some(at)));
+    let (baseline, baseline_revision) =
+        last.map_or((None, None), |(text, at)| (Some(text), Some(at)));
     let baseline_source = match baseline_revision {
         Some(at) => repo::get_by_number(&mut conn, base.variant.id, at)
             .await?
             .map(|revision| revision.source),
         None => None,
     };
+    let known = known_to_owner(&mut conn, None).await?;
     drop(conn);
     let mut review = Review {
         variant: base.variant.name.clone(),
@@ -952,7 +980,10 @@ pub(crate) async fn review(ctx: &Ctx, name: &str) -> Result<Result<Review, CallT
         source_diff: unified_diff(
             baseline_source.as_deref().unwrap_or(""),
             &base.source,
-            &baseline_revision.map_or_else(|| "nothing approved yet".to_owned(), |at| format!("revision {at}")),
+            &baseline_revision.map_or_else(
+                || "nothing approved yet".to_owned(),
+                |at| format!("revision {at}"),
+            ),
             &format!("revision {}", base.number),
         ),
     };
@@ -964,7 +995,12 @@ pub(crate) async fn review(ctx: &Ctx, name: &str) -> Result<Result<Review, CallT
         Ok(rendered) => rendered,
         Err(error) => return Ok(Err(*error)),
     };
-    let report = check(&rendered.text, &state.facts, review.baseline.as_deref());
+    let report = check(
+        &rendered.text,
+        &state.facts,
+        review.baseline.as_deref(),
+        &known.wording,
+    );
     if !report.violations.is_empty() {
         return Ok(Err(violation_error(&report.violations)));
     }
@@ -1013,7 +1049,7 @@ pub(crate) async fn approve(
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
-    let report = check(&rendered.text, &state.facts, None);
+    let report = check(&rendered.text, &state.facts, None, "");
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }

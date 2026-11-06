@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use reqwest::header::{COOKIE, LOCATION, SET_COOKIE};
+use reqwest::redirect::Policy;
 use serde_json::{Value, json};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, SqliteConnection};
@@ -296,12 +298,214 @@ impl Agent {
         })
     }
 
+    /// The whole tool result: `isError` and every content block.
+    pub async fn raw(&self, tool: &str, args: Value) -> Value {
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": tool, "arguments": args},
+        });
+        let response = self
+            .http
+            .post(&self.url)
+            .bearer_auth(&self.token)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .timeout(Duration::from_secs(120))
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let parsed: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        parsed["result"].clone()
+    }
+
     /// A call that must succeed.
     pub async fn ok(&self, tool: &str, args: Value) -> Value {
         let reply = self.call(tool, args).await.expect("answered");
         assert!(!reply.is_error, "{tool}: {}", reply.text);
         reply.json()
     }
+}
+
+/// `nexus cv-facts lock`, as the owner runs it: read what it prints, then confirm that list by its
+/// hash. Returns all it printed.
+pub fn lock_confirmed(dir: &Path) -> String {
+    let run = |args: &[&str]| {
+        nexus()
+            .arg("cv-facts")
+            .args(args)
+            .arg("--data-dir")
+            .arg(dir)
+            .output()
+            .unwrap()
+    };
+    let shown = run(&["lock"]);
+    let mut printed = String::from_utf8(shown.stdout).unwrap();
+    if !shown.status.success() {
+        let said = String::from_utf8(shown.stderr).unwrap();
+        let hash = said
+            .split("--confirm ")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .unwrap_or_else(|| panic!("no hash in {said}"));
+        let confirmed = run(&["lock", "--confirm", hash]);
+        assert!(confirmed.status.success(), "{confirmed:?}");
+        printed.push_str(&String::from_utf8(confirmed.stdout).unwrap());
+    }
+    printed
+}
+
+const REDIRECT: &str = "http://127.0.0.1:9/callback";
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+/// A `<input name=... value=...>` from a served page.
+pub fn field(page: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\"");
+    let at = page
+        .find(&marker)
+        .unwrap_or_else(|| panic!("{name} in {page}"));
+    let tag_start = page[..at].rfind('<').unwrap();
+    let tag_end = at + page[at..].find('>').unwrap();
+    let tag = &page[tag_start..tag_end];
+    let value = tag.split("value=\"").nth(1).unwrap();
+    value.split('"').next().unwrap().to_owned()
+}
+
+pub fn form(pairs: &[(&str, &str)]) -> String {
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish()
+}
+
+pub struct Browser {
+    pub http: reqwest::Client,
+    pub base: String,
+    pub cookies: Vec<(String, String)>,
+}
+
+impl Browser {
+    pub fn cookie_header(&self) -> String {
+        let pairs: Vec<String> = self
+            .cookies
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        pairs.join("; ")
+    }
+
+    pub async fn keep_cookies(&mut self, response: &reqwest::Response) {
+        for cookie in response.headers().get_all(SET_COOKIE) {
+            let first = cookie.to_str().unwrap().split(';').next().unwrap();
+            let (key, value) = first.split_once('=').unwrap();
+            self.cookies.retain(|(k, _)| k != key);
+            if !value.is_empty() {
+                self.cookies.push((key.to_owned(), value.to_owned()));
+            }
+        }
+    }
+
+    pub async fn get(&mut self, path: &str) -> (reqwest::StatusCode, String) {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.base))
+            .header(COOKIE, self.cookie_header())
+            .send()
+            .await
+            .unwrap();
+        self.keep_cookies(&response).await;
+        (response.status(), response.text().await.unwrap())
+    }
+
+    pub async fn post_form(&mut self, path: &str, body: String) -> reqwest::Response {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header(COOKIE, self.cookie_header())
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        self.keep_cookies(&response).await;
+        response
+    }
+}
+
+/// Dynamic registration, owner login, consent and PKCE: what Hermes does at its one reconnect.
+pub async fn oauth_token(base: &str) -> String {
+    let http = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let registered = http
+        .post(format!("{base}/api/mcp/register"))
+        .header("content-type", "application/json")
+        .body(
+            json!({
+                "client_name": "Scripted Hermes",
+                "redirect_uris": [REDIRECT],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let registered: Value = serde_json::from_str(&registered.text().await.unwrap()).unwrap();
+    let client_id = registered["client_id"].as_str().unwrap().to_owned();
+
+    let mut browser = Browser {
+        http: http.clone(),
+        base: base.to_owned(),
+        cookies: Vec::new(),
+    };
+    let (_, login) = browser.get("/login").await;
+    let body = form(&[("csrf", &field(&login, "csrf")), ("passphrase", PASSPHRASE)]);
+    let logged_in = browser.post_form("/login", body).await;
+    assert_eq!(logged_in.status(), 303);
+
+    let query = form(&[
+        ("response_type", "code"),
+        ("client_id", &client_id),
+        ("redirect_uri", REDIRECT),
+        ("code_challenge", CHALLENGE),
+        ("code_challenge_method", "S256"),
+        ("state", "st-1"),
+        ("scope", "mcp:tools"),
+    ]);
+    let (status, consent) = browser.get(&format!("/api/mcp/authorize?{query}")).await;
+    assert_eq!(status, 200, "{consent}");
+    let body = form(&[("consent", &field(&consent, "consent"))]);
+    let granted = browser.post_form("/api/mcp/authorize", body).await;
+    assert_eq!(granted.status(), 303);
+    let location = granted.headers()[LOCATION].to_str().unwrap().to_owned();
+    let code = url::Url::parse(&location)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .unwrap()
+        .1
+        .into_owned();
+
+    let token = http
+        .post(format!("{base}/api/mcp/token"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(form(&[
+            ("grant_type", "authorization_code"),
+            ("client_id", &client_id),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ]))
+        .send()
+        .await
+        .unwrap();
+    let token: Value = serde_json::from_str(&token.text().await.unwrap()).unwrap();
+    token["access_token"].as_str().unwrap().to_owned()
 }
 
 pub fn good_policy() -> Value {

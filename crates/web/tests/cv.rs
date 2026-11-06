@@ -176,6 +176,14 @@ fn hidden(page: &str, name: &str) -> String {
 
 const VARIANT: &str = "/cv/variants/default";
 
+/// The draft or approved badge at the top of a variant page.
+fn badge(page: &str) -> &str {
+    let after = page.split("id=\"cv-state\"").nth(1).expect("the badge");
+    let start = after.find('>').unwrap() + 1;
+    let end = start + after[start..].find('<').unwrap();
+    &after[start..end]
+}
+
 async fn head_of(f: &Fixture) -> (i64, String) {
     let (status, _, page) = get(&f.app, VARIANT).await;
     assert_eq!(status, StatusCode::OK);
@@ -242,7 +250,8 @@ async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
     );
 
     let (_, _, page) = get(&f.app, "/cv/variants/default?done=saved").await;
-    assert!(page.contains("Saved as a new revision."), "{page}");
+    assert!(page.contains("Saved and approved"), "{page}");
+    assert_eq!(badge(&page), "Approved");
     assert_eq!(editor_text(&page), changed, "the editor holds the head");
     assert_eq!(hidden(&page, "expected"), "1");
     assert!(page.contains("class=\"da\""), "added lines are marked");
@@ -284,28 +293,267 @@ async fn a_failed_compile_keeps_the_text_and_names_the_line() {
 }
 
 #[tokio::test]
-async fn the_integrity_check_applies_to_a_person_and_shows_the_token_marked() {
+async fn the_hard_rules_apply_to_a_person_and_show_the_token_marked() {
     let f = locked().await;
     let (_, source) = head_of(&f).await;
-    let inflated = source.replace("Built the routing service.", "Built 77 routing services.");
-    let (status, _, page) = save(&f, 0, &inflated).await;
+    let hidden_text = source.replace(
+        "Built the routing service.",
+        "Built it. #text(fill: white)[Zanzibar]",
+    );
+    let (status, _, page) = save(&f, 0, &hidden_text).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(editor_text(&page), inflated);
-    assert!(page.contains("<mark>77</mark>"), "{page}");
-    assert!(page.contains("isn&#x27;t in your facts") || page.contains("isn't in your facts"));
+    assert_eq!(editor_text(&page), hidden_text);
+    assert!(page.contains("<mark>Zanzibar</mark>"), "{page}");
+    assert!(
+        page.contains("can&#x27;t see") || page.contains("can't see"),
+        "{page}"
+    );
     assert!(!page.contains("cv_fact_violation"));
     assert!(revision_rows(&f.db).await.is_empty());
 }
 
+/// An agent's draft, as the owner reads it.
+async fn agent_patch(f: &Fixture, expected: i64, old: &str, new: &str) -> Value {
+    let result = nexus_mcp::call_tool(
+        std::sync::Arc::new(f.state.clone()),
+        &[SCOPE_TOOLS],
+        "mcp",
+        "patch_cv",
+        json!({"expectedRevision": expected, "summary": "An agent's edit", "origin": "telegram",
+            "edits": [{"oldText": old, "newText": new}]}),
+    )
+    .await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    result.structured_content.unwrap()
+}
+
+async fn approvals(db: &Db) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM cv_approvals")
+        .fetch_one(db.pool())
+        .await
+        .unwrap()
+}
+
+async fn tap_approve(f: &Fixture, page: &str) -> (StatusCode, HeaderMap, String) {
+    post(
+        &f.app,
+        &format!("{VARIANT}/approve"),
+        &[
+            ("csrf", TOKEN),
+            ("revision", &hidden(page, "revision")),
+            ("sourceSha256", &hidden(page, "sourceSha256")),
+            ("factsSha256", &hidden(page, "factsSha256")),
+        ],
+    )
+    .await
+}
+
 #[tokio::test]
-async fn new_capitalized_words_are_saved_and_shown_to_check() {
+async fn an_agents_edit_waits_for_the_owner_who_reads_it_and_approves_it() {
     let f = locked().await;
-    let (_, source) = head_of(&f).await;
-    let named = source.replace("Built the routing service.", "Built the Zanzibar service.");
-    assert_eq!(save(&f, 0, &named).await.0, StatusCode::SEE_OTHER);
+    let draft = agent_patch(
+        &f,
+        0,
+        "Built the routing service.",
+        "Built 77 routing services at Zanzibar.",
+    )
+    .await;
+    assert_eq!(draft["state"], "draft");
+
+    let (status, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(page.contains("Approve revision 1"), "{page}");
+    assert!(page.contains("id=\"cv-review-items\""), "{page}");
+    // Marked where it stands, in what a reader sees: nothing is approved yet, so that is all of it.
+    let rendered = page.split("id=\"cv-rendered-diff\"").nth(1).unwrap();
+    assert!(rendered.contains("<mark>77</mark>"), "{rendered}");
+    assert!(rendered.contains("class=\"da\""), "{rendered}");
+    assert!(page.contains("Download draft PDF, stamped"), "{page}");
+    assert!(page.contains("Source changes"), "{page}");
+    assert!(page.contains("class=\"count\""), "the nav counts it");
+
+    let (_, _, list) = get(&f.app, "/cv").await;
+    assert!(list.contains("Waiting for your approval"), "{list}");
+    assert!(list.contains("/cv/variants/default#cv-approval"), "{list}");
+    assert!(list.contains("class=\"count\""), "{list}");
+
+    let (status, headers, _) = tap_approve(&f, &page).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers["location"],
+        "/cv/variants/default?done=approved#cv-approval"
+    );
+    let by: String = sqlx::query_scalar("SELECT approved_by FROM cv_approvals")
+        .fetch_one(f.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(by, "dashboard");
+    let (_, _, page) = get(&f.app, "/cv/variants/default?done=approved").await;
+    assert_eq!(badge(&page), "Approved");
+    assert!(!page.contains("Approve revision"), "{page}");
+    assert!(page.contains(">Download PDF<"), "{page}");
+    assert!(!page.contains("class=\"count\""), "nothing waits: {page}");
+    let (_, _, list) = get(&f.app, "/cv").await;
+    assert!(!list.contains("Waiting for your approval"), "{list}");
+}
+
+/// Three small drafts can't hide what changed: the owner reads them against what was last approved.
+#[tokio::test]
+async fn the_owner_reads_a_chain_of_drafts_against_the_last_approved_text() {
+    let f = locked().await;
+    agent_patch(
+        &f,
+        0,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    tap_approve(&f, &page).await;
+    agent_patch(&f, 1, "routing engine.", "routing engine for 11 ports.").await;
+    agent_patch(&f, 2, "11 ports.", "11 ports and 22 depots.").await;
+    agent_patch(&f, 3, "22 depots.", "22 depots across 33 towns.").await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains("Compared with revision 1"), "{page}");
+    let rendered = page.split("id=\"cv-rendered-diff\"").nth(1).unwrap();
+    let rendered = rendered.split("</pre>").next().unwrap();
+    for number in ["11", "22", "33"] {
+        assert!(
+            rendered.contains(&format!("<mark>{number}</mark>")),
+            "{number}: {rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("class=\"dd\""),
+        "what was approved shows removed: {rendered}"
+    );
+    assert!(rendered.contains("Built the routing engine."), "{rendered}");
+}
+
+/// The form names what the owner read. A revision landing in between can't be approved by accident.
+#[tokio::test]
+async fn approving_what_has_moved_is_refused_and_shows_what_is_there() {
+    let f = locked().await;
+    agent_patch(
+        &f,
+        0,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await;
+    let (_, _, read) = get(&f.app, VARIANT).await;
+
+    agent_patch(&f, 1, "routing engine.", "routing engine at Zanzibar.").await;
+    let (status, _, page) = tap_approve(&f, &read).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(page.contains("nothing was approved"), "{page}");
+    assert!(
+        page.contains("Approve revision 2"),
+        "the new one to read: {page}"
+    );
+    assert!(page.contains("<mark>Zanzibar</mark>"), "{page}");
+    assert_eq!(approvals(&f.db).await, 0);
+
+    // A wrong or missing hash of the right revision.
+    for (source, facts) in [
+        ("wrong", hidden(&page, "factsSha256")),
+        (
+            hidden(&page, "sourceSha256").leak() as &str,
+            "wrong".to_owned(),
+        ),
+        ("", String::new()),
+    ] {
+        let (status, _, _) = post(
+            &f.app,
+            &format!("{VARIANT}/approve"),
+            &[
+                ("csrf", TOKEN),
+                ("revision", "2"),
+                ("sourceSha256", source),
+                ("factsSha256", &facts),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{source} {facts}");
+    }
+    let (status, _, _) = post(
+        &f.app,
+        &format!("{VARIANT}/approve"),
+        &[
+            ("revision", "2"),
+            ("sourceSha256", &hidden(&page, "sourceSha256")),
+            ("factsSha256", &hidden(&page, "factsSha256")),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "no token, no approval");
+    assert_eq!(approvals(&f.db).await, 0);
+}
+
+#[tokio::test]
+async fn a_new_word_in_a_draft_is_shown_to_check() {
+    let f = locked().await;
+    agent_patch(
+        &f,
+        0,
+        "Built the routing service.",
+        "Built the Zanzibar service.",
+    )
+    .await;
     let (_, _, page) = get(&f.app, VARIANT).await;
     assert!(page.contains("<mark>Zanzibar</mark>"), "{page}");
-    assert!(page.contains("can&#x27;t judge") || page.contains("can't judge"));
+    assert!(page.contains("Is it true?"), "{page}");
+}
+
+/// The owner's edit needs no second look: they are looking at it. An agent's text in the same field
+/// wouldn't be: `origin` plays no part, only that this is the owner's form.
+#[tokio::test]
+async fn the_owners_save_approves_and_a_draft_pdf_is_stamped_and_labelled() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let draft = agent_patch(
+        &f,
+        0,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await;
+    assert_eq!(draft["state"], "draft");
+    let request = |query: &str| {
+        Request::get(format!("{VARIANT}/cv.pdf?{query}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, headers, stamped) = send(&f.app, request("revision=1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"cv-default-1-DRAFT-NOT-APPROVED.pdf\""
+    );
+    assert!(stamped.starts_with(b"%PDF-"));
+    let (draft_status, _, draft_png) = image(&f, "revision=1&page=1").await;
+    assert_eq!(draft_status, StatusCode::OK);
+
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(tap_approve(&f, &page).await.0, StatusCode::SEE_OTHER);
+    let (_, headers, clean) = send(&f.app, request("revision=1")).await;
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"cv-default-1.pdf\""
+    );
+    assert_ne!(clean, stamped);
+    let (_, _, clean_png) = image(&f, "revision=1&page=1").await;
+    assert_ne!(
+        clean_png, draft_png,
+        "the stamp isn't served from the cache"
+    );
+
+    let edited = source.replace("Built the routing service.", "Built the routing core.");
+    assert_eq!(save(&f, 1, &edited).await.0, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(badge(&page), "Approved");
+    assert_eq!(approvals(&f.db).await, 2);
 }
 
 #[tokio::test]
@@ -331,7 +579,7 @@ async fn a_stale_base_is_a_conflict_that_keeps_the_text_and_then_lets_the_person
 }
 
 #[tokio::test]
-async fn saving_the_same_text_or_with_unlocked_facts_stores_nothing_and_says_why() {
+async fn saving_the_same_text_or_with_unlocked_facts_says_why() {
     let f = fixture().await;
     let (_, source) = head_of(&f).await;
     let edited = format!("{source}\n");
@@ -339,11 +587,15 @@ async fn saving_the_same_text_or_with_unlocked_facts_stores_nothing_and_says_why
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("Facts page"), "{page}");
     assert_eq!(editor_text(&page), edited);
+    assert!(revision_rows(&f.db).await.is_empty());
     lock(&f.db).await;
-    let (status, _, page) = save(&f, 0, &source).await;
+    // A variant's starting text can be stored as it stands: that makes it the owner's.
+    assert_eq!(save(&f, 0, &source).await.0, StatusCode::SEE_OTHER);
+    assert_eq!(revision_rows(&f.db).await.len(), 1);
+    let (status, _, page) = save(&f, 1, &source).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("nothing to save"), "{page}");
-    assert!(revision_rows(&f.db).await.is_empty());
+    assert_eq!(revision_rows(&f.db).await.len(), 1);
 }
 
 #[tokio::test]
@@ -363,6 +615,7 @@ async fn a_form_without_the_token_changes_nothing_on_any_route() {
         for route in [
             "/cv/variants/default/save",
             "/cv/variants/default/revert",
+            "/cv/variants/default/approve",
             "/cv/facts",
             "/cv/facts/lock",
             "/cv/facts/unlock",
@@ -521,26 +774,16 @@ async fn previews_come_from_the_cache_until_the_source_or_the_facts_change() {
 async fn a_revision_that_stops_passing_shows_no_preview_and_no_pdf() {
     let f = locked().await;
     let (_, source) = head_of(&f).await;
-    let extra = source.replace("Built the routing service.", "Built 77 routing services.");
-    let mut tx = f.db.begin_write().await.unwrap();
-    let allowed = cv_facts::get(&mut tx).await.unwrap().facts.allowed_tokens;
-    let with_77 = cv_facts::OwnerFacts {
-        allowed_tokens: Some(allowed.iter().cloned().chain(["77".to_owned()]).collect()),
-        ..Default::default()
-    };
-    cv_facts::set_owner_facts(&mut tx, &with_77, "test")
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    let extra = source.replace("Built the routing service.", "Built frobnicators.");
     assert_eq!(save(&f, 0, &extra).await.0, StatusCode::SEE_OTHER);
     assert_eq!(image(&f, "revision=1&page=1").await.0, StatusCode::OK);
 
     let mut tx = f.db.begin_write().await.unwrap();
-    let without = cv_facts::OwnerFacts {
-        allowed_tokens: Some(allowed),
+    let banned = cv_facts::OwnerFacts {
+        banned_phrases: Some(vec!["frobnicators".to_owned()]),
         ..Default::default()
     };
-    cv_facts::set_owner_facts(&mut tx, &without, "test")
+    cv_facts::set_owner_facts(&mut tx, &banned, "test")
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -550,7 +793,7 @@ async fn a_revision_that_stops_passing_shows_no_preview_and_no_pdf() {
     let (status, _, json) = get(&f.app, &format!("{VARIANT}/preview.json?revision=1")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let body: Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(body["tokens"][0], "77");
+    assert_eq!(body["tokens"][0], "frobnicators");
     let (status, _, page) = get(&f.app, &format!("{VARIANT}/cv.pdf?revision=1")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("No PDF for this revision"), "{page}");
@@ -574,7 +817,7 @@ async fn the_pdf_downloads_as_an_attachment() {
     assert_eq!(headers["content-type"], "application/pdf");
     assert_eq!(
         headers["content-disposition"],
-        "attachment; filename=\"cv-default-0.pdf\""
+        "attachment; filename=\"cv-default-0-DRAFT-NOT-APPROVED.pdf\""
     );
     assert!(bytes.starts_with(b"%PDF-"));
     assert_eq!(
@@ -591,7 +834,9 @@ async fn the_pdf_downloads_as_an_attachment() {
     );
     let (status, _, head) = get(&f.app, "/api/cv/default/head").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(serde_json::from_str::<Value>(&head).unwrap()["revision"], 0);
+    let head = serde_json::from_str::<Value>(&head).unwrap();
+    assert_eq!(head["revision"], 0);
+    assert_eq!(head["state"], "draft");
 }
 
 #[tokio::test]
@@ -691,16 +936,27 @@ async fn history(db: &Db) -> Vec<(String, String)> {
         .unwrap()
 }
 
+async fn lock_on_page(f: &Fixture, page: &str) -> (StatusCode, HeaderMap, String) {
+    post(
+        &f.app,
+        "/cv/facts/lock",
+        &[("csrf", TOKEN), ("hash", &hidden(page, "hash"))],
+    )
+    .await
+}
+
 #[tokio::test]
-async fn locking_on_the_page_confirms_the_profiles_numbers_and_records_who() {
+async fn locking_on_the_page_shows_every_change_and_records_who() {
     let f = fixture().await;
     let (_, _, page) = get(&f.app, "/cv/facts").await;
     assert!(page.contains("Mara Example") && page.contains("Brightpath Logistics"));
     assert!(page.contains("Lock the facts"));
-    let (status, _, page) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    assert!(page.contains("Facts changed"), "{page}");
+    assert!(page.contains("Wording changed"), "{page}");
+    assert!(page.contains("Cut invoice errors by 40%"), "{page}");
+    let (status, _, locked) = lock_on_page(&f, &page).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("<mark>40%</mark>"), "{page}");
-    assert!(page.contains("Unlock"));
+    assert!(locked.contains("Unlock"), "{locked}");
     assert!(facts_row(&f.db).await.is_locked());
     assert_eq!(
         history(&f.db).await,
@@ -710,9 +966,50 @@ async fn locking_on_the_page_confirms_the_profiles_numbers_and_records_who() {
         ]
     );
 
-    let (status, _, page) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    // A second tap, with the page as it was.
+    let (status, _, again) = lock_on_page(&f, &page).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("already locked"), "{page}");
+    assert!(again.contains("already locked"), "{again}");
+}
+
+/// The hole this closes: an agent's unlocked writes confirmed by one tap on a stale page.
+#[tokio::test]
+async fn a_lock_from_a_stale_page_is_refused_and_shows_what_was_written() {
+    let f = fixture().await;
+    let (_, _, stale) = get(&f.app, "/cv/facts").await;
+
+    let mut rewritten = profile();
+    rewritten["experience"][0]["title"] = "Principal Engineer".into();
+    let result = nexus_mcp::call_tool(
+        std::sync::Arc::new(f.state.clone()),
+        &[SCOPE_TOOLS],
+        "mcp",
+        "upsert_cv_profile",
+        rewritten,
+    )
+    .await;
+    assert_ne!(result.is_error, Some(true));
+
+    let (status, _, page) = lock_on_page(&f, &stale).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(!facts_row(&f.db).await.is_locked(), "nothing locked");
+    assert!(page.contains("nothing was locked"), "{page}");
+    assert!(
+        page.contains("Principal Engineer"),
+        "the new change shows: {page}"
+    );
+
+    let (status, _, _) = post(&f.app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a form naming nothing locks nothing"
+    );
+    assert!(!facts_row(&f.db).await.is_locked());
+
+    let (status, _, _) = lock_on_page(&f, &page).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(facts_row(&f.db).await.is_locked());
 }
 
 #[tokio::test]
@@ -726,6 +1023,9 @@ async fn locking_with_no_name_is_refused_in_words() {
         nexus_mcp::Renderer::InProcess,
     );
     let app = build(&state, &dir, None);
+    let (_, _, page) = get(&app, "/cv/facts").await;
+    assert!(page.contains("nothing to lock"), "{page}");
+    assert!(!page.contains("Lock the facts"), "{page}");
     let (_, _, page) = post(&app, "/cv/facts/lock", &[("csrf", TOKEN)]).await;
     assert!(page.contains("nothing to lock"), "{page}");
     assert!(!facts_row(&db).await.is_locked());

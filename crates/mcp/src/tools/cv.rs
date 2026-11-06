@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use super::cv_source::{
     application_variant, approval_required, capped_items, compile, content_of, error_with,
-    facts_changed_error, facts_moved, is_approved, publish, violation_error,
+    facts_changed_error, facts_moved, is_approved, known_to_owner, publish, violation_error,
 };
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{
@@ -172,12 +172,10 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
     ));
     let name = application_variant(application.id);
     let source_sha256 = sha256_hex(source.as_bytes());
-    let (standing, baseline) = {
+    let (standing, known) = {
         let mut conn = ctx.state.db.conn().await?;
-        let baseline = match revisions::get_variant(&mut conn, &name).await? {
-            Some(variant) => approvals::last_approved(&mut conn, &variant).await?,
-            None => None,
-        };
+        let variant = revisions::get_variant(&mut conn, &name).await?;
+        let known = known_to_owner(&mut conn, variant.as_ref()).await?;
         let standing = if !state.is_locked() {
             Generated::Unlocked
         } else if is_approved(&mut conn, &state, &source_sha256).await? {
@@ -187,7 +185,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         } else {
             Generated::Draft
         };
-        (standing, baseline.map(|(text, _)| text))
+        (standing, known)
     };
     let rendered = match compile(
         ctx,
@@ -202,7 +200,12 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
-    let report = check(&rendered.text, &state.facts, baseline.as_deref());
+    let report = check(
+        &rendered.text,
+        &state.facts,
+        known.approved.as_deref(),
+        &known.wording,
+    );
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }

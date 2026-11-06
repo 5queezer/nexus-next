@@ -228,7 +228,7 @@ async fn a_long_word_hyphenated_at_a_line_end_is_read_whole() {
         banned_phrases: vec!["internationalization".to_owned()],
         ..Facts::default()
     };
-    let report = check(&rendered.text, &facts, None);
+    let report = check(&rendered.text, &facts, None, "");
     assert_eq!(report.violations.len(), 1, "{:?}", rendered.text.lines);
     assert_eq!(report.violations[0].rule, Rule::BannedPhrases);
 }
@@ -247,7 +247,12 @@ async fn a_claim_is_a_facts_own_only_beside_the_rest_of_it() {
     };
     let own = format!("{START}#education(\"hochschule\")\nWorked as Scrum Master.\n");
     let report = render_and_check(&own, &facts).await;
-    assert_eq!(claims(&report), Vec::<String>::new(), "{:?}", report.review_items);
+    assert_eq!(
+        claims(&report),
+        Vec::<String>::new(),
+        "{:?}",
+        report.review_items
+    );
     let other = format!("{START}A Bachelor of Arts. A Master of Science.\n");
     let report = render_and_check(&other, &facts).await;
     assert_eq!(claims(&report), ["Bachelor", "Master"]);
@@ -307,29 +312,68 @@ fn tokens_of(report: &nexus_tailor::Report, rule: Rule) -> Vec<&str> {
 fn new_words_compare_with_the_approved_text_in_any_case() {
     let facts = facts_en();
     let previous = "Worked at Globex on Kubernetes.";
-    let current = text(&["Worked at Initech, google and Globex on Kubernetes, Hamburg. Initech again."]);
-    let report = check(&current, &facts, Some(previous));
+    let current =
+        text(&["Worked at Initech, google and Globex on Kubernetes, Hamburg. Initech again."]);
+    let report = check(&current, &facts, Some(previous), "");
     assert_eq!(report.violations, []);
-    assert_eq!(tokens_of(&report, Rule::NewWords), ["Initech", "google", "and", "again"]);
-    // Against nothing the whole text shows anyway, and only names stand out.
-    let report = check(&current, &facts, None);
-    let new = tokens_of(&report, Rule::NewWords);
+    assert_eq!(
+        tokens_of(&report, Rule::NewWords),
+        ["Initech", "google", "and", "again"]
+    );
+    // A first approval has only the wording the owner locked to go by, as in finding 12.
+    let report = check(
+        &current,
+        &facts,
+        None,
+        "Worked at Globex and Initech, again.",
+    );
+    assert_eq!(tokens_of(&report, Rule::NewWords), ["google"]);
+    let new_with_nothing = check(&current, &facts, None, "");
+    let new = tokens_of(&new_with_nothing, Rule::NewWords);
     assert!(new.contains(&"Globex"), "{new:?}");
-    assert!(!new.contains(&"google"), "{new:?}");
-    assert!(!new.contains(&"Kubernetes") && !new.contains(&"Hamburg"), "{new:?}");
+    assert!(
+        !new.contains(&"Kubernetes") && !new.contains(&"Hamburg"),
+        "{new:?}"
+    );
 }
 
 #[test]
 fn only_changed_lines_are_listed_and_every_number_on_them() {
     let facts = facts_en();
     let previous = "Moved 12 services in 2020.\nCut errors by 40%.";
-    let report = check(&text(&["Moved 12 services in 2020.", "Cut errors by 40% across 12 depots."]), &facts, Some(previous));
+    let report = check(
+        &text(&[
+            "Moved 12 services in 2020.",
+            "Cut errors by 40% across 12 depots.",
+        ]),
+        &facts,
+        Some(previous),
+        "",
+    );
     assert_eq!(tokens_of(&report, Rule::Numbers), ["40%", "12"]);
-    assert_eq!(report.review_items.iter().find(|i| i.token == "40%").unwrap().line, Some(2));
+    assert_eq!(
+        report
+            .review_items
+            .iter()
+            .find(|i| i.token == "40%")
+            .unwrap()
+            .line,
+        Some(2)
+    );
     // A line moved says something new, though no word of it did.
-    let moved = check(&text(&["Cut errors by 40%.", "Moved 12 services in 2020."]), &facts, Some(previous));
+    let moved = check(
+        &text(&["Cut errors by 40%.", "Moved 12 services in 2020."]),
+        &facts,
+        Some(previous),
+        "",
+    );
     assert!(!moved.review_items.is_empty());
-    let same = check(&text(&["Moved 12 services in 2020.", "Cut errors by 40%."]), &facts, Some(previous));
+    let same = check(
+        &text(&["Moved 12 services in 2020.", "Cut errors by 40%."]),
+        &facts,
+        Some(previous),
+        "",
+    );
     assert_eq!(same.review_items, []);
 }
 
@@ -337,7 +381,7 @@ fn only_changed_lines_are_listed_and_every_number_on_them() {
 fn a_fact_that_was_shown_and_is_gone_is_listed() {
     let facts = facts_en();
     let previous = "Brightpath Logistics · Software Engineer 03/2019 – 12/2022\nGerman (native) · English (C1)";
-    let report = check(&text(&["German (native)"]), &facts, Some(previous));
+    let report = check(&text(&["German (native)"]), &facts, Some(previous), "");
     let missing = tokens_of(&report, Rule::MissingFact);
     assert_eq!(missing, ["Brightpath Logistics", "English"]);
     assert_eq!(report.review_items[0].line, None);
@@ -346,7 +390,12 @@ fn a_fact_that_was_shown_and_is_gone_is_listed() {
 
 #[test]
 fn most_serious_items_come_first() {
-    let report = check(&text(&["Brightpath Logistics in 2031 as PhD with Flowers."]), &facts_en(), None);
+    let report = check(
+        &text(&["Brightpath Logistics in 2031 as PhD with Flowers."]),
+        &facts_en(),
+        None,
+        "",
+    );
     let rules: Vec<Rule> = report.review_items.iter().map(|i| i.rule).collect();
     let mut sorted = rules.clone();
     sorted.sort();
@@ -415,7 +464,11 @@ const GERMAN_BULLETS: [&str; 20] = [
 async fn normal_bullets_are_never_refused_in_either_language() {
     let mut facts_and_bullets: Vec<(Facts, &str, &[&str])> = vec![
         (facts_en(), "#show: cv\n", &ENGLISH_BULLETS),
-        (facts_de(), "#show: cv.with(lang: \"de\")\n", &GERMAN_BULLETS),
+        (
+            facts_de(),
+            "#show: cv.with(lang: \"de\")\n",
+            &GERMAN_BULLETS,
+        ),
     ];
     for (facts, setup, bullets) in facts_and_bullets.drain(..) {
         for bullet in bullets {
@@ -443,13 +496,13 @@ fn any_script_is_safe_and_the_check_is_fast() {
         ".",
     ];
     for script in scripts {
-        check(&text(&[script]), &facts, None);
+        check(&text(&[script]), &facts, None, "");
     }
     let line =
         "Zoë built 日本語 and مرحبا, the dispatch service for 200 Ärzte in Köln. ".repeat(40);
     let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 400).collect();
     let started = std::time::Instant::now();
-    let report = check(&text(&lines), &facts, None);
+    let report = check(&text(&lines), &facts, None, "");
     assert_eq!(report.violations, []);
     assert!(!report.review_items.is_empty());
     assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());

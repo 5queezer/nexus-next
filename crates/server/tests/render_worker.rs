@@ -86,7 +86,7 @@ async fn a_cv_renders_in_the_child() {
     assert_eq!(rendered.page_count, 1);
     assert!(rendered.pdf.unwrap().starts_with(b"%PDF-"));
     assert!(rendered.previews[0].starts_with(b"\x89PNG"));
-    assert_eq!(check(&rendered.text, &facts, None).violations, []);
+    assert_eq!(check(&rendered.text, &facts, None, "").violations, []);
 }
 
 #[tokio::test(flavor = "multi_thread")]

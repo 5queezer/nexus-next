@@ -500,7 +500,7 @@ async fn assert_flagged_with(facts: &Facts, cases: &[(&str, Rule, &str)]) {
         let source = format!("{START}{body}\n");
         match render(&source, facts).await {
             Ok(rendered) => {
-                let report = nexus_tailor::check(&rendered.text, facts, None);
+                let report = nexus_tailor::check(&rendered.text, facts, None, "");
                 let found = if is_hard(*rule) {
                     report.violations.iter().any(|v| v.rule == *rule)
                 } else {
@@ -747,7 +747,7 @@ async fn math_is_refused_or_read() {
     match render("$2018$\n", &facts).await {
         Err(RenderError::Diagnostics(_)) => {}
         Ok(rendered) => {
-            let report = nexus_tailor::check(&rendered.text, &facts, None);
+            let report = nexus_tailor::check(&rendered.text, &facts, None, "");
             assert!(
                 report.review_items.iter().any(|i| i.rule == Rule::Numbers),
                 "{:?}",
@@ -1136,7 +1136,11 @@ async fn digit_lookalikes_before_a_unit_are_refused() {
         ("Latin", Rule::DigitLookalike, "Cut errors by lOO%."),
         ("Cyrillic", Rule::DigitLookalike, "Cut errors by ЗО%."),
         ("with a space", Rule::DigitLookalike, "Cut errors by lO %."),
-        ("the word", Rule::DigitLookalike, "Cut errors by lOO percent."),
+        (
+            "the word",
+            Rule::DigitLookalike,
+            "Cut errors by lOO percent.",
+        ),
         ("years", Rule::DigitLookalike, "With lO years in freight."),
         ("German", Rule::DigitLookalike, "Seit lO Jahren dabei."),
     ])
@@ -1211,7 +1215,7 @@ async fn links_are_read_with_the_text_they_cover() {
         .find(|link| link.target == "https://example.org/x")
         .unwrap();
     assert_eq!(link.text, "the link");
-    assert_eq!(check(&rendered.text, &facts, None).violations, []);
+    assert_eq!(check(&rendered.text, &facts, None, "").violations, []);
 }
 
 async fn previews_of(source: &str, stamp: bool) -> Vec<Vec<u8>> {
@@ -1241,7 +1245,11 @@ fn red_by_quarter(png_bytes: &[u8]) -> [usize; 4] {
     for y in 0..info.height as usize {
         for x in 0..info.width as usize {
             let pixel = &buffer[y * stride + x * channels..];
-            let (r, g, b) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
+            let (r, g, b) = (
+                i32::from(pixel[0]),
+                i32::from(pixel[1]),
+                i32::from(pixel[2]),
+            );
             if r - g > 60 && r - b > 60 {
                 let right = usize::from(x * 2 >= info.width as usize);
                 let lower = usize::from(y * 2 >= info.height as usize);
@@ -1256,7 +1264,8 @@ fn red_by_quarter(png_bytes: &[u8]) -> [usize; 4] {
 /// source can reach, from a document of its own. Judged by looking at pixels.
 #[tokio::test]
 async fn nothing_in_a_source_removes_or_covers_the_stamp() {
-    let cover = "#place(top + left, dx: -3cm, dy: -3cm, rect(width: 40cm, height: 40cm, fill: white))";
+    let cover =
+        "#place(top + left, dx: -3cm, dy: -3cm, rect(width: 40cm, height: 40cm, fill: white))";
     let attacks = [
         "Work.".to_owned(),
         "#set page(background: none, foreground: none)\nWork.".to_owned(),
@@ -1334,7 +1343,11 @@ async fn the_reviews_false_facts_are_listed_for_the_owner() {
         (
             "finding 1: another job's dates and title",
             "*Brightpath Logistics* · Backend Developer #h(1fr) Jan 2016 – Feb 2019",
-            &["Brightpath Logistics", "backend developer", "jan 2016 - feb 2019"],
+            &[
+                "Brightpath Logistics",
+                "backend developer",
+                "jan 2016 - feb 2019",
+            ],
         ),
         (
             "finding 2: an allowed number in the wrong place",
@@ -1370,22 +1383,74 @@ async fn the_reviews_false_facts_are_listed_for_the_owner() {
             "master of science in computer science",
             &["master"],
         ),
-        ("finding 5: small caps", "#smallcaps[master of science]", &["master"]),
-        ("finding 5: honors", "graduated summa cum laude", &["graduated", "cum laude"]),
-        ("finding 5: abbreviation", "holds a b.a. in philosophy", &["b.a"]),
-        ("finding 5: German degree", "habilitierte sich", &["habilitierte"]),
+        (
+            "finding 5: small caps",
+            "#smallcaps[master of science]",
+            &["master"],
+        ),
+        (
+            "finding 5: honors",
+            "graduated summa cum laude",
+            &["graduated", "cum laude"],
+        ),
+        (
+            "finding 5: abbreviation",
+            "holds a b.a. in philosophy",
+            &["b.a"],
+        ),
+        (
+            "finding 5: German degree",
+            "habilitierte sich",
+            &["habilitierte"],
+        ),
         ("finding 5: seniority", "worked as lead engineer", &["lead"]),
         ("finding 5: manager", "engineering manager", &["manager"]),
-        ("finding 5: German title", "Teamleitung und Projektleitung", &["Teamleitung", "Projektleitung"]),
-        ("finding 5: language", "fließendes Französisch", &["fließendes"]),
-        ("finding 5: German language", "Spanischkenntnisse", &["Spanischkenntnisse"]),
-        ("finding 10: filler", "with eight consecutive years in freight", &["eight"]),
-        ("finding 10: and a half", "with two and a half years in freight", &["two"]),
-        ("finding 10: plus", "with eight-plus years in freight", &["eight-plus"]),
-        ("finding 10: einhalb", "mit zweieinhalb Jahren Erfahrung", &["zweieinhalb"]),
-        ("finding 10: scale", "12 Tausend Nutzer.", &["12", "Tausend"]),
+        (
+            "finding 5: German title",
+            "Teamleitung und Projektleitung",
+            &["Teamleitung", "Projektleitung"],
+        ),
+        (
+            "finding 5: language",
+            "fließendes Französisch",
+            &["fließendes"],
+        ),
+        (
+            "finding 5: German language",
+            "Spanischkenntnisse",
+            &["Spanischkenntnisse"],
+        ),
+        (
+            "finding 10: filler",
+            "with eight consecutive years in freight",
+            &["eight"],
+        ),
+        (
+            "finding 10: and a half",
+            "with two and a half years in freight",
+            &["two"],
+        ),
+        (
+            "finding 10: plus",
+            "with eight-plus years in freight",
+            &["eight-plus"],
+        ),
+        (
+            "finding 10: einhalb",
+            "mit zweieinhalb Jahren Erfahrung",
+            &["zweieinhalb"],
+        ),
+        (
+            "finding 10: scale",
+            "12 Tausend Nutzer.",
+            &["12", "Tausend"],
+        ),
         ("finding 10: bn", "12 bn EUR revenue.", &["12"]),
-        ("finding 12: names", "worked for Google at Stanford", &["Google", "Stanford"]),
+        (
+            "finding 12: names",
+            "worked for Google at Stanford",
+            &["Google", "Stanford"],
+        ),
     ];
     let mut missed = Vec::new();
     for (name, body, tokens) in cases {
@@ -1419,12 +1484,19 @@ async fn a_false_phone_number_is_refused_and_the_true_one_is_not() {
     ] {
         let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
         assert!(
-            report.violations.iter().any(|v| v.rule == Rule::ContactDetails),
+            report
+                .violations
+                .iter()
+                .any(|v| v.rule == Rule::ContactDetails),
             "{body}: {:?}",
             report.violations
         );
     }
-    for body in ["Call +49 170 5550137.", "Call 0049 170 5550137.", "#contact()"] {
+    for body in [
+        "Call +49 170 5550137.",
+        "Call 0049 170 5550137.",
+        "#contact()",
+    ] {
         let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
         assert_eq!(report.violations, [], "{body}");
     }

@@ -231,5 +231,5 @@ pub async fn render_and_check(source: &str, facts: &Facts) -> Report {
     let rendered = render(source, facts)
         .await
         .unwrap_or_else(|e| panic!("does not compile: {e:?}\n{source}"));
-    check(&rendered.text, facts, None)
+    check(&rendered.text, facts, None, "")
 }

@@ -1,6 +1,7 @@
 //! A Telegram dictation session as docs/DICTATION.md tells Hermes to run it: a scripted client that
 //! authorizes through real OAuth against the real `nexus serve`, whose compiles run in the real
-//! `nexus __render` child. All people and companies are invented.
+//! `nexus __render` child. `cv_gate.rs` takes the review's false facts through the same doors. All
+//! people and companies are invented.
 //!
 //! Set `NEXUS_CV_PREVIEW_OUT` to keep the session's final PNG at that path.
 
@@ -10,162 +11,8 @@ use std::process::Output;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use reqwest::header::{COOKIE, LOCATION, SET_COOKIE};
-use reqwest::redirect::Policy;
 use serde_json::{Value, json};
-use support::{Node, PASSPHRASE, nexus};
-
-const REDIRECT: &str = "http://127.0.0.1:9/callback";
-const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-
-/// A `<input name=... value=...>` from a served page.
-fn field(page: &str, name: &str) -> String {
-    let marker = format!("name=\"{name}\"");
-    let at = page
-        .find(&marker)
-        .unwrap_or_else(|| panic!("{name} in {page}"));
-    let tag_start = page[..at].rfind('<').unwrap();
-    let tag_end = at + page[at..].find('>').unwrap();
-    let tag = &page[tag_start..tag_end];
-    let value = tag.split("value=\"").nth(1).unwrap();
-    value.split('"').next().unwrap().to_owned()
-}
-
-fn form(pairs: &[(&str, &str)]) -> String {
-    url::form_urlencoded::Serializer::new(String::new())
-        .extend_pairs(pairs)
-        .finish()
-}
-
-struct Browser {
-    http: reqwest::Client,
-    base: String,
-    cookies: Vec<(String, String)>,
-}
-
-impl Browser {
-    fn cookie_header(&self) -> String {
-        let pairs: Vec<String> = self
-            .cookies
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        pairs.join("; ")
-    }
-
-    async fn keep_cookies(&mut self, response: &reqwest::Response) {
-        for cookie in response.headers().get_all(SET_COOKIE) {
-            let first = cookie.to_str().unwrap().split(';').next().unwrap();
-            let (key, value) = first.split_once('=').unwrap();
-            self.cookies.retain(|(k, _)| k != key);
-            if !value.is_empty() {
-                self.cookies.push((key.to_owned(), value.to_owned()));
-            }
-        }
-    }
-
-    async fn get(&mut self, path: &str) -> (reqwest::StatusCode, String) {
-        let response = self
-            .http
-            .get(format!("{}{path}", self.base))
-            .header(COOKIE, self.cookie_header())
-            .send()
-            .await
-            .unwrap();
-        self.keep_cookies(&response).await;
-        (response.status(), response.text().await.unwrap())
-    }
-
-    async fn post_form(&mut self, path: &str, body: String) -> reqwest::Response {
-        let response = self
-            .http
-            .post(format!("{}{path}", self.base))
-            .header(COOKIE, self.cookie_header())
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(body)
-            .send()
-            .await
-            .unwrap();
-        self.keep_cookies(&response).await;
-        response
-    }
-}
-
-/// Dynamic registration, owner login, consent and PKCE: what Hermes does at its one reconnect.
-async fn oauth_token(base: &str) -> String {
-    let http = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .build()
-        .unwrap();
-    let registered = http
-        .post(format!("{base}/api/mcp/register"))
-        .header("content-type", "application/json")
-        .body(
-            json!({
-                "client_name": "Scripted Hermes",
-                "redirect_uris": [REDIRECT],
-                "grant_types": ["authorization_code", "refresh_token"],
-                "response_types": ["code"],
-                "token_endpoint_auth_method": "none",
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    let registered: Value = serde_json::from_str(&registered.text().await.unwrap()).unwrap();
-    let client_id = registered["client_id"].as_str().unwrap().to_owned();
-
-    let mut browser = Browser {
-        http: http.clone(),
-        base: base.to_owned(),
-        cookies: Vec::new(),
-    };
-    let (_, login) = browser.get("/login").await;
-    let body = form(&[("csrf", &field(&login, "csrf")), ("passphrase", PASSPHRASE)]);
-    let logged_in = browser.post_form("/login", body).await;
-    assert_eq!(logged_in.status(), 303);
-
-    let query = form(&[
-        ("response_type", "code"),
-        ("client_id", &client_id),
-        ("redirect_uri", REDIRECT),
-        ("code_challenge", CHALLENGE),
-        ("code_challenge_method", "S256"),
-        ("state", "st-1"),
-        ("scope", "mcp:tools"),
-    ]);
-    let (status, consent) = browser.get(&format!("/api/mcp/authorize?{query}")).await;
-    assert_eq!(status, 200, "{consent}");
-    let body = form(&[("consent", &field(&consent, "consent"))]);
-    let granted = browser.post_form("/api/mcp/authorize", body).await;
-    assert_eq!(granted.status(), 303);
-    let location = granted.headers()[LOCATION].to_str().unwrap().to_owned();
-    let code = url::Url::parse(&location)
-        .unwrap()
-        .query_pairs()
-        .find(|(key, _)| key == "code")
-        .unwrap()
-        .1
-        .into_owned();
-
-    let token = http
-        .post(format!("{base}/api/mcp/token"))
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", &client_id),
-            ("code", &code),
-            ("redirect_uri", REDIRECT),
-            ("code_verifier", VERIFIER),
-        ]))
-        .send()
-        .await
-        .unwrap();
-    let token: Value = serde_json::from_str(&token.text().await.unwrap()).unwrap();
-    token["access_token"].as_str().unwrap().to_owned()
-}
+use support::{Node, lock_confirmed, nexus, oauth_token};
 
 struct Agent {
     http: reqwest::Client,
@@ -257,7 +104,7 @@ async fn facts_and_history(node: &Node) -> (String, String) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
+async fn a_messy_dictation_session_edits_wording_and_stays_a_draft_for_the_owner() {
     let root = tempfile::tempdir().unwrap();
     let (node, _) = Node::create(root.path(), &[]).await;
     let base = format!("http://{}", node.addr);
@@ -308,16 +155,11 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
     )
     .unwrap();
     cv_facts(&node, &["set", "--file", file.to_str().unwrap()]);
-    let locked = String::from_utf8(cv_facts(&node, &["lock", "--confirm"]).stdout).unwrap();
-    // Not 40%: the metric the owner just set already vouches for it.
-    for token in ["6", "3", "12"] {
-        assert!(
-            locked
-                .lines()
-                .any(|l| l == format!("added to allowed tokens: {token}")),
-            "{token} in {locked}"
-        );
-    }
+    let locked = lock_confirmed(&node.dir);
+    // The lock says what it confirms: the facts and the wording, numbers and all.
+    assert!(locked.contains("changed name:"), "{locked}");
+    assert!(locked.contains("wording changed profile:"), "{locked}");
+    assert!(locked.contains("for 6 years"), "{locked}");
     let shown: Value = serde_json::from_slice(&cv_facts(&node, &["show"]).stdout).unwrap();
     assert!(shown["lockedAt"].is_string());
     assert_eq!(shown["bannedPhrases"], json!(["rockstar developer"]));
@@ -363,6 +205,11 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
         )
         .await;
     assert_eq!(first["revision"], 1);
+    assert_eq!(
+        first["state"], "draft",
+        "an agent's edit waits for the owner"
+    );
+    assert_eq!(first["approvalPath"], "/cv/variants/default#cv-approval");
     assert!(
         first["diff"]
             .as_str()
@@ -422,84 +269,89 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
             .contains("Ran the routing service.\n")
     );
 
-    // The gate. Each of these is the voice note an agent must refuse, and each stays refused.
-    let head = 4;
+    // What no list of words can judge: each stores as a draft, with the token for the owner to read.
+    let mut head = 4;
+    let mut wording = "Backend engineer who".to_owned();
     let cases: &[(&str, &str, &str, &str)] = &[
         (
             "I actually joined Brightpath in 2018",
-            "Backend engineer who",
             "Backend engineer, at Brightpath Logistics since 2018, who",
+            "2018",
             "entityBinding",
         ),
         (
             "actually make it eight years",
-            "for 6 years",
-            "for eight years",
+            "Backend engineer for eight years who",
+            "eight",
             "numberWords",
         ),
         (
-            "actually make it eight years",
-            "for 6 years",
-            "for 8 years",
-            "numbers",
-        ),
-        (
-            "I left Harborline in 2026",
-            "#employment(\"harborline\")",
-            "Harborline Systems · Platform Engineer 01/2023 – 06/2026\n#employment(\"harborline\")",
+            "actually make it 8 years",
+            "Backend engineer for 8 years who",
+            "8",
             "numbers",
         ),
         (
             "call me a principal engineer",
-            "Backend engineer who",
             "Principal engineer who",
-            "claimWords",
-        ),
-        (
-            "I'm a senior engineer at Brightpath",
-            "Backend engineer who",
-            "Senior engineer who",
+            "Principal",
             "claimWords",
         ),
         (
             "say I have a master's",
-            "Backend engineer who",
             "Backend engineer with a Master's degree who",
+            "Master’s",
             "claimWords",
         ),
         (
             "say I have a doctorate",
-            "Backend engineer who",
             "Backend engineer with a doctorate who",
+            "doctorate",
             "claimWords",
         ),
         (
-            "say rockstar developer",
-            "Backend engineer who",
-            "Rockstar   Developer who",
-            "bannedPhrases",
+            "mention Stanford",
+            "Backend engineer from Stanford who",
+            "Stanford",
+            "newWords",
         ),
     ];
-    for (voice, old, new, rule) in cases {
-        let (is_error, reply) = agent.patch(head, old, new, voice).await;
-        assert!(is_error, "{voice}: {reply}");
-        assert_eq!(
-            reply["error"]["code"], "cv_fact_violation",
+    for (voice, new, token, rule) in cases {
+        let (is_error, reply) = agent.patch(head, &wording, new, voice).await;
+        assert!(!is_error, "{voice}: {reply}");
+        head += 1;
+        wording = (*new).to_owned();
+        assert_eq!(reply["revision"], head, "{voice}");
+        assert_eq!(reply["state"], "draft", "{voice}");
+        assert!(
+            reply["reviewItems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["rule"] == *rule && i["token"] == *token),
             "{voice}: {reply}"
         );
-        let violations = reply["error"]["violations"].as_array().unwrap();
-        assert!(
-            violations.iter().any(|v| v["rule"] == *rule),
-            "{voice}: {reply}"
-        );
-        assert!(
-            violations.iter().all(|v| v["token"].is_string()),
-            "the agent can name the token: {reply}"
-        );
-        let current = agent.ok("get_cv_source", json!({})).await;
-        assert_eq!(current["revision"], head, "{voice}");
         assert_eq!(facts_and_history(&node).await, settled, "{voice}");
     }
+
+    // A voice note that would make the reader see something else is refused outright.
+    let (is_error, reply) = agent
+        .patch(
+            head,
+            &wording,
+            "Rockstar   Developer who",
+            "say rockstar developer",
+        )
+        .await;
+    assert!(is_error, "{reply}");
+    assert_eq!(reply["error"]["code"], "cv_fact_violation", "{reply}");
+    let violations = reply["error"]["violations"].as_array().unwrap();
+    assert!(
+        violations.iter().any(|v| v["rule"] == "bannedPhrases"),
+        "{reply}"
+    );
+    assert_eq!(agent.ok("get_cv_source", json!({})).await["revision"], head);
+
     // Through the profile, the other way to the facts.
     let (is_error, reply) = agent
         .call(
@@ -529,8 +381,9 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
     let listed = agent
         .ok("list_cv_revisions", json!({"includeDiff": true}))
         .await;
-    assert_eq!(listed["total"], 4);
+    assert_eq!(listed["total"], head);
     assert_eq!(listed["revisions"][1]["origin"], "telegram");
+    assert_eq!(listed["revisions"][0]["state"], "draft");
 
     // The picture goes back to Telegram.
     let rendered = agent
@@ -542,15 +395,18 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
     assert_ne!(rendered["isError"], true, "{rendered}");
     let summary: Value =
         serde_json::from_str(rendered["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(summary["revision"], 4);
-    let pdf = STANDARD
-        .decode(rendered["content"][1]["resource"]["blob"].as_str().unwrap())
-        .unwrap();
-    assert!(pdf.starts_with(b"%PDF-"));
-    assert!(pdf.len() > 1000, "{}", pdf.len());
-    assert_eq!(rendered["content"][2]["mimeType"], "image/png");
+    assert_eq!(summary["revision"], head);
+    assert_eq!(summary["state"], "draft");
+    assert_eq!(summary["approvalPath"], "/cv/variants/default#cv-approval");
+    assert!(summary["reviewItems"].is_array());
+    assert_eq!(
+        rendered["content"].as_array().unwrap().len(),
+        2,
+        "no PDF of a draft"
+    );
+    assert_eq!(rendered["content"][1]["mimeType"], "image/png");
     let png = STANDARD
-        .decode(rendered["content"][2]["data"].as_str().unwrap())
+        .decode(rendered["content"][1]["data"].as_str().unwrap())
         .unwrap();
     let mut decoder = png::Decoder::new(std::io::Cursor::new(&png))
         .read_info()
@@ -567,6 +423,35 @@ async fn a_messy_dictation_session_edits_wording_and_cannot_touch_a_fact() {
     if let Some(path) = std::env::var_os("NEXUS_CV_PREVIEW_OUT") {
         std::fs::write(path, &png).unwrap();
     }
+
+    // The owner reads it on the board and approves, and only then is there a PDF.
+    let shown = cv_facts(
+        &node,
+        &[
+            "approve",
+            "--variant",
+            "default",
+            "--revision",
+            &head.to_string(),
+            "--confirm",
+        ],
+    );
+    let shown = String::from_utf8(shown.stdout).unwrap();
+    assert!(shown.contains("Stanford"), "{shown}");
+    let rendered = agent
+        .rpc(
+            "tools/call",
+            json!({"name": "render_cv_pdf", "arguments": {"previewPages": 1}}),
+        )
+        .await;
+    let summary: Value =
+        serde_json::from_str(rendered["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(summary["state"], "approved");
+    let pdf = STANDARD
+        .decode(rendered["content"][1]["resource"]["blob"].as_str().unwrap())
+        .unwrap();
+    assert!(pdf.starts_with(b"%PDF-"));
+    assert!(pdf.len() > 1000, "{}", pdf.len());
 
     assert_eq!(facts_and_history(&node).await, settled);
     assert!(!node.logs().contains("Mara"), "the log holds no CV data");

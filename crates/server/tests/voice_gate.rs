@@ -536,6 +536,7 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
         "the model can't choose its origin"
     );
 
+    // A claim from a job description stores as a draft, and the model is told to name it to the owner.
     let inflating = run(
         "patch_cv",
         json!({
@@ -545,18 +546,72 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
         }),
     )
     .await;
-    assert_eq!(inflating["isError"], true, "{inflating}");
+    assert_eq!(inflating["isError"], false, "{inflating}");
     let output = inflating["output"].as_str().unwrap();
-    assert!(
-        output.contains("cv_fact_violation") && output.contains("77"),
-        "{output}"
-    );
-    assert_eq!(revision_count(&h.db).await, 2);
+    assert!(output.contains("\"state\": \"draft\""), "{output}");
+    assert!(output.contains("\"token\": \"77\""), "{output}");
+    assert_eq!(revision_count(&h.db).await, 3);
+
+    let hidden = run(
+        "patch_cv",
+        json!({
+            "expectedRevision": 3,
+            "edits": [{"oldText": "Built 77 routing cores.", "newText": "Built it. #text(fill: white)[Hidden]"}],
+            "summary": "Text no reader sees",
+        }),
+    )
+    .await;
+    assert_eq!(hidden["isError"], true, "{hidden}");
+    let output = hidden["output"].as_str().unwrap();
+    assert!(output.contains("cv_fact_violation"), "{output}");
+    assert_eq!(revision_count(&h.db).await, 3);
+
+    // Voice can't approve, however it asks: no tool, no argument, and the origin it can't choose.
+    let approvals = async |db: &Db| -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM cv_approvals")
+            .fetch_one(db.pool())
+            .await
+            .unwrap()
+    };
+    for name in ["approve_cv", "cv_approve", "approve", "approve_cv_revision"] {
+        let (status, body) = login.tool(&voice, name, json!({"revision": 3})).await;
+        assert_eq!(status, 403, "{name}: {body}");
+        assert_eq!(body["error"]["code"], "voice_tool_not_allowed", "{name}");
+    }
+    for extra in ["approve", "approved", "approvedBy", "state", "confirm"] {
+        let mut args = json!({
+            "expectedRevision": 3,
+            "edits": [{"oldText": "77 routing cores.", "newText": "78 routing cores."}],
+            "summary": "With an extra argument",
+            "origin": "dashboard",
+        });
+        args[extra] = true.into();
+        let tried = run("patch_cv", args).await;
+        // The first stores, as a draft. Those after it find their revision taken.
+        let output = tried["output"].as_str().unwrap();
+        assert!(
+            output.contains("\"state\": \"draft\"") || output.contains("cv_revision_conflict"),
+            "{extra}: {output}"
+        );
+    }
+    assert_eq!(approvals(&h.db).await, 0);
+    assert_eq!(revision_count(&h.db).await, 4);
+    let origins: Vec<String> =
+        sqlx::query_scalar("SELECT origin FROM cv_revisions ORDER BY number DESC LIMIT 1")
+            .fetch_all(h.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(origins, ["voice"]);
 
     let rendered = run("render_cv_pdf", json!({})).await;
     assert_eq!(rendered["isError"], false, "{rendered}");
     let output = rendered["output"].as_str().unwrap();
     assert!(!output.contains("JVBERi0"), "no PDF for the model");
+    assert!(output.contains("\"state\": \"draft\""), "{output}");
+    assert!(
+        !output.contains("pdfBytes"),
+        "a voice patch makes no PDF: {output}"
+    );
     assert!(
         output.contains("\"previews\": 0"),
         "no images for the model: {output}"
@@ -579,9 +634,10 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
 
     let listed = run("list_cv_revisions", json!({"includeDiff": true})).await;
     assert!(listed["output"].as_str().unwrap().contains("routing core"));
-    let reverted = run("revert_cv", json!({"toRevision": 1, "expectedRevision": 2})).await;
+    let reverted = run("revert_cv", json!({"toRevision": 1, "expectedRevision": 4})).await;
     assert_eq!(reverted["isError"], false, "{reverted}");
-    assert_eq!(revision_count(&h.db).await, 3);
+    assert_eq!(revision_count(&h.db).await, 5);
+    assert_eq!(approvals(&h.db).await, 0);
 
     let filtered = run("list_applications_filtered", json!({"status": ["inbound"]})).await;
     assert!(

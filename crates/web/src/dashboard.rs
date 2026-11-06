@@ -213,7 +213,12 @@ async fn follow_ups(State(Dashboard { db, tz, .. }): State<Dashboard>) -> Page {
         overdue,
         awaiting: crate::cv::awaiting_count(&db).await?,
     };
-    Ok(Html(views::page("Follow-ups", Nav::FollowUps, counts, view)))
+    Ok(Html(views::page(
+        "Follow-ups",
+        Nav::FollowUps,
+        counts,
+        view,
+    )))
 }
 
 #[derive(Deserialize, Default)]

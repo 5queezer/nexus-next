@@ -197,12 +197,25 @@ async fn locking_records_the_wording_and_who() {
     wordy.profile = "Eight years of backend work, Q3 2024 included, on S3.".into();
     upsert(&db, &wordy).await.unwrap();
     let added = lock(&db).await;
-    assert_eq!(added, Vec::<String>::new(), "no number is the lock's to allow");
+    assert_eq!(
+        added,
+        Vec::<String>::new(),
+        "no number is the lock's to allow"
+    );
     let locked = cv_facts::locked_wording(&mut db.conn().await.unwrap())
         .await
         .unwrap();
-    assert_eq!(locked, cv::stored_wording(&mut db.conn().await.unwrap()).await.unwrap());
-    assert!(locked.iter().any(|(field, text)| field == "profile" && text.contains("S3")));
+    assert_eq!(
+        locked,
+        cv::stored_wording(&mut db.conn().await.unwrap())
+            .await
+            .unwrap()
+    );
+    assert!(
+        locked
+            .iter()
+            .any(|(field, text)| field == "profile" && text.contains("S3"))
+    );
     let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
     assert!(state.is_locked());
     assert_eq!(state.facts.allowed_tokens, added);
@@ -511,7 +524,10 @@ async fn locked_facts_refuse_every_change_and_write_nothing() {
     wording.experience[0]["bullets"] = json!(["Reduced invoice errors by 90%."]);
     wording.experience[0]["tier"] = 2.into();
     let saved = upsert(&db, &wording).await.unwrap();
-    assert_eq!(saved.profile, "Backend engineer, freight, for eight years on S3.");
+    assert_eq!(
+        saved.profile,
+        "Backend engineer, freight, for eight years on S3."
+    );
     assert_eq!(saved.experience.0[0]["tier"], 2);
     assert_eq!(saved.experience.0[0]["company"], "Brightpath Logistics");
     let after = tables(&db).await;
@@ -634,7 +650,12 @@ async fn a_lock_shows_changed_wording_and_its_hash_names_the_list() {
     upsert(&db, &input()).await.unwrap();
     let mut tx = db.begin_write().await.unwrap();
     let first = cv_facts::lock_preview(&mut tx).await.unwrap();
-    assert!(first.wording.iter().any(|c| c.field == "profile" && c.old == "(none)"));
+    assert!(
+        first
+            .wording
+            .iter()
+            .any(|c| c.field == "profile" && c.old == "(none)")
+    );
     cv_facts::lock(&mut tx, "cli").await.unwrap();
     cv_facts::unlock(&mut tx, "cli").await.unwrap();
     let unchanged = cv_facts::lock_preview(&mut tx).await.unwrap();
@@ -648,7 +669,11 @@ async fn a_lock_shows_changed_wording_and_its_hash_names_the_list() {
     let preview = cv_facts::lock_preview(&mut tx).await.unwrap();
     tx.commit().await.unwrap();
     assert!(preview.needs_confirmation());
-    let change = preview.wording.iter().find(|c| c.field == "profile").unwrap();
+    let change = preview
+        .wording
+        .iter()
+        .find(|c| c.field == "profile")
+        .unwrap();
     assert!(change.new.contains("Harvard"), "{change:?}");
     assert_ne!(preview.hash(), unchanged.hash());
 
@@ -656,7 +681,11 @@ async fn a_lock_shows_changed_wording_and_its_hash_names_the_list() {
     upsert(&db, &laundered).await.unwrap();
     let mut tx = db.begin_write().await.unwrap();
     let moved = cv_facts::lock_preview(&mut tx).await.unwrap();
-    assert_ne!(moved.hash(), preview.hash(), "a write after the page loaded");
+    assert_ne!(
+        moved.hash(),
+        preview.hash(),
+        "a write after the page loaded"
+    );
 }
 
 /// A hash of what can be rendered: nothing else moves it, and any fact does.

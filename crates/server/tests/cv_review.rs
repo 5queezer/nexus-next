@@ -8,7 +8,7 @@ use std::process::Output;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use support::{Agent, Node, nexus};
+use support::{Agent, Node, lock_confirmed, nexus};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 
@@ -43,12 +43,6 @@ fn cv_facts(dir: &Path, args: &[&str]) -> Output {
         .arg(dir)
         .output()
         .unwrap()
-}
-
-fn lock_confirmed(dir: &Path) -> String {
-    let output = cv_facts(dir, &["lock", "--confirm"]);
-    assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout).unwrap()
 }
 
 /// The children of the server that run a compile.
@@ -96,7 +90,10 @@ async fn a_lock_shows_what_an_agent_wrote_and_needs_a_confirmation() {
         printed.contains("changed name: (none) -> \"Mara Example\""),
         "{printed}"
     );
-    assert!(printed.contains("added to allowed tokens: 3"), "{printed}");
+    assert!(
+        printed.contains("wording changed profile: (none) -> [\"Backend engineer.\"]"),
+        "{printed}"
+    );
     let locked: i64 = node
         .count("SELECT count(*) FROM cv_facts WHERE locked_at IS NOT NULL")
         .await;
@@ -163,6 +160,57 @@ async fn a_lock_shows_what_an_agent_wrote_and_needs_a_confirmation() {
         ],
         "{writes:?}"
     );
+}
+
+/// The race the plain `--confirm` left open: an agent writing between the printout and the command.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lock_confirmed_with_an_old_hash_is_refused_and_shows_what_was_written() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    agent.ok("upsert_cv_profile", profile()).await;
+
+    let shown = cv_facts(&node.dir, &["lock"]);
+    let said = String::from_utf8(shown.stderr).unwrap();
+    let old_hash = said
+        .split("--confirm ")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let mut rewritten = profile();
+    rewritten["experience"][0]["title"] = json!("Principal Engineer");
+    agent.ok("upsert_cv_profile", rewritten).await;
+
+    let refused = cv_facts(&node.dir, &["lock", "--confirm", &old_hash]);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        String::from_utf8(refused.stdout)
+            .unwrap()
+            .contains("Principal Engineer"),
+        "the new change is printed"
+    );
+    let said = String::from_utf8(refused.stderr).unwrap();
+    assert!(said.contains("something changed"), "{said}");
+    let open: i64 = node
+        .count("SELECT count(*) FROM cv_facts WHERE locked_at IS NULL")
+        .await;
+    assert_eq!(open, 1, "still unlocked");
+    let plain = nexus()
+        .args(["cv-facts", "lock", "--confirm", "--data-dir"])
+        .arg(&node.dir)
+        .output()
+        .unwrap();
+    assert!(!plain.status.success(), "--confirm names a hash");
+
+    assert!(lock_confirmed(&node.dir).contains("Principal Engineer"));
+    let locked: i64 = node
+        .count("SELECT count(*) FROM cv_facts WHERE locked_at IS NOT NULL")
+        .await;
+    assert_eq!(locked, 1);
 }
 
 /// Finding 20: rmcp runs a tool in a task of its own, so a lost connection reaches it only through

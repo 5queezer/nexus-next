@@ -11,7 +11,7 @@ use age::x25519;
 use nexus_core::Db;
 use nexus_core::repo::applications::{self, ApplicationFields};
 use nexus_core::repo::documents::{self, NewDocument};
-use nexus_core::repo::{cv, cv_facts, cv_revisions};
+use nexus_core::repo::{cv, cv_approvals, cv_facts, cv_revisions};
 use nexus_server::backup::{self, read_recipients};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Connection};
@@ -133,6 +133,21 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
     )
     .await
     .unwrap();
+    let facts = cv_facts::get(&mut tx).await.unwrap().facts;
+    let facts_hash = cv_approvals::facts_sha256(&facts);
+    cv_approvals::record(
+        &mut tx,
+        &cv_approvals::NewApproval {
+            source_sha256: &nexus_core::blob::sha256_hex(b"= CV"),
+            facts_sha256: &facts_hash,
+            rendered_text: "CV",
+            variant_id: default.id,
+            revision_number: 1,
+            approved_by: "cli",
+        },
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 
     let out = source.path().join("backup.age");
@@ -149,7 +164,11 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
     let mut conn = restored.conn().await.unwrap();
     let state = cv_facts::get(&mut conn).await.unwrap();
     assert!(state.is_locked());
-    assert_eq!(state.facts.allowed_tokens, ["7"]);
+    let wording = cv_facts::locked_wording(&mut conn).await.unwrap();
+    assert!(
+        wording.iter().any(|(_, text)| text.contains("7 words")),
+        "{wording:?}"
+    );
     let profile = cv::get_profile(&mut conn).await.unwrap().unwrap();
     assert_eq!(profile.experience.0[0]["company"], "Acme");
     let variant = cv_revisions::get_variant(&mut conn, "default")
@@ -166,6 +185,25 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
         .await
         .unwrap();
     assert_eq!(history, 2, "the first profile write, then the lock");
+    let source_hash = nexus_core::blob::sha256_hex(b"= CV");
+    let still_approved = cv_approvals::is_approved(
+        &mut conn,
+        &source_hash,
+        &cv_approvals::facts_sha256(&state.facts),
+    )
+    .await
+    .unwrap();
+    assert!(still_approved, "an approval survives a restore");
+    let (text, at) = cv_approvals::last_approved(&mut conn, &variant)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((text.as_str(), at), ("CV", 1));
+    let changed = sqlx::query("UPDATE cv_approvals SET rendered_text = 'x'")
+        .execute(&mut *conn)
+        .await
+        .unwrap_err();
+    assert!(changed.to_string().contains("append-only"), "{changed}");
     let update = sqlx::query("UPDATE cv_revisions SET source = 'x'")
         .execute(&mut *conn)
         .await;

@@ -25,7 +25,7 @@ use nexus_core::repo::cv_facts::{self, FactChange, FactsState, LockPreview, Owne
 use nexus_core::repo::cv_revisions;
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
-use nexus_tailor::{LineChange, Language, Metric, ReviewItem, Rule, review_diff};
+use nexus_tailor::{Language, LineChange, Metric, ReviewItem, Rule, review_diff};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -192,7 +192,9 @@ fn rule_text(rule: &str) -> &'static str {
         "hiddenText" => "Text a reader can't see",
         "mixedScript" => "A word mixing Latin with lookalike letters",
         "bidiControl" => "A control character that draws text in another order",
-        "transform" => "Text drawn rotated, stretched or squeezed, so it can read as something else",
+        "transform" => {
+            "Text drawn rotated, stretched or squeezed, so it can read as something else"
+        }
         "contactDetails" => "An address, phone number or link that isn't in your contact details",
         "digitLookalike" => "Letters that read as digits",
         _ => "Something the check refuses",
@@ -451,7 +453,9 @@ async fn render_variant(
     if source.is_error {
         return Err(PageError(StatusCode::NOT_FOUND));
     }
-    let review = owner::review(cv.mcp.clone(), variant).await.map_err(|error| told(error));
+    let review = owner::review(cv.mcp.clone(), variant)
+        .await
+        .map_err(|error| told(error));
     let revisions = call(
         cv,
         "list_cv_revisions",
@@ -562,7 +566,9 @@ fn highlighted(line: &str, tokens: &[&str]) -> impl IntoView + use<> {
         if start < from || !line.is_char_boundary(start) || !line.is_char_boundary(end) {
             continue;
         }
-        parts.push(view! { {line[from..start].to_owned()}<mark>{line[start..end].to_owned()}</mark> });
+        parts.push(
+            view! { {line[from..start].to_owned()}<mark>{line[start..end].to_owned()}</mark> },
+        );
         from = end;
     }
     let tail = line[from..].to_owned();
@@ -603,7 +609,9 @@ fn rendered_diff_view(review: &Review) -> impl IntoView + use<> {
             LineChange::Removed => ("dd", "- "),
             LineChange::Same => ("dc", "  "),
         };
-        rows.push(view! { <span class=class>{sign}{highlighted(&line.text, &tokens)}</span> }.into_any());
+        rows.push(
+            view! { <span class=class>{sign}{highlighted(&line.text, &tokens)}</span> }.into_any(),
+        );
     }
     view! { <pre class="rendered" id="cv-rendered-diff">{rows}</pre> }
 }
@@ -621,7 +629,10 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
         .iter()
         .take(MAX_LISTED_ITEMS)
         .map(|item| {
-            let serious = matches!(item.rule, Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel);
+            let serious = matches!(
+                item.rule,
+                Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel
+            );
             let context = item.context.clone();
             view! {
                 <li class=serious.then_some("serious")>
@@ -644,7 +655,11 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
 }
 
 /// The owner's reading of what they are about to approve: above the editor, since it comes first.
-fn approval_view(variant: &str, token: &str, review: &Result<Review, Told>) -> impl IntoView + use<> {
+fn approval_view(
+    variant: &str,
+    token: &str,
+    review: &Result<Review, Told>,
+) -> impl IntoView + use<> {
     let inner = match review {
         Err(refused) => {
             let violations = refused.value["error"]["violations"]

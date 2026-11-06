@@ -27,7 +27,7 @@ pub enum Rule {
     ClaimWords,
     Numbers,
     NumberWords,
-    /// A word in neither the facts, `vocabulary` nor the last approved text.
+    /// A word in neither the facts, `vocabulary`, the last locked wording nor the last approved text.
     NewWords,
     BannedPhrases,
     Images,
@@ -990,8 +990,7 @@ fn check_claims(line: &str, at: usize, known: &Known, items: &mut Items) {
     let is_own = |key: &str| {
         let key = fold_case(key);
         on_line.iter().any(|phrase| {
-            phrase.contains(&key)
-                || words(phrase).any(|word| fold_case(&word_key(word)) == key)
+            phrase.contains(&key) || words(phrase).any(|word| fold_case(&word_key(word)) == key)
         })
     };
     for word in words(line) {
@@ -1058,7 +1057,13 @@ fn short_names(name: &str) -> Vec<String> {
     let mut parts: Vec<&str> = name.split_whitespace().collect();
     while parts.len() > 1
         && parts.last().is_some_and(|last| {
-            LEGAL_FORMS.contains(&last.trim_matches(['.', ',']).replace('.', "").to_lowercase().as_str())
+            LEGAL_FORMS.contains(
+                &last
+                    .trim_matches(['.', ','])
+                    .replace('.', "")
+                    .to_lowercase()
+                    .as_str(),
+            )
         })
     {
         parts.pop();
@@ -1210,7 +1215,12 @@ fn check_languages(lines: &[String], changed: &[bool], facts: &Facts, items: &mu
     let names: Vec<(String, String)> = facts
         .languages
         .iter()
-        .map(|l| (normalize(&l.name).to_lowercase(), normalize(&l.level).to_lowercase()))
+        .map(|l| {
+            (
+                normalize(&l.name).to_lowercase(),
+                normalize(&l.level).to_lowercase(),
+            )
+        })
         .filter(|(name, _)| !name.is_empty())
         .collect();
     for (at, line) in lines.iter().enumerate().filter(|(at, _)| changed[*at]) {
@@ -1220,8 +1230,7 @@ fn check_languages(lines: &[String], changed: &[bool], facts: &Facts, items: &mu
             .flat_map(|(name, level)| {
                 lower.match_indices(name.as_str()).filter_map(|(start, _)| {
                     let end = start + name.len();
-                    contains_word(&lower[start..], name)
-                        .then_some((start, end, level.as_str()))
+                    contains_word(&lower[start..], name).then_some((start, end, level.as_str()))
                 })
             })
             .collect();
@@ -1241,7 +1250,10 @@ fn check_languages(lines: &[String], changed: &[bool], facts: &Facts, items: &mu
 /// Facts the last approved text showed and this one doesn't. A tailored CV may leave out a job, and
 /// the owner should still hear of it.
 fn check_missing(previous: &str, current: &str, facts: &Facts, items: &mut Items) {
-    let (previous, current) = (normalize(previous).to_lowercase(), normalize(current).to_lowercase());
+    let (previous, current) = (
+        normalize(previous).to_lowercase(),
+        normalize(current).to_lowercase(),
+    );
     let contact = &facts.contact;
     let names = facts
         .employment
@@ -1260,7 +1272,10 @@ fn check_missing(previous: &str, current: &str, facts: &Facts, items: &mut Items
     for name in names {
         let needle = normalize(name.trim()).to_lowercase();
         if contains_word(&previous, &needle) && !contains_word(&current, &needle) {
-            let context = format!("On the last approved CV, and not on this one: {}", name.trim());
+            let context = format!(
+                "On the last approved CV, and not on this one: {}",
+                name.trim()
+            );
             items.add(Rule::MissingFact, name.trim(), &context, None);
         }
     }
@@ -1375,7 +1390,11 @@ fn check_phones(said: &str, facts: &Facts, findings: &mut Findings) {
     let own = digits(&facts.contact.phone);
     for found in PHONE.find_iter(said) {
         if own.is_empty() || digits(found.as_str()) != own {
-            findings.add(Rule::ContactDetails, found.as_str(), found.as_str().to_owned());
+            findings.add(
+                Rule::ContactDetails,
+                found.as_str(),
+                found.as_str().to_owned(),
+            );
         }
     }
 }
@@ -1435,9 +1454,17 @@ fn check_contact(
     findings: &mut Findings,
 ) {
     let email = facts.contact.email.trim().to_lowercase();
-    let metadata = text.metadata.iter().map(|item| normalize(item));
+    let metadata: Vec<String> = text.metadata.iter().map(|item| normalize(item)).collect();
+    // Line by line: a number starting the next line is no part of a phone number ending this one.
+    for line in text
+        .lines
+        .iter()
+        .map(|line| normalize(line))
+        .chain(metadata.iter().cloned())
+    {
+        check_phones(&line, facts, findings);
+    }
     for said in std::iter::once(document.body.clone()).chain(metadata) {
-        check_phones(&said, facts, findings);
         let (emails, urls) = addresses(&said);
         for found in emails {
             let key: String = found.split_whitespace().collect::<String>().to_lowercase();
@@ -1543,7 +1570,13 @@ fn strip_label(line: &str) -> &str {
         .unwrap_or(line)
 }
 
-fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&str>) -> Vec<ReviewItem> {
+fn review(
+    text: &RenderedText,
+    facts: &Facts,
+    known: &Known,
+    previous: Option<&str>,
+    owners_wording: &str,
+) -> Vec<ReviewItem> {
     let raw = review_lines(text);
     let current = raw.join("\n");
     let mut changed = vec![false; raw.len()];
@@ -1552,7 +1585,10 @@ fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&s
             changed[at as usize - 1] = true;
         }
     }
-    let lines: Vec<String> = raw.iter().map(|line| normalize(strip_label(line))).collect();
+    let lines: Vec<String> = raw
+        .iter()
+        .map(|line| normalize(strip_label(line)))
+        .collect();
     let mut items = Items::default();
     let masked: Vec<String> = lines.iter().map(|line| known.mask_contact(line)).collect();
     check_binding(&masked, &changed, &anchors(facts), &mut items);
@@ -1560,6 +1596,7 @@ fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&s
     let mut familiar = known.words.clone();
     add_words(&mut familiar, &known.whole.join(" "));
     add_words(&mut familiar, TEMPLATE_WORDS);
+    add_words(&mut familiar, &normalize(owners_wording));
     if let Some(previous) = previous {
         add_words(&mut familiar, &normalize(&previous.replace('\n', " ")));
     }
@@ -1572,10 +1609,7 @@ fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&s
         check_number_words(&prepared, at, &mut items);
         for word in words(line) {
             let key = word_key(word);
-            // Against nothing, every word is new and the whole text shows anyway: names stand out.
-            let is_listed = previous.is_some() || word.chars().next().is_some_and(char::is_uppercase);
-            let new = is_listed
-                && !word.chars().any(|c| c.is_ascii_digit())
+            let new = !word.chars().any(|c| c.is_ascii_digit())
                 && !familiar.contains(&key)
                 && !key.split('-').all(|part| familiar.contains(part));
             if new && familiar.insert(key) {
@@ -1592,8 +1626,14 @@ fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&s
 
 /// Judges a rendered document. Hard refusals look at all of it. Review items look at the lines that
 /// differ from `previous`, the text last approved, because a line the owner has approved needs no
-/// second look. Linear in the text, for facts of a fixed size.
-pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&str>) -> Report {
+/// second look. A word is new if neither that text, the facts, nor `owners_wording`, what the owner
+/// last locked, holds it. Linear in the text, for facts of a fixed size.
+pub fn check(
+    text: &RenderedText,
+    facts: &Facts,
+    previous: Option<&str>,
+    owners_wording: &str,
+) -> Report {
     let known = Known::new(facts);
     let document = Document::new(text);
     let mut findings = Findings {
@@ -1634,6 +1674,6 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&str>) -> Repo
     }
     Report {
         violations: findings.violations,
-        review_items: review(text, facts, &known, previous),
+        review_items: review(text, facts, &known, previous, owners_wording),
     }
 }
