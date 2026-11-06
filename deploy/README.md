@@ -171,6 +171,8 @@ sudo journalctl -u nexus -n 20 --no-pager
 systemctl list-timers nexus-backup.timer
 ```
 
+At startup, `serve` removes `.tmp-*` files from `blobs/`, the unfinished writes of a killed process, and logs `removed unfinished uploads a crash left behind` if there were any. It assumes it is the only process writing there, so don't start the server during an import, or a second server on the same data directory: their temp files would go too.
+
 Request logs carry method, route template and status only. Query strings, headers and bodies are never logged. `NEXUS_LOG_LEVEL` (default `info`) only changes verbosity; SQL text stays out at every level.
 
 Security events are separate lines with an `event=` field, and carry no secrets or tokens. The only client-supplied text is a consent's name and redirect origin, and a refused redirect host: names lose their control and format characters and are cut to 64 characters, and both are quoted. Follow them with `sudo journalctl -u nexus --grep 'event='`:
