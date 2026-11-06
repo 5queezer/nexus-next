@@ -51,7 +51,7 @@ Build: cross-compile to `aarch64-unknown-linux-musl` so the binary doesn't depen
 
 `contract/mcp-tools.snapshot.json` holds real `tools/list` output for all 35 tools, generated from source at `235138d`.
 
-1. **Serve the frozen schemas verbatim.** Embed the snapshot's `inputSchema` values instead of generating them from Rust types. Generated schemas would drift in small ways, such as `nullable` encoding and `$schema`. To verify at scaffold time: rmcp must allow a raw schema per tool.
+1. **Serve the frozen schemas verbatim.** Embed the snapshot's `inputSchema` values instead of generating them from Rust types. Generated schemas would drift in small ways, such as `nullable` encoding and `$schema`. The golden contract test confirms the served schemas match.
 2. **Golden test.** CI compares the server's `tools/list` with the snapshot. Any difference fails the build. M2 tools are additive and go in a separate allowlist.
 3. **Keep the quirks.** Limits differ per tool, and clients may depend on that:
    - `source` has `maxLength: 100` on `upsert_application_by_job_url` and `update_document_metadata`, but no limit in the schema on `create_application` or `update_application`.
@@ -61,20 +61,20 @@ Build: cross-compile to `aarch64-unknown-linux-musl` so the binary doesn't depen
 5. **Confirm against production.** The snapshot was generated from the deployed commit, not read from the running server. Compare it with a live `tools/list` once before freezing.
 6. **`generate_tailored_cv` in M1.** The tool stays listed with its frozen schema. With no profile it returns old Nexus's exact tool error, `No CV profile found. Use upsert_cv_profile first.`. `get_cv_profile` and `upsert_cv_profile` work normally. If a profile exists, the tool returns a clear tool error saying rendering arrives in M2, and writes nothing. This is the one documented gap in the frozen behaviour, and it can't affect current data.
 
-Runtime behaviour the schemas don't show must become parity tests. The `nexus-job-intake-interview-pipeline` skill documents these from real use; confirm each against the live server or `app/api/mcp/__tests__/`:
+Runtime behaviour the schemas don't show is covered by the parity scenarios in `parity/`. The `nexus-job-intake-interview-pipeline` skill listed these from real use. This table is what the parity run against old Nexus's code at `235138d` found:
 
 | Behaviour | Expected |
 |---|---|
 | Mixed metadata and lifecycle call | Fails atomically, applies nothing |
 | `idempotencyKey` without `occurredAt` | Rejected with `occurred_at_required_for_idempotency` |
 | Event `metadata.outcome` over 255 chars | Rejected, though the generic metadata schema doesn't show the limit |
-| Document `source` over 100 chars | Call fails |
-| Application `source` near 100 chars | May truncate silently: confirm, then keep or document |
-| `jobContentHash` not 64 lowercase hex chars | Rejected with `jobContentHash_invalid` |
-| Local-offset timestamps | May be rejected: normalize to `Z` |
+| Document `source` over 100 chars | Schema error |
+| Application `source` over 100 chars | Truncated silently to 100 UTF-16 units by `create_application`, `update_application` and batch. `upsert_application_by_job_url` rejects it by schema |
+| `jobContentHash` not 64 hex chars | `upsert_application_by_job_url`: `{"error":{"code":"jobContentHash_invalid"}}`. `create_application`: plain text `jobContentHash_invalid`. `update_application`: `application_update_failed`. `batch_upsert_applications`: the whole call fails with `Batch upsert failed`. Over 64 characters is a schema error. Uppercase hex is accepted and stored lowercase; `""` and `null` store null |
+| Local-offset timestamps | Depends on the field. Schema error: `lastContact`, `followUpAt` on create, `occurredAt`, `submittedAt`, and `expectedUpdatedAt` on update and events. Converted to UTC: `appliedAt` on create, `archivedAt`, `expectedUpdatedAt` on archive and unarchive, and metadata `scheduledAt` and `followUpAt`. Clients should send `Z` |
 | Omitted `remote` | Reads back as `false` |
-| Creating a record at `interview` or similar without `appliedAt` | Some paths auto-populate `appliedAt`: confirm the exact rule |
-| Event tools without `mcp:submissions` | `list_application_events` may require this scope: confirm |
+| Creating a record at `applied`, `interview`, `offer` or `rejected` with absent or `""` `appliedAt` | Any create path sets it to the current time. `inbound` stays null. An explicit `appliedAt` is always kept |
+| Event tools without `mcp:submissions` | No scope needed: `list_application_events` and `list_application_activity` are allowed, including `application_submitted` events. Submissions, recall, `pipeline_healthcheck`, submission documents and deleting applications are blocked with `insufficient_scope` |
 | Submissions | Concurrent idempotent replay, atomic document claims, immutability, aggregate payload limits, scope enforcement on exact answers |
 
 ## 5. Data model
@@ -110,7 +110,7 @@ Dropped: `User`, `Session`, `Account`, `Verification`, `ShareLink`, `DemoWorkspa
 - better-auth goes away, so `authorize` needs a new login: one owner passphrase (argon2id) with rate limiting, a session cookie and the existing consent step from the `authorize` route.
 - rmcp's `auth` features look client-oriented, so assume the authorization server is hand-written in axum. To verify at scaffold time.
 - Hermes Career Ops also connects with OAuth (`auth: oauth` in its config), not only Claude.ai.
-- Registration is open, because Claude.ai registers itself. So a redirect URI must be https to a host in `NEXUS_OAUTH_REDIRECT_HOSTS` (default `claude.ai,claude.com`, Claude.ai's real host still unverified) or loopback, checked at registration and again at authorize.
+- Registration is open, because Claude.ai registers itself. So a redirect URI must be https to a host in `NEXUS_OAUTH_REDIRECT_HOSTS` (default `claude.ai,claude.com`, Claude.ai's real host still unverified) or loopback (`127.0.0.1` or `localhost`; `http://[::1]` stays refused, as in old Nexus), checked at registration and again at authorize.
 - Rate limits and login backoff key on the client's address. With an https base URL, `serve` refuses to start until `NEXUS_TRUSTED_IP_HEADER` names the ingress's client-address header or says `none`. The header is believed only from `NEXUS_TRUSTED_PROXY_PEERS` (default loopback).
 - OAuth clients re-register after cutover if the issuer URL changes, so Claude.ai and Hermes would each need one reconnect. Keeping `nexus.vasudev.xyz` doesn't avoid this unless tokens and clients are migrated, and the OAuth tables start empty. Plan one re-authorization at cutover.
 
@@ -173,7 +173,9 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 **RAM.** Target 30-60 MB at idle **[handoff]**. Measured on the board on 2026-11-06 at `0d5b5d8` with synthetic fixtures: 6.8 MB after start, 12.7 MB after 500 requests including 200 MCP calls, tool calls about 10 ms, binary 12.8 MB. With the real data set on x86-64, an earlier measurement before MCP was merged: 7.5 MiB after start, 29 MiB peak under 16 parallel clients. The real data set hasn't been measured on the board. Typst's compile peak and font loading are the main unknowns for M2.
 
-**Backup.** Litestream or rsync **[handoff]**. Backups must be encrypted before leaving the board, since the data on it isn't. The destination is undecided.
+**Backup.** `nexus backup` writes one age-encrypted file from a `VACUUM INTO` snapshot and the blobs it references, on a systemd timer (`deploy/README.md` section 6). The off-site destination is undecided.
+
+**Durability.** `Db::open` sets `synchronous=FULL`, because an acknowledged submission must survive power loss: under `NORMAL`, a reboot can silently undo writes an agent already reported saved. QA's cost, on an x86-64 desktop NVMe (btrfs, 2 pinned cores) through real MCP, `NORMAL` then `FULL`: one agent p50 0.59 then 1.60 ms, p99 6.15 then 17.84 ms, 1,324 then 341 writes a second. Eight agents flat out: p50 1.65 then 11.72 ms, p99 34.50 then 333.20 ms, 2,430 then 348 writes a second, slowest single write 5.4 s against a 10 s busy timeout. Reads are unchanged. The board has not been measured, and real load is a tiny fraction of this. FULL does not cover a drive that lies about flushes. Real power loss has not been tested. `journal_size_limit` is 64 MiB: a checkpoint truncates a WAL grown past that once it restarts. The WAL can still grow beyond it under sustained load.
 
 **Ingress: must be tested, not assumed.** Claude.ai needs a public URL.
 - A Cloudflare tunnel keeps a stable custom domain, but local notes say the Cloudflare proxy breaks MCP streaming unless buffering is disabled.
@@ -208,5 +210,5 @@ M2 note: `CvProfile.experience` mixes hard facts (dates, company) with wording (
 | Live `tools/list`, to confirm the snapshot | Freezing the contract | Agent, with connector access |
 | Does the board's Ethernet drop recur? Why did it drop on 2026-11-06? The board stays the chosen host; check `journalctl -b \| grep 'end0'` before cutover | Cutover | Christian, watch logs |
 | Ingress choice | M1 gate | Test both, then decide |
-| Do any workflows rely on old Nexus's `/resume` and `/tailor` routes, which call Reactive Resume? They disappear at M1 cutover. | Cutover | Check the skills |
+| Do any workflows rely on old Nexus's `/resume` and `/tailor` routes, which call Reactive Resume? They disappear at M1 cutover. `resume-tailoring` and `job-application-tracking` were not available to QA | Cutover | Check those skills |
 | Did the Typst/Reactive Resume memory update land? (Hindsight was down) | Nothing | Check later |
