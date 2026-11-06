@@ -7,6 +7,9 @@ use nexus_tailor::{
     Contact, Employment, Facts, RenderError, RenderRequest, Renderer, check, default_source,
 };
 
+/// `children` sees this whole process, so the tests here take turns.
+static ONE_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const RSS_LIMIT: u64 = nexus_tailor::DEFAULT_RSS_LIMIT_BYTES;
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Runs for days in constant memory.
@@ -73,6 +76,7 @@ fn children() -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cv_renders_in_the_child() {
+    let _turn = ONE_TEST.lock().await;
     let facts = facts();
     let rendered = renderer()
         .render(request(default_source(&facts)))
@@ -86,6 +90,7 @@ async fn a_cv_renders_in_the_child() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_compile_error_is_data() {
+    let _turn = ONE_TEST.lock().await;
     let result = renderer().render(request("#nope()\n".to_owned())).await;
     let Err(RenderError::Diagnostics(diagnostics)) = result else {
         panic!("{result:?}");
@@ -97,6 +102,7 @@ async fn a_compile_error_is_data() {
 /// Each ends with one of the listed errors, within the limits, with nothing left behind.
 #[tokio::test(flavor = "multi_thread")]
 async fn resource_attacks_end_in_the_child() {
+    let _turn = ONE_TEST.lock().await;
     let nesting_bomb = format!("{}{}", "#[".repeat(40_000), "]".repeat(40_000));
     let deep_content = "#let x = [a]\n#for i in range(200000) { x = box(x) }\n#x\n".to_owned();
     let cases: Vec<(&str, String)> = vec![
@@ -161,6 +167,7 @@ fn short(error: &RenderError) -> String {
 /// The parent still works after a killed child, and the one-at-a-time lock is free.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_good_render_follows_a_killed_one() {
+    let _turn = ONE_TEST.lock().await;
     let limited = Renderer::Subprocess {
         exe: PathBuf::from(env!("CARGO_BIN_EXE_nexus")),
         rss_limit_bytes: RSS_LIMIT,
