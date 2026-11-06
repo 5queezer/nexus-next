@@ -154,7 +154,11 @@ async fn status_of(addr: SocketAddr, path: &str) -> String {
     let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
     socket.write_all(request.as_bytes()).await.unwrap();
     let mut out = String::new();
-    socket.read_to_string(&mut out).await.unwrap();
+    // Bounded: a stream that should have been refused would otherwise never end.
+    timeout(SOON, socket.read_to_string(&mut out))
+        .await
+        .expect("a complete response, not an open stream")
+        .unwrap();
     out
 }
 
