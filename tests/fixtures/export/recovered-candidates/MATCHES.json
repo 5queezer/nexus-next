@@ -1,0 +1,48 @@
+{
+ "note": "Synthetic.",
+ "files": {},
+ "documents": [
+  {
+   "id": 21,
+   "originalName": "invented-21.pdf",
+   "size": 18,
+   "match": "size+name",
+   "candidates": [
+    "63fb38ce8f62251a9febd84e63c16e2a3fd035be9e4cb3ada90b94df26485dec",
+    "293a959fdfa01bc2ef25ff5017644d2f3b4c3c2e70284b69d063cec2f7817ec5"
+   ],
+   "name_matched": [
+    "293a959fdfa01bc2ef25ff5017644d2f3b4c3c2e70284b69d063cec2f7817ec5"
+   ]
+  },
+  {
+   "id": 22,
+   "originalName": "invented-22.pdf",
+   "size": 12,
+   "match": "size-only",
+   "candidates": [
+    "fff951286d44d2aa009c2a665aae7b34e2523bae46b6dc3384f653212061893f"
+   ],
+   "name_matched": []
+  },
+  {
+   "id": 23,
+   "originalName": "invented-23.pdf",
+   "size": 12,
+   "match": "size-only",
+   "candidates": [
+    "576c9d1ceb1091ce4e5ba45007ee8286f5f03aa424cc3bb569020834d753174d",
+    "4d11256ab3792b6c36af254f51c44ee26db9d426197567944ffcbbe9c69dbf75"
+   ],
+   "name_matched": []
+  },
+  {
+   "id": 24,
+   "originalName": "invented-24.pdf",
+   "size": 999,
+   "match": "none",
+   "candidates": [],
+   "name_matched": []
+  }
+ ]
+}

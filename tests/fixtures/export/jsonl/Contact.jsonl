@@ -1,0 +1,3 @@
+{"id": 2, "name": "Pat Example", "email": "pat@example.test", "phone": null, "role": "Talent Scout", "linkedIn": null, "applicationId": 3, "createdAt": "2026-03-03T10:00:00.5"}
+{"id": 5, "name": "Sam Sample", "email": null, "phone": "+49 000 0000", "role": "Manager", "linkedIn": "https://linkedin.example.test/sam", "applicationId": 12, "createdAt": "2026-04-11T10:00:00.25"}
+{"id": 6, "name": "Demo Person", "email": null, "phone": null, "role": "Demo", "linkedIn": null, "applicationId": 40, "createdAt": "2026-03-03T10:00:00.5"}

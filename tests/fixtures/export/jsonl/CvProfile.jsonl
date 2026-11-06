@@ -1,0 +1,2 @@
+{"id": 2, "userId": "user_owner", "name": "Invented Person", "contact": {"email": "me@example.test"}, "profile": "Summary.", "skills": [], "experience": [], "projects": [], "education": [], "createdAt": "2026-01-01T00:00:00", "updatedAt": "2026-01-02T00:00:00"}
+{"id": 3, "userId": "user_other", "name": "Somebody Else", "contact": {}, "profile": "Other.", "skills": [], "experience": [], "projects": [], "education": [], "createdAt": "2026-01-01T00:00:00", "updatedAt": "2026-01-02T00:00:00"}

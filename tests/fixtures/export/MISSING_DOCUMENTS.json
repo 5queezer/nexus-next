@@ -1,0 +1,37 @@
+{
+ "note": "Synthetic.",
+ "documents": [
+  {
+   "id": 21,
+   "filename": "file-21.pdf",
+   "originalName": "invented-21.pdf",
+   "size": 18,
+   "mimeType": "application/pdf",
+   "uploadedAt": "2026-03-04T10:00:00.5"
+  },
+  {
+   "id": 22,
+   "filename": "file-22.pdf",
+   "originalName": "invented-22.pdf",
+   "size": 12,
+   "mimeType": "application/pdf",
+   "uploadedAt": "2026-03-04T10:00:00.5"
+  },
+  {
+   "id": 23,
+   "filename": "file-23.pdf",
+   "originalName": "invented-23.pdf",
+   "size": 12,
+   "mimeType": "application/pdf",
+   "uploadedAt": "2026-03-04T10:00:00.5"
+  },
+  {
+   "id": 24,
+   "filename": "file-24.pdf",
+   "originalName": "invented-24.pdf",
+   "size": 999,
+   "mimeType": "application/pdf",
+   "uploadedAt": "2026-03-04T10:00:00.5"
+  }
+ ]
+}
