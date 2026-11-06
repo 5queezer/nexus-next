@@ -24,6 +24,14 @@ pub struct ServeArgs {
     /// OAuth issuer, so it is required unless --insecure-local-only is set.
     #[arg(long, env = "NEXUS_PUBLIC_BASE_URL")]
     pub base_url: Option<String>,
+    /// The owner's ID in old Nexus, for a database no import wrote. MCP responses carry it as
+    /// `userId`. An imported database's own value wins.
+    #[arg(long, env = "NEXUS_OWNER_ID")]
+    pub owner_id: Option<String>,
+    /// The owner's email, for a database whose import had no MCP events to read it from. New events
+    /// record it as `actor`, and their request hashes cover it. An imported value wins.
+    #[arg(long, env = "NEXUS_OWNER_EMAIL")]
+    pub owner_email: Option<String>,
     /// IANA time zone for dates shown on the dashboard and in the calendar feed.
     #[arg(long, env = "NEXUS_TIMEZONE", default_value = "Europe/Madrid")]
     pub timezone: String,
@@ -53,6 +61,8 @@ pub struct ServeConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
     pub access: Access,
+    pub owner_id: Option<String>,
+    pub owner_email: Option<String>,
     pub timezone: Tz,
     pub calendar_token: Option<String>,
     pub log_level: Level,
@@ -110,6 +120,8 @@ impl ServeArgs {
             bind: self.bind,
             data_dir: self.data_dir,
             access,
+            owner_id: self.owner_id.filter(|value| !value.trim().is_empty()),
+            owner_email: self.owner_email.filter(|value| !value.trim().is_empty()),
             timezone,
             calendar_token,
             log_level: self.log_level,
@@ -159,6 +171,8 @@ mod tests {
             bind: "127.0.0.1:8080".parse().unwrap(),
             data_dir: "/var/lib/nexus".into(),
             base_url: None,
+            owner_id: None,
+            owner_email: None,
             timezone: "Europe/Madrid".into(),
             calendar_token_file: None,
             insecure_local_only: true,

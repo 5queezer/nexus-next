@@ -51,6 +51,8 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.path().to_path_buf(),
         access: Access::InsecureLocalOnly,
+        owner_id: Some("owner-1".to_owned()),
+        owner_email: Some("owner@example.net".to_owned()),
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: Some(CALENDAR_TOKEN.to_owned()),
         log_level: tracing::Level::TRACE,
@@ -93,6 +95,19 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     )
     .await;
 
+    let tool_call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_application","arguments":{"company":"mcp-secret-company","role":"R"}}}"#;
+    let created = send(
+        addr,
+        &format!(
+            "POST /api/mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{tool_call}",
+            tool_call.len()
+        ),
+    )
+    .await;
+    assert!(created.contains("mcp-secret-company"), "{created}");
+
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
 
@@ -107,6 +122,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         "secret-search",
         "oauth-code",
         "body-secret",
+        "mcp-secret",
         "?",
     ] {
         assert!(!logs.contains(secret), "log leaked {secret:?}:\n{logs}");

@@ -68,6 +68,8 @@ ENV
 | Variable | Meaning |
 |---|---|
 | `NEXUS_PUBLIC_BASE_URL` | Required. An origin only: https, no path or query |
+| `NEXUS_OWNER_ID` | Only for a database no import wrote. `nexus import` records the owner, and that value wins. MCP responses carry it as `userId` |
+| `NEXUS_OWNER_EMAIL` | Only when the import found no MCP events to read it from. New events record it as `actor`, and their request hashes cover it |
 | `NEXUS_TRUSTED_IP_HEADER` | The header your ingress sets to the client's address. Required behind a tunnel |
 | `NEXUS_TRUSTED_PROXY_PEERS` | Comma-separated peers allowed to set that header. Default: loopback |
 | `NEXUS_OWNER_PASSPHRASE_HASH_FILE` | Where the hash lives. Default: `<data dir>/owner-passphrase.argon2` |

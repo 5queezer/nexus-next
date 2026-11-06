@@ -1,0 +1,959 @@
+{
+ "urls": [
+  {
+   "input": "https://example.com",
+   "zodUrl": true,
+   "ok": "https://example.com/"
+  },
+  {
+   "input": "https://example.com/",
+   "zodUrl": true,
+   "ok": "https://example.com/"
+  },
+  {
+   "input": "HTTPS://EXAMPLE.COM/Path/",
+   "zodUrl": true,
+   "ok": "https://example.com/Path"
+  },
+  {
+   "input": "https://example.com/a/b/c///",
+   "zodUrl": true,
+   "ok": "https://example.com/a/b/c"
+  },
+  {
+   "input": "https://example.com///",
+   "zodUrl": true,
+   "ok": "https://example.com/"
+  },
+  {
+   "input": "https://example.com/?",
+   "zodUrl": true,
+   "ok": "https://example.com/"
+  },
+  {
+   "input": "https://example.com/a?",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a?#x",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a#x",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a?b=2&a=1",
+   "zodUrl": true,
+   "ok": "https://example.com/a?a=1&b=2"
+  },
+  {
+   "input": "https://example.com/a?a=2&a=1&b",
+   "zodUrl": true,
+   "ok": "https://example.com/a?a=2&a=1&b="
+  },
+  {
+   "input": "https://example.com/a?utm_source=x",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a?UTM_Medium=x&keep=1",
+   "zodUrl": true,
+   "ok": "https://example.com/a?keep=1"
+  },
+  {
+   "input": "https://example.com/a?REF=x&Source=y&GCLID=z&fbclid=q",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a?refer=1&sources=2",
+   "zodUrl": true,
+   "ok": "https://example.com/a?refer=1&sources=2"
+  },
+  {
+   "input": "https://example.com/a?q=a b",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=a+b"
+  },
+  {
+   "input": "https://example.com/a?q=a+b",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=a+b"
+  },
+  {
+   "input": "https://example.com/a?q=a%20b",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=a+b"
+  },
+  {
+   "input": "https://example.com/a?q=%C3%BC",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=%C3%BC"
+  },
+  {
+   "input": "https://example.com/a?q=ü",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=%C3%BC"
+  },
+  {
+   "input": "https://example.com/a?q=a%2Fb",
+   "zodUrl": true,
+   "ok": "https://example.com/a?q=a%2Fb"
+  },
+  {
+   "input": "https://example.com/a?x=/",
+   "zodUrl": true,
+   "ok": "https://example.com/a?x=%2F"
+  },
+  {
+   "input": "https://example.com/a?x=1/",
+   "zodUrl": true,
+   "ok": "https://example.com/a?x=1%2F"
+  },
+  {
+   "input": "https://example.com/ä/ö",
+   "zodUrl": true,
+   "ok": "https://example.com/%C3%A4/%C3%B6"
+  },
+  {
+   "input": "https://example.com/a b",
+   "zodUrl": true,
+   "ok": "https://example.com/a%20b"
+  },
+  {
+   "input": "https://example.com/a%20b/",
+   "zodUrl": true,
+   "ok": "https://example.com/a%20b"
+  },
+  {
+   "input": "https://example.com:443/a",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "http://example.com:80/a",
+   "zodUrl": true,
+   "ok": "http://example.com/a"
+  },
+  {
+   "input": "https://example.com:8443/a/",
+   "zodUrl": true,
+   "ok": "https://example.com:8443/a"
+  },
+  {
+   "input": "https://münchen.example/jobs",
+   "zodUrl": true,
+   "ok": "https://xn--mnchen-3ya.example/jobs"
+  },
+  {
+   "input": "https://EXAMPLE.com./a",
+   "zodUrl": true,
+   "ok": "https://example.com./a"
+  },
+  {
+   "input": "http://192.168.0.1/a",
+   "zodUrl": true,
+   "ok": "http://192.168.0.1/a"
+  },
+  {
+   "input": "http://[::1]:8080/a/",
+   "zodUrl": true,
+   "ok": "http://[::1]:8080/a"
+  },
+  {
+   "input": "https://user@example.com/a",
+   "zodUrl": true,
+   "err": "Job URL must not contain credentials"
+  },
+  {
+   "input": "https://user:pw@example.com/a",
+   "zodUrl": true,
+   "err": "Job URL must not contain credentials"
+  },
+  {
+   "input": "https://:pw@example.com/",
+   "zodUrl": true,
+   "err": "Job URL must not contain credentials"
+  },
+  {
+   "input": "ftp://example.com/a",
+   "zodUrl": true,
+   "err": "Job URL must use http or https"
+  },
+  {
+   "input": "mailto:a@example.com",
+   "zodUrl": true,
+   "err": "Job URL must use http or https"
+  },
+  {
+   "input": "javascript:alert(1)",
+   "zodUrl": true,
+   "err": "Job URL must use http or https"
+  },
+  {
+   "input": "not a url",
+   "zodUrl": false,
+   "err": "Invalid URL"
+  },
+  {
+   "input": "example.com/a",
+   "zodUrl": false,
+   "err": "Invalid URL"
+  },
+  {
+   "input": "//example.com/a",
+   "zodUrl": false,
+   "err": "Invalid URL"
+  },
+  {
+   "input": "http://",
+   "zodUrl": false,
+   "err": "Invalid URL"
+  },
+  {
+   "input": "https://exa mple.com",
+   "zodUrl": false,
+   "err": "Invalid URL"
+  },
+  {
+   "input": "  https://example.com/a  ",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "\thttps://example.com/a\n",
+   "zodUrl": true,
+   "ok": "https://example.com/a"
+  },
+  {
+   "input": "https://example.com/a\nb",
+   "zodUrl": true,
+   "ok": "https://example.com/ab"
+  },
+  {
+   "input": "https://example.com/a?k=v&k2",
+   "zodUrl": true,
+   "ok": "https://example.com/a?k=v&k2="
+  },
+  {
+   "input": "https://example.com/a?=v",
+   "zodUrl": true,
+   "ok": "https://example.com/a?=v"
+  },
+  {
+   "input": "https://example.com/a?&&x=1&&",
+   "zodUrl": true,
+   "ok": "https://example.com/a?x=1"
+  },
+  {
+   "input": "https://example.com/a;p=1?x=1",
+   "zodUrl": true,
+   "ok": "https://example.com/a;p=1?x=1"
+  },
+  {
+   "input": "https://example.com/./a/../b/",
+   "zodUrl": true,
+   "ok": "https://example.com/b"
+  },
+  {
+   "input": "https://example.com/%2F/",
+   "zodUrl": true,
+   "ok": "https://example.com/%2F"
+  },
+  {
+   "input": "https://example.com/a?z=1&Z=2&a=3&é=4&e=5",
+   "zodUrl": true,
+   "ok": "https://example.com/a?Z=2&a=3&e=5&z=1&%C3%A9=4"
+  },
+  {
+   "input": "https://example.com/a?😀=1&�=2",
+   "zodUrl": true,
+   "ok": "https://example.com/a?%F0%9F%98%80=1&%EF%BF%BD=2"
+  },
+  {
+   "input": "https://boards.example.com/acme/jobs/123?gh_jid=123&gh_src=abc",
+   "zodUrl": true,
+   "ok": "https://boards.example.com/acme/jobs/123?gh_jid=123&gh_src=abc"
+  },
+  {
+   "input": "https://example.com/a?x=%zz",
+   "zodUrl": true,
+   "ok": "https://example.com/a?x=%25zz"
+  },
+  {
+   "input": "https://example.com/a'b?c='d'",
+   "zodUrl": true,
+   "ok": "https://example.com/a'b?c=%27d%27"
+  },
+  {
+   "input": "https://example.com/a?x=[1]&y={2}",
+   "zodUrl": true,
+   "ok": "https://example.com/a?x=%5B1%5D&y=%7B2%7D"
+  },
+  {
+   "input": "https://example.com/a|b",
+   "zodUrl": true,
+   "ok": "https://example.com/a|b"
+  },
+  {
+   "input": "https://example.com/a\\b",
+   "zodUrl": true,
+   "ok": "https://example.com/a/b"
+  }
+ ],
+ "dates": [
+  {
+   "input": "2026-01-02",
+   "iso": "2026-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01",
+   "iso": "2026-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026",
+   "iso": "2026-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-1-2",
+   "iso": "2026-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:04",
+   "iso": "2026-01-02T03:04:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:04Z",
+   "iso": "2026-01-02T03:04:00.000Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05",
+   "iso": "2026-01-02T03:04:05.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:04:05Z",
+   "iso": "2026-01-02T03:04:05.000Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05.1Z",
+   "iso": "2026-01-02T03:04:05.100Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05.12Z",
+   "iso": "2026-01-02T03:04:05.120Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05.123Z",
+   "iso": "2026-01-02T03:04:05.123Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05.1239Z",
+   "iso": "2026-01-02T03:04:05.123Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05.999999Z",
+   "iso": "2026-01-02T03:04:05.999Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05+02:00",
+   "iso": "2026-01-02T01:04:05.000Z",
+   "zod": false,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05-02:00",
+   "iso": "2026-01-02T05:04:05.000Z",
+   "zod": false,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04:05+0200",
+   "iso": "2026-01-02T01:04:05.000Z",
+   "zod": false,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T03:04+02:00",
+   "iso": "2026-01-02T01:04:00.000Z",
+   "zod": false,
+   "zodOffset": true
+  },
+  {
+   "input": "2026-01-02T24:00:00Z",
+   "iso": "2026-01-03T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T24:00:01Z",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T25:00:00Z",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:60:00Z",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:04:60Z",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-02-29",
+   "iso": "2026-03-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2024-02-29",
+   "iso": "2024-02-29T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-02-30",
+   "iso": "2026-03-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-02-31",
+   "iso": "2026-03-03T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-04-31",
+   "iso": "2026-05-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-13-01",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-00-01",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-00",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-32",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026/01/02",
+   "iso": "2026-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "01/02/2026",
+   "iso": "2026-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "1/2/2026",
+   "iso": "2026-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "01/02/2026 10:00:00",
+   "iso": "2026-01-02T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02 03:04:05",
+   "iso": "2026-01-02T03:04:05.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02 03:04",
+   "iso": "2026-01-02T03:04:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Jan 5, 2026",
+   "iso": "2026-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "January 5, 2026",
+   "iso": "2026-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Jan 5 2026",
+   "iso": "2026-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "5 Jan 2026",
+   "iso": "2026-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "5 January 2026",
+   "iso": "2026-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Mon, 05 Jan 2026 10:00:00 GMT",
+   "iso": "2026-01-05T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Mon, 05 Jan 2026 10:00:00 +0200",
+   "iso": "2026-01-05T08:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "soon",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "   ",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "0",
+   "iso": "2000-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "1",
+   "iso": "2001-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "20260102",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03:04:05z",
+   "iso": "2026-01-02T03:04:05.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02t03:04:05Z",
+   "iso": "2026-01-02T03:04:05.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "0000-01-01T00:00:00Z",
+   "iso": "0000-01-01T00:00:00.000Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "9999-12-31T23:59:59.999Z",
+   "iso": "9999-12-31T23:59:59.999Z",
+   "zod": true,
+   "zodOffset": true
+  },
+  {
+   "input": "12:00",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-01-02T03",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "yesterday",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2",
+   "iso": "2001-02-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "4",
+   "iso": "2001-04-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "9",
+   "iso": "2001-09-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "12",
+   "iso": "2001-12-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "13",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "31",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "32",
+   "iso": "2032-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "49",
+   "iso": "2049-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "50",
+   "iso": "1950-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "99",
+   "iso": "1999-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "100",
+   "iso": "0100-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "1440",
+   "iso": "1440-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026",
+   "iso": "2026-01-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Jan 5",
+   "iso": "2001-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "5 Jan",
+   "iso": "2001-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "January 5",
+   "iso": "2001-01-05T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "1/2",
+   "iso": "2001-01-02T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "12-25",
+   "iso": "2001-12-25T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "March 3 2026 10:00",
+   "iso": "2026-03-03T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "March 3, 2026 10:00",
+   "iso": "2026-03-03T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Mar 3, 2026 10:00:30",
+   "iso": "2026-03-03T10:00:30.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "3 Mar 2026 10:00",
+   "iso": "2026-03-03T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "3 March 2026",
+   "iso": "2026-03-03T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Mar 3 2026 10:00 PM",
+   "iso": "2026-03-03T22:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "3/1/2026 10:00 PM",
+   "iso": "2026-03-01T22:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "3/1/2026 10:00",
+   "iso": "2026-03-01T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026/03/01 10:00",
+   "iso": "2026-03-01T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026/03/01 10:00:30",
+   "iso": "2026-03-01T10:00:30.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-03-01 10:00 UTC",
+   "iso": "2026-03-01T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-03-01 10:00:00 UTC",
+   "iso": "2026-03-01T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-03-01 10:00:00 GMT",
+   "iso": "2026-03-01T10:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "2026-03-01 10:00:00.5",
+   "iso": "2026-03-01T10:00:00.500Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Sun, 01 Mar 2026",
+   "iso": "2026-03-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Sun Mar 01 2026",
+   "iso": "2026-03-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "03-01-2026",
+   "iso": "2026-03-01T00:00:00.000Z",
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "next week",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "Q1 2026",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "TBD",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  },
+  {
+   "input": "n/a",
+   "iso": null,
+   "zod": false,
+   "zodOffset": false
+  }
+ ],
+ "trims": [
+  {
+   "input": "﻿ x ﻿",
+   "trimmed": "x"
+  },
+  {
+   "input": "x",
+   "trimmed": "x"
+  },
+  {
+   "input": " x ",
+   "trimmed": "x"
+  },
+  {
+   "input": " x ",
+   "trimmed": "x"
+  },
+  {
+   "input": " x ",
+   "trimmed": "x"
+  },
+  {
+   "input": "᠎x᠎",
+   "trimmed": "᠎x᠎"
+  },
+  {
+   "input": "\t\n\r x",
+   "trimmed": "x"
+  }
+ ],
+ "hashes": [
+  {
+   "input": {
+    "a": 1,
+    "b": [
+     1,
+     2,
+     {
+      "d": null,
+      "c": "é"
+     }
+    ],
+    "é": true,
+    "z": "q\"uo\te"
+   },
+   "hash": "94dab280f82f0b79f779c4a6855a3fb1bedde201a2e9b98d2667255e87a7dd61"
+  },
+  {
+   "input": {
+    "😀": 1,
+    "�": 2,
+    "a": "\n\t\u0001 "
+   },
+   "hash": "ca94eb433383d21cd02fe63ae55d43875a5fa690b206aa5c8d5118ce1c736fa5"
+  },
+  {
+   "input": {
+    "n": 1.5,
+    "m": -2,
+    "big": 1e+21,
+    "small": 1e-07,
+    "neg0": 0
+   },
+   "hash": "0e265c6867f306cd7711402430d695fc0bfdd15981606d94fe8fe95124a80b33"
+  }
+ ]
+}

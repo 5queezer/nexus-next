@@ -128,6 +128,8 @@ pub async fn list_for_application(
 #[derive(Debug, Clone, Default)]
 pub struct EventFilter {
     pub application_id: Option<i64>,
+    /// Restricts to these applications, for a match made outside SQL.
+    pub application_ids: Option<Vec<i64>>,
     /// Substring of the company name. Case-insensitive for ASCII only.
     pub company: Option<String>,
     pub types: Vec<String>,
@@ -158,6 +160,14 @@ pub async fn list_filtered(conn: &mut SqliteConnection, filter: &EventFilter) ->
     );
     if let Some(id) = filter.application_id {
         qb.push(" AND e.application_id = ").push_bind(id);
+    }
+    if let Some(ids) = &filter.application_ids {
+        qb.push(" AND e.application_id IN (");
+        let mut list = qb.separated(", ");
+        for id in ids {
+            list.push_bind(*id);
+        }
+        qb.push(")");
     }
     if let Some(company) = &filter.company {
         qb.push(" AND instr(lower(a.company), lower(")

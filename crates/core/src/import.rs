@@ -5,7 +5,7 @@
 //! rows. An existing database is replaced only if it is empty or still matches the fingerprint its
 //! own import recorded; anything else means it has live data and needs `force`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt;
@@ -814,6 +814,8 @@ struct Plan<'a> {
     blobs: &'a [BlobPlan],
     manifest_sha256: &'a str,
     sequences: &'a HashMap<String, i64>,
+    owner_id: &'a str,
+    owner_email: Option<String>,
 }
 
 /// Writes the temp database. Foreign keys stay off while loading so that a bad reference reaches
@@ -909,13 +911,47 @@ async fn build_database(path: &Path, plan: &Plan<'_>) -> Result<()> {
     }
 
     let fingerprint = fingerprint(&mut conn).await?;
-    sqlx::query("INSERT INTO import_meta (id, manifest_sha256, fingerprint) VALUES (1, ?, ?)")
-        .bind(plan.manifest_sha256)
-        .bind(fingerprint)
-        .execute(&mut conn)
-        .await?;
+    sqlx::query(
+        "INSERT INTO import_meta (id, manifest_sha256, fingerprint, owner_id, owner_email)
+         VALUES (1, ?, ?, ?, ?)",
+    )
+    .bind(plan.manifest_sha256)
+    .bind(fingerprint)
+    .bind(plan.owner_id)
+    .bind(&plan.owner_email)
+    .execute(&mut conn)
+    .await?;
     conn.close().await?;
     Ok(())
+}
+
+/// The owner recorded by the import, as `(owner_id, owner_email)`. A database that no import wrote
+/// has none. An export with no MCP events has no email.
+pub async fn imported_owner(
+    conn: &mut SqliteConnection,
+) -> Result<Option<(String, Option<String>)>> {
+    Ok(
+        sqlx::query_as("SELECT owner_id, owner_email FROM import_meta WHERE owner_id IS NOT NULL")
+            .fetch_optional(conn)
+            .await?,
+    )
+}
+
+/// The export has no user table, so the owner's email is the most common `actor` on MCP events.
+fn most_common_mcp_actor(events: &[Row]) -> Option<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for event in events
+        .iter()
+        .filter(|event| event.string("source") == Some("mcp"))
+    {
+        if let Some(actor) = event.string("actor").filter(|actor| !actor.is_empty()) {
+            *counts.entry(actor).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(actor, _)| actor.to_owned())
 }
 
 /// Splits rows into kept and skipped, and returns the skipped rows' IDs.
@@ -1040,6 +1076,7 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
         plan_blobs(&export, &documents, &all_document_ids, &approvals)?;
     let document_count = documents.len();
 
+    let owner_email = most_common_mcp_actor(&events);
     let tables = [
         (&APPLICATIONS, applications),
         (&CONTACTS, contacts),
@@ -1076,6 +1113,8 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
         blobs: &blobs,
         manifest_sha256: &export.manifest_sha256,
         sequences: &sequences,
+        owner_id: &owner,
+        owner_email,
     };
     if let Err(e) = build_database(&temp, &plan).await {
         remove_if_present(&temp)?;

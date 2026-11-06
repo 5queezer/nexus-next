@@ -6,14 +6,16 @@ use std::pin::pin;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::get;
-use nexus_auth::{AuthState, require_owner_session};
+use axum::{Extension, Router};
+use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
+use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
+use nexus_mcp::McpState;
 use tokio::net::TcpListener;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -39,12 +41,13 @@ pub const MAX_IN_FLIGHT: usize = 32;
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_DB_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Compact logging without timestamps (journald adds its own). sqlx statement logging is cut off
-/// at warnings whatever the level, so SQL text can never reach the log.
+/// Compact logging without timestamps (journald adds its own). sqlx and rmcp are cut off at warnings
+/// whatever the level, so SQL text and tool arguments and results can never reach the log.
 pub fn init_logging(level: Level, writer: impl for<'a> MakeWriter<'a> + Send + Sync + 'static) {
     let filter = Targets::new()
         .with_default(level)
-        .with_target("sqlx", LevelFilter::WARN);
+        .with_target("sqlx", LevelFilter::WARN)
+        .with_target("rmcp", LevelFilter::WARN);
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -80,6 +83,19 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     if let Some(token) = &config.calendar_token {
         routes = routes.merge(nexus_web::calendar_router(db.clone(), token.clone()));
     }
+    let (owner_id, owner_email) = config
+        .owner_id
+        .clone()
+        .zip(config.owner_email.clone())
+        .context("the owner is not resolved")?;
+    let mcp = nexus_mcp::router(McpState {
+        db: db.clone(),
+        owner_id,
+        owner_email,
+    });
+    let mcp = Router::new()
+        .nest("/api/mcp", mcp.clone())
+        .nest("/mcp", mcp);
     let humans = nexus_web::dashboard_router(db.clone(), config.timezone)
         .merge(nexus_web::api_router(db.clone()));
     let routes = match &config.access {
@@ -87,13 +103,37 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             let auth = AuthState::new(db.clone(), auth.clone())?;
             routes
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(mcp.layer(from_fn_with_state(auth.clone(), require_mcp_auth)))
                 .merge(nexus_auth::router(auth))
         }
-        Access::InsecureLocalOnly => routes.merge(humans),
+        Access::InsecureLocalOnly => {
+            routes.merge(humans).merge(mcp.layer(Extension(AuthContext {
+                auth_type: AuthType::ApiToken,
+                scopes: vec![SCOPE_TOOLS.to_owned(), SCOPE_SUBMISSIONS.to_owned()],
+            })))
+        }
     };
     Ok(harden(routes)
         .route("/healthz", get(healthz).with_state(db.clone()))
         .layer(middleware::from_fn(log_request)))
+}
+
+/// Fills in the owner: the import's values win, because imported events' request hashes cover them,
+/// and configuration covers a database no import wrote.
+pub async fn resolve_owner(db: &Db, config: &mut ServeConfig) -> anyhow::Result<()> {
+    let imported = nexus_core::import::imported_owner(&mut *db.conn().await?).await?;
+    let (id, email) = imported.map_or((None, None), |(id, email)| (Some(id), email));
+    config.owner_id = id.or(config.owner_id.take());
+    config.owner_email = email.or(config.owner_email.take());
+    if config.owner_id.is_none() {
+        anyhow::bail!("the database has no imported owner: set NEXUS_OWNER_ID or --owner-id");
+    }
+    if config.owner_email.is_none() {
+        anyhow::bail!(
+            "the database has no imported owner email: set NEXUS_OWNER_EMAIL or --owner-email"
+        );
+    }
+    Ok(())
 }
 
 /// Liveness plus a database round trip. The body never says what is wrong.
@@ -128,13 +168,14 @@ async fn log_request(request: Request, next: Next) -> Response {
 /// Opens the database, serves on `listener` until `shutdown` resolves, then lets in-flight
 /// requests finish (up to `DRAIN_TIMEOUT`) and closes the database, which checkpoints the WAL.
 pub async fn run(
-    config: ServeConfig,
+    mut config: ServeConfig,
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let db = Db::open(&config.data_dir)
         .await
         .with_context(|| format!("cannot open the database in {}", config.data_dir.display()))?;
+    resolve_owner(&db, &mut config).await?;
     let base_url = match &config.access {
         Access::Owner(auth) => auth.public_base_url.as_str(),
         Access::InsecureLocalOnly => {

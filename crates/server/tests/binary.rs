@@ -154,6 +154,8 @@ impl Server {
         let mut command = nexus();
         command
             .env("NEXUS_PUBLIC_BASE_URL", BASE)
+            .env("NEXUS_OWNER_ID", "owner-1")
+            .env("NEXUS_OWNER_EMAIL", "owner@example.net")
             .envs(envs.iter().copied())
             .args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
             .arg(dir)

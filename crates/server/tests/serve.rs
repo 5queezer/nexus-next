@@ -43,6 +43,8 @@ fn config(dir: &std::path::Path, calendar: bool, insecure: bool) -> ServeConfig 
         } else {
             Access::Owner(auth_config())
         },
+        owner_id: Some("owner-1".to_owned()),
+        owner_email: Some("owner@example.net".to_owned()),
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: calendar.then(|| TOKEN.to_owned()),
         log_level: tracing::Level::INFO,
