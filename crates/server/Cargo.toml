@@ -33,6 +33,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 futures-util = { version = "0.3", default-features = false }
 http-body-util.workspace = true
 reqwest.workspace = true
