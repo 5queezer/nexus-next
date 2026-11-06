@@ -1,5 +1,5 @@
-//! What only the owner can do to a CV: approve it, save their own edit as approved, and download a
-//! stamped draft. Plain functions for the web handlers and `nexus cv-facts`. None of this is a tool:
+//! What only the owner can do: approve a CV, save their own edit as approved, download a stamped
+//! draft, and mark an application applied with its dates. Plain functions for the web handlers and `nexus cv-facts`. None of this is a tool:
 //! `tools/list` names nothing here and no argument of a tool call reaches it, which
 //! `crates/server/tests/cv_gate.rs` tests. Callers must have established the owner first.
 
@@ -86,6 +86,19 @@ pub async fn save_as_approved(state: Arc<McpState>, args: &Value) -> CallToolRes
     match zod::parse("patch_cv", schema, Some(args)) {
         Ok(args) => outcome(tools::patch_as(&ctx(state), &args, Some("dashboard")).await),
         Err(issues) => text_error(&issues),
+    }
+}
+
+/// The owner marks an application applied on the dashboard: the lifecycle event, plus `applied_at`
+/// when it is empty and `last_contact`. `args` are `record_application_event`'s, and validated the same.
+pub async fn mark_applied(state: Arc<McpState>, args: &Value) -> CallToolResult {
+    let schema = all_tools()
+        .iter()
+        .find(|tool| tool["name"] == "record_application_event")
+        .map_or(&Value::Null, |tool| &tool["inputSchema"]);
+    match zod::parse("record_application_event", schema, Some(args)) {
+        Ok(args) => outcome(tools::mark_applied(&ctx(state), &args).await),
+        Err(issues) => text_error(&format!("MCP error -32602: {issues}")),
     }
 }
 

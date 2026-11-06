@@ -316,6 +316,8 @@ pub(crate) struct EventCommand {
     metadata: Map<String, Value>,
     contact_id: Option<String>,
     outcome: Option<String>,
+    /// The owner's own "applied": see `mark_applied`. No tool sets this.
+    sets_applied_dates: bool,
 }
 
 /// Port of `parseApplicationEventCommand`, with `source` taken from the caller (`mcp` on the route).
@@ -361,6 +363,7 @@ fn parse_command(
         contact_id: string_of("contactId"),
         outcome: string_of("outcome"),
         metadata,
+        sets_applied_dates: false,
     })
 }
 
@@ -536,11 +539,17 @@ async fn record_event(
         }
     }
 
-    let (patch, metadata) = derive_projection(
+    let (mut patch, metadata) = derive_projection(
         &command,
         &application.status,
         application.current_stage.as_deref(),
     );
+    if command.sets_applied_dates {
+        if application.applied_at.is_none() {
+            patch.applied_at = Some(Some(command.occurred_at.clone()));
+        }
+        patch.last_contact = Some(Some(command.occurred_at.clone()));
+    }
     let updated = apps_repo::update(
         &mut tx,
         application_id,
@@ -595,14 +604,26 @@ pub async fn append_note(ctx: &Ctx, args: &Args) -> ToolResult {
 }
 
 pub async fn record(ctx: &Ctx, args: &Args) -> ToolResult {
+    record_with(ctx, args, false).await
+}
+
+/// `record`, plus `applied_at` when it is empty and `last_contact`, in the event's transaction. For
+/// the owner marking an application applied: old Nexus's event leaves both unset, and the frozen tool
+/// must go on doing so.
+pub async fn mark_applied(ctx: &Ctx, args: &Args) -> ToolResult {
+    record_with(ctx, args, true).await
+}
+
+async fn record_with(ctx: &Ctx, args: &Args, sets_applied_dates: bool) -> ToolResult {
     let run = async {
         let id = require_application(ctx, req_str(args, "applicationId")).await?;
-        let command = parse_command(
+        let mut command = parse_command(
             ctx,
             req_str(args, "type"),
             args,
             args.get("metadata").and_then(Value::as_object),
         )?;
+        command.sets_applied_dates = sets_applied_dates;
         record_event(ctx, id, command).await
     };
     Ok(match run.await {

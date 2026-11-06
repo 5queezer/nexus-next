@@ -479,6 +479,7 @@ async fn a_post_without_the_right_token_changes_nothing() {
     let (_, _, page) = get(&f.app, &format!("/applications/{id}")).await;
     let own_token = hidden(&page, "csrf");
     let expected = hidden(&page, "expected");
+    let at = hidden(&page, "at");
     let other_session = f
         .app
         .clone()
@@ -502,7 +503,7 @@ async fn a_post_without_the_right_token_changes_nothing() {
             ("csrf", "another-sessions-token"),
             ("note", "x"),
             ("expected", &expected),
-            ("at", "2030-01-01T00:00:00Z"),
+            ("at", &at),
             ("key", "abcdefgh1"),
         ],
     )
@@ -763,4 +764,246 @@ async fn pages_declare_the_pwa_and_a_strict_policy() {
     }
     assert!(!csp.contains("unsafe-"));
     assert_eq!(headers["cache-control"], "no-store");
+}
+
+#[tokio::test]
+async fn marking_applied_records_the_date_and_last_contact_and_keeps_the_first_date() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "inbound").await;
+    let (status, ..) = submit(&f, id, "event", &[("what", "applied"), ("confirm", "1")]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let first = application(&f.db, id).await;
+    assert_eq!(first.status, "applied");
+    assert_eq!(first.current_stage.as_deref(), Some("applied"));
+    let date = first.applied_at.clone().expect("a date");
+    assert_eq!(first.last_contact.as_ref(), Some(&date));
+    let (_, _, page) = get(&f.app, &format!("/applications/{id}")).await;
+    assert!(page.contains("<dt>Applied</dt>"), "{page}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let (status, ..) = submit(&f, id, "event", &[("what", "applied"), ("confirm", "1")]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let second = application(&f.db, id).await;
+    assert_eq!(
+        second.applied_at.as_ref(),
+        Some(&date),
+        "the first date stays"
+    );
+    assert!(second.last_contact > first.last_contact, "contact moves on");
+    assert_eq!(event_types(&f.db, id).await.len(), 2);
+}
+
+#[tokio::test]
+async fn resending_applied_is_one_change_and_the_frozen_tool_still_sets_no_date() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "inbound").await;
+    let (_, _, page) = get(&f.app, &format!("/applications/{id}")).await;
+    let fields = [
+        ("csrf", hidden(&page, "csrf")),
+        ("at", hidden(&page, "at")),
+        ("key", hidden(&page, "key")),
+        ("expected", hidden(&page, "expected")),
+        ("what", "applied".to_owned()),
+        ("confirm", "1".to_owned()),
+    ];
+    let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    for _ in 0..2 {
+        let (status, ..) = post(&f.app, &format!("/applications/{id}/event"), &fields).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+    }
+    assert_eq!(event_types(&f.db, id).await, ["stage_changed"]);
+
+    let other = add_app(&f.db, "Beta", "inbound").await;
+    let args = serde_json::json!({
+        "applicationId": other.to_string(),
+        "type": "stage_changed",
+        "metadata": {"toStage": "applied", "toStatus": "applied"},
+    });
+    let state = std::sync::Arc::new(f.state.clone());
+    let done = nexus_mcp::call_tool(
+        state,
+        &[SCOPE_TOOLS],
+        "mcp",
+        "record_application_event",
+        args,
+    );
+    assert_ne!(serde_json::to_value(&done.await).unwrap()["isError"], true);
+    let a = application(&f.db, other).await;
+    assert_eq!(a.status, "applied");
+    assert_eq!((a.applied_at, a.last_contact), (None, None));
+}
+
+/// What old Nexus's status control and timeline form leave behind for the same change.
+#[tokio::test]
+async fn the_other_statuses_end_as_they_did_in_old_nexus() {
+    let f = fixture().await;
+    let staged = applications::create(
+        &mut f.db.conn().await.unwrap(),
+        "Staged",
+        "Engineer",
+        ApplicationFields {
+            status: Some("inbound".to_owned()),
+            current_stage: Some(Some("referral".to_owned())),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .id;
+    submit(
+        &f,
+        staged,
+        "event",
+        &[("what", "applied"), ("confirm", "1")],
+    )
+    .await;
+    let a = application(&f.db, staged).await;
+    assert_eq!(
+        a.current_stage.as_deref(),
+        Some("referral"),
+        "its stage stays"
+    );
+
+    let id = add_app(&f.db, "Acme", "inbound").await;
+    let own = [
+        ("what", "interview"),
+        ("detail", "Phone"),
+        ("when", "2030-05-06T10:30"),
+    ];
+    submit(&f, id, "event", &own).await;
+    let a = application(&f.db, id).await;
+    assert_eq!(a.status, "interview");
+    assert_eq!(a.current_stage.as_deref(), Some("interview_scheduled"));
+    assert!(a.last_contact.is_some() && a.follow_up_at.is_some());
+    assert_eq!(a.applied_at, None);
+
+    submit(&f, id, "event", &[("what", "offer"), ("confirm", "1")]).await;
+    let a = application(&f.db, id).await;
+    assert_eq!(a.status, "offer");
+    assert_eq!(a.current_stage.as_deref(), Some("offer_received"));
+    assert!(a.last_contact.is_some() && a.follow_up_at.is_some());
+    assert_eq!(a.applied_at, None);
+
+    submit(&f, id, "event", &[("what", "rejected"), ("confirm", "1")]).await;
+    let a = application(&f.db, id).await;
+    assert_eq!(a.status, "rejected");
+    assert_eq!(a.current_stage.as_deref(), Some("rejected"));
+    assert!(a.last_contact.is_some());
+    assert_eq!((a.follow_up_at, a.applied_at), (None, None));
+}
+
+#[tokio::test]
+async fn a_form_time_far_from_now_is_refused_and_the_page_offers_a_fresh_one() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "inbound").await;
+    let now = chrono::Utc::now();
+    let stamp =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let (two_days_ago, an_hour_on) = (
+        stamp(now - chrono::TimeDelta::days(2)),
+        stamp(now + chrono::TimeDelta::hours(1)),
+    );
+    for at in [
+        "2020-01-01",
+        "2999-01-01",
+        "2020-01-01T00:00:00.000Z",
+        &two_days_ago,
+        &an_hour_on,
+    ] {
+        let (status, _, page) = submit(&f, id, "note", &[("note", "kept"), ("at", at)]).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{at}");
+        assert!(page.contains("too far from now"), "{at}");
+        assert!(page.contains("kept"), "{at}");
+        assert_ne!(
+            hidden(&page, "at"),
+            at,
+            "the next send carries a fresh time"
+        );
+        let (status, ..) = submit(
+            &f,
+            id,
+            "event",
+            &[("what", "offer"), ("confirm", "1"), ("at", at)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{at}");
+    }
+    assert!(event_types(&f.db, id).await.is_empty());
+    assert_eq!(application(&f.db, id).await.status, "inbound");
+
+    let (an_hour_ago, a_minute_on) = (
+        stamp(now - chrono::TimeDelta::hours(1)),
+        stamp(now + chrono::TimeDelta::minutes(1)),
+    );
+    for at in [&an_hour_ago, &a_minute_on] {
+        let (status, ..) = submit(&f, id, "note", &[("note", "fine"), ("at", at)]).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{at}");
+    }
+}
+
+async fn contact_count(db: &Db, id: i64) -> usize {
+    contacts::list_for_application(&mut db.conn().await.unwrap(), id)
+        .await
+        .unwrap()
+        .len()
+}
+
+#[tokio::test]
+async fn an_identical_contact_is_refused_however_it_is_sent() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "applied").await;
+    let pat = [
+        ("name", "Pat Example"),
+        ("email", "Pat@Example.com"),
+        ("phone", "+49 40 555 0100"),
+        ("role", "Recruiter"),
+        ("linkedIn", "https://example.com/pat"),
+    ];
+    let (status, ..) = submit(&f, id, "contact", &pat).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (status, _, page) = submit(&f, id, "contact", &pat).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains("already on this application"), "{page}");
+    assert_eq!(contact_count(&f.db, id).await, 1);
+
+    let (status, ..) = submit(&f, id, "contact", &[("name", "Pat Example")]).await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "fewer details: another entry"
+    );
+    let (status, ..) = submit(&f, id, "contact", &[("name", "Pat Example")]).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "blank fields match too"
+    );
+    let other = add_app(&f.db, "Beta", "applied").await;
+    let (status, ..) = submit(&f, other, "contact", &pat).await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "another application's is its own"
+    );
+    assert_eq!(contact_count(&f.db, id).await, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_identical_contact_sent_twice_at_once_is_added_once() {
+    let f = fixture().await;
+    for round in 0..8 {
+        let id = add_app(&f.db, &format!("Co {round}"), "applied").await;
+        let (first, second) = tokio::join!(
+            submit(&f, id, "contact", &[("name", "Pat")]),
+            submit(&f, id, "contact", &[("name", "Pat")]),
+        );
+        let mut statuses = [first.0, second.0];
+        statuses.sort();
+        assert_eq!(
+            statuses,
+            [StatusCode::SEE_OTHER, StatusCode::UNPROCESSABLE_ENTITY],
+            "round {round}"
+        );
+        assert_eq!(contact_count(&f.db, id).await, 1, "round {round}");
+    }
 }

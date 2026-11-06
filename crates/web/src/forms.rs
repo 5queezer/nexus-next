@@ -9,12 +9,13 @@ use axum::Form;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use chrono::{NaiveDateTime, TimeZone};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use leptos::prelude::*;
 use nexus_core::Timestamp;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
 use nexus_core::repo::applications::{self, Application};
+use nexus_core::repo::contacts;
 use rand::Rng;
 use serde_json::{Map, Value, json};
 use subtle::ConstantTimeEq;
@@ -56,6 +57,12 @@ impl Actions {
         }
     }
 }
+
+/// A form records a person's action as it happens. A page left open this long still gets through
+/// without JavaScript, and its time is then out by that much.
+const MAX_FORM_AGE_SECONDS: i64 = 24 * 3600;
+/// Room for a device's clock to run ahead.
+const MAX_FORM_AHEAD_SECONDS: i64 = 600;
 
 const FORMS: [&str; 6] = ["note", "triage", "event", "contact", "archive", "unarchive"];
 
@@ -126,6 +133,24 @@ fn field<'a>(form: &'a Typed, name: &str) -> &'a str {
     form.get(name).map_or("", |value| value.trim())
 }
 
+/// The form's `at`, which is only ever now: a crafted date, or a device's clock far out, isn't when
+/// this happened. A missing one goes on to the tool, which refuses it in its own words. The refusal
+/// renders the page again, with a fresh time for the next send.
+fn acted_at(form: &Typed) -> Result<&str, String> {
+    let at = field(form, "at");
+    let near_now = |at: DateTime<_>| {
+        let age = Utc::now().signed_duration_since(at).num_seconds();
+        (-MAX_FORM_AHEAD_SECONDS..=MAX_FORM_AGE_SECONDS).contains(&age)
+    };
+    if at.is_empty() || DateTime::parse_from_rfc3339(at).is_ok_and(near_now) {
+        return Ok(at);
+    }
+    Err(
+        "The time on this form is too far from now. Check this device's clock, then send it again."
+            .to_owned(),
+    )
+}
+
 /// A blank number field clears the value; anything else must be a whole number from 1 to 5.
 fn score(form: &Typed, name: &str, label: &str) -> Result<Value, String> {
     match field(form, name) {
@@ -140,8 +165,13 @@ fn score(form: &Typed, name: &str, label: &str) -> Result<Value, String> {
 }
 
 /// The tool call a form means, or the reason it can't be made yet.
-fn build(kind: &str, id: i64, form: &Typed, tz: Tz) -> Result<(&'static str, Value), String> {
-    let id = id.to_string();
+fn build(
+    kind: &str,
+    application: &Application,
+    form: &Typed,
+    tz: Tz,
+) -> Result<(&'static str, Value), String> {
+    let id = application.id.to_string();
     let expected = field(form, "expected");
     let mut args = Map::new();
     let mut put = |key: &str, value: Value| args.insert(key.to_owned(), value);
@@ -153,7 +183,7 @@ fn build(kind: &str, id: i64, form: &Typed, tz: Tz) -> Result<(&'static str, Val
             }
             put("applicationId", id.into());
             put("note", note.into());
-            put("occurredAt", field(form, "at").into());
+            put("occurredAt", acted_at(form)?.into());
             put("idempotencyKey", field(form, "key").into());
             put("expectedUpdatedAt", expected.into());
             "append_application_note"
@@ -179,7 +209,9 @@ fn build(kind: &str, id: i64, form: &Typed, tz: Tz) -> Result<(&'static str, Val
             let mut metadata = Map::new();
             let event = match field(form, "what") {
                 "applied" => {
-                    metadata.insert("toStage".to_owned(), "applied".into());
+                    // A stage it already has stays, as in old Nexus's status control.
+                    let stage = application.current_stage.as_deref().unwrap_or("applied");
+                    metadata.insert("toStage".to_owned(), stage.into());
                     metadata.insert("toStatus".to_owned(), "applied".into());
                     "stage_changed"
                 }
@@ -210,7 +242,7 @@ fn build(kind: &str, id: i64, form: &Typed, tz: Tz) -> Result<(&'static str, Val
             put("applicationId", id.into());
             put("type", event.into());
             put("metadata", Value::Object(metadata));
-            put("occurredAt", field(form, "at").into());
+            put("occurredAt", acted_at(form)?.into());
             put("idempotencyKey", field(form, "key").into());
             put("expectedUpdatedAt", expected.into());
             "record_application_event"
@@ -240,6 +272,21 @@ fn build(kind: &str, id: i64, form: &Typed, tz: Tz) -> Result<(&'static str, Val
         }
     };
     Ok((name, Value::Object(args)))
+}
+
+/// Whether this application already has a contact with exactly these details. A retry after a lost
+/// response sends the same form again, and this form has no key to replay.
+async fn contact_is_listed(dash: &Dashboard, id: i64, form: &Typed) -> Result<bool, PageError> {
+    let same =
+        |stored: &Option<String>, key| stored.as_deref().unwrap_or_default() == field(form, key);
+    let listed = contacts::list_for_application(&mut *dash.db.conn().await?, id).await?;
+    Ok(listed.iter().any(|contact| {
+        contact.name == field(form, "name")
+            && same(&contact.email, "email")
+            && same(&contact.phone, "phone")
+            && same(&contact.role, "role")
+            && same(&contact.linked_in, "linkedIn")
+    }))
 }
 
 /// Archiving and the three lifecycle events that close a chapter ask once more.
@@ -321,16 +368,28 @@ pub(crate) async fn submit(
         .await?
         .ok_or(PageError(StatusCode::NOT_FOUND))?;
 
-    let call = build(kind, id, &form, dash.tz);
+    // Held until the contact is stored, so that two sends at once can't both find none.
+    let _adding = if kind == "contact" {
+        Some(dash.adding_contact.lock().await)
+    } else {
+        None
+    };
+    let mut call = build(kind, &application, &form, dash.tz);
+    if kind == "contact" && call.is_ok() && contact_is_listed(&dash, id, &form).await? {
+        call = Err("This contact is already on this application.".to_owned());
+    }
     let failure = match call {
         Err(text) => (StatusCode::UNPROCESSABLE_ENTITY, text),
         Ok((name, args)) => {
             if needs_confirmation(kind, &form) && field(&form, "confirm") != "1" {
                 return Ok(confirm_page(&application, kind, &form, &token));
             }
-            let result =
+            let result = if kind == "event" && field(&form, "what") == "applied" {
+                nexus_mcp::owner::mark_applied(dash.mcp.clone(), &args).await
+            } else {
                 nexus_mcp::call_tool(dash.mcp.clone(), &[SCOPE_TOOLS], "dashboard", name, args)
-                    .await;
+                    .await
+            };
             let result = serde_json::to_value(&result).unwrap_or_default();
             if result["isError"] != json!(true) {
                 return Ok(
@@ -478,9 +537,9 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
                 <form method="post" action=action("contact") class="act">
                     {hidden(x, a, false)}
                     <label>"Name" <input type="text" name="name" maxlength="255" required value=value(x, "name", "") /></label>
-                    <label>"Role" <input type="text" name="role" maxlength="255" value=value(x, "role", "") /></label>
+                    <label>"Role" <input type="text" name="role" maxlength="100" value=value(x, "role", "") /></label>
                     <label>"Email" <input type="email" name="email" maxlength="255" value=value(x, "email", "") /></label>
-                    <label>"Phone" <input type="tel" name="phone" maxlength="100" value=value(x, "phone", "") /></label>
+                    <label>"Phone" <input type="tel" name="phone" maxlength="50" value=value(x, "phone", "") /></label>
                     <label>"LinkedIn" <input type="text" name="linkedIn" maxlength="500" value=value(x, "linkedIn", "") /></label>
                     <button type="submit">"Add contact"</button>
                 </form>

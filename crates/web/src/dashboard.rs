@@ -19,6 +19,7 @@ use nexus_core::repo::{contacts, documents, events, submissions};
 use nexus_mcp::McpState;
 use rand::Rng;
 use serde::Deserialize;
+use tokio::sync::Mutex;
 
 use crate::forms::{self, Actions};
 use crate::queue::{self, Clock, Group};
@@ -33,6 +34,7 @@ pub(crate) struct Dashboard {
     pub db: Db,
     pub mcp: Arc<McpState>,
     pub tz: Tz,
+    pub adding_contact: Arc<Mutex<()>>,
 }
 
 /// Mounts `/`, `/queue`, `/applications/{id}` and the form posts under it, showing times in `tz`.
@@ -56,6 +58,7 @@ pub fn dashboard_router(state: McpState, tz: Tz) -> Router {
         db: state.db.clone(),
         mcp: Arc::new(state),
         tz,
+        adding_contact: Arc::default(),
     })
 }
 
