@@ -665,8 +665,7 @@ async fn dashboard_forms_carry_a_token_of_their_own_session() {
         let start = page.find(marker).unwrap() + marker.len();
         page[start..start + page[start..].find('"').unwrap()].to_owned()
     };
-    let note = |csrf: &str, key: &str| {
-        let at = "2030-01-01T00:00:00.000Z";
+    let note = |csrf: &str, key: &str, at: &str| {
         format!("csrf={csrf}&expected=&at={at}&key={key}&note=Hello")
     };
     let form = [("Content-Type", "application/x-www-form-urlencoded")];
@@ -680,13 +679,16 @@ async fn dashboard_forms_carry_a_token_of_their_own_session() {
     let (first_token, second_token) = (token_of(&first_page.body), token_of(&second_page.body));
     assert_ne!(first_token, second_token, "a token belongs to one session");
 
-    let expected = |page: &str| {
-        let marker = "name=\"expected\" value=\"";
-        let start = page.find(marker).unwrap() + marker.len();
+    let hidden = |name: &str, page: &str| {
+        let marker = format!("name=\"{name}\" value=\"");
+        let start = page.find(&marker).unwrap() + marker.len();
         page[start..start + page[start..].find('"').unwrap()].to_owned()
     };
     let body = |token: &str, page: &str| {
-        note(token, "abcdefgh12345").replace("expected=", &format!("expected={}", expected(page)))
+        note(token, "abcdefgh12345", &hidden("at", page)).replace(
+            "expected=",
+            &format!("expected={}", hidden("expected", page)),
+        )
     };
 
     let foreign = first
