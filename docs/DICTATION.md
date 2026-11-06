@@ -6,7 +6,7 @@ Nexus holds no Telegram code and no bot token. Hermes does the talking, using th
 
 ## Before the first session
 
-The owner does this once, on the board:
+The owner does this once, on the board. Each command runs as the service user, as in `sudo -u nexus nexus cv-facts show --data-dir /var/lib/nexus`, so that user must be able to read `facts.json`. It is safe while the server runs.
 
 1. Get the master profile in with `upsert_cv_profile`.
 2. Run `nexus cv-facts set --file facts.json` for what a profile can't express. All fields are optional:

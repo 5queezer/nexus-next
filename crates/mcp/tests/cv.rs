@@ -166,6 +166,43 @@ async fn patching_needs_locked_facts_and_the_right_head() {
 }
 
 #[tokio::test]
+async fn origin_is_free_text_limited_in_length_and_stored_as_data() {
+    let server = locked_server().await;
+    let args = |origin: &str, summary: &str| {
+        json!({
+            "expectedRevision": 0,
+            "edits": [{"oldText": "Backend engineer", "newText": "Freight engineer"}],
+            "summary": summary,
+            "origin": origin,
+        })
+    };
+    let long = "x".repeat(65);
+    assert!(
+        server
+            .call("patch_cv", args(&long, "s"))
+            .await
+            .err_text()
+            .contains("too_big")
+    );
+    let long = "x".repeat(501);
+    assert!(
+        server
+            .call("patch_cv", args("o", &long))
+            .await
+            .err_text()
+            .contains("too_big")
+    );
+    let origin = "'); DROP TABLE cv_facts; --";
+    server.call("patch_cv", args(origin, "s")).await.ok();
+    let listed = server.call("list_cv_revisions", json!({})).await.ok();
+    assert_eq!(listed["revisions"][0]["origin"], origin);
+    assert!(
+        server.call("get_cv_source", json!({})).await.ok()["factsLocked"] == true,
+        "the facts are still there"
+    );
+}
+
+#[tokio::test]
 async fn edits_are_atomic_and_a_bad_one_is_named() {
     let server = locked_server().await;
     let before = state(&server).await;

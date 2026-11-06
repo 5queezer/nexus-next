@@ -232,7 +232,8 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         }
         Err(error) => {
             let _ = remove_blob_if_unreferenced(db, sha256).await;
-            return Ok(text_error(&format!("Failed to generate CV: {error}")));
+            let message = super::Thrown::from(error).0;
+            return Ok(text_error(&format!("Failed to generate CV: {message}")));
         }
     };
     if let Some(replaced) = replaced_blob {

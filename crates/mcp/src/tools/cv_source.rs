@@ -28,7 +28,8 @@ use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, re
 
 /// With a compile's 30 s, this stays inside the MCP route's 60 s deadline.
 const RENDER_QUEUE_WAIT: Duration = Duration::from_secs(20);
-const DIFF_TIMEOUT: Duration = Duration::from_secs(1);
+/// Past this a diff gets coarser, not wrong. A page holds up to 50 of them, on a runtime thread.
+const DIFF_TIMEOUT: Duration = Duration::from_millis(200);
 /// A PDF at its limit and a typical preview. One result costs several times this in the transport,
 /// as a downloaded document does.
 const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
