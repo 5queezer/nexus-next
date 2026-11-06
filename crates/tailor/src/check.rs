@@ -22,6 +22,8 @@ pub enum Rule {
     Images,
     /// Text the pages hold but no reader can see. It could satisfy the other rules unseen.
     HiddenText,
+    /// One word mixing Latin with Cyrillic or Greek lookalikes, which has no honest use on a CV.
+    MixedScript,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,6 +297,9 @@ const CLAIM_PHRASES: &[&str] = &[
 /// These claim nothing as one part of a hyphenated word: `cloud-native`, `360-degree`.
 const WHOLE_WORD_CLAIMS: &[&str] = &["native", "fluent", "dr", "sr", "jr", "lehre", "degree"];
 
+/// CJK numerals with a place value of their own, which stay as they are in a number token.
+const CJK_UNITS: &str = "十百千万萬亿億兆拾佰仟";
+
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
     const MONTH: &str = "jan(?:uary|uar)?|jän(?:ner)?|feb(?:ruary|ruar)?|mar(?:ch)?|märz|maerz|apr(?:il)?|may|mai|jun(?:e|i)?|jul(?:y|i)?|aug(?:ust)?|sept?(?:ember)?|o[ck]t(?:ober)?|nov(?:ember)?|de[cz](?:ember)?";
     const YEAR: &str = "(?:19|20)[0-9]{2}";
@@ -315,7 +320,7 @@ static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
             | (?P<suf>[kmb])\b
             | \b )
           (?:\s?(?P<pct>%|(?:percent|prozent|prozentpunkte?)\b)|\s?(?P<cur2>{CUR_AFTER}))?
-        | \b(?P<alnum>[\p{{L}}\p{{N}}]*[0-9][\p{{L}}\p{{N}}]*)
+        | \b(?P<alnum>[\p{{L}}\p{{N}}]*[0-9{CJK_UNITS}\p{{Nl}}\p{{No}}][\p{{L}}\p{{N}}]*)
         "
     );
     Regex::new(&pattern).expect("the token pattern is valid")
@@ -333,12 +338,55 @@ fn digit_value(c: char) -> u32 {
     (c as u32 - zero) % 10
 }
 
+/// The value of a CJK numeral with a digit's meaning. `二〇一五` then reads `2015`, a number like any
+/// other, so a word holding one is a number token too and must be allowed.
+fn cjk_digit(c: char) -> Option<char> {
+    Some(match c {
+        '〇' | '零' => '0',
+        '一' | '壹' => '1',
+        '二' | '两' | '兩' | '贰' | '貳' => '2',
+        '三' | '叁' | '參' => '3',
+        '四' | '肆' => '4',
+        '五' | '伍' => '5',
+        '六' | '陆' | '陸' => '6',
+        '七' | '柒' => '7',
+        '八' | '捌' => '8',
+        '九' | '玖' => '9',
+        _ => return None,
+    })
+}
+
+/// The value of a Roman numeral sign. NFKC would make `Ⅷ` the letters `VIII`, ordinary text, so
+/// these become numbers before it runs.
+fn roman_sign(c: char) -> Option<u32> {
+    Some(match c as u32 {
+        code @ 0x2160..=0x216B => code - 0x2160 + 1,
+        code @ 0x2170..=0x217B => code - 0x2170 + 1,
+        0x216C | 0x217C => 50,
+        0x216D | 0x217D => 100,
+        0x216E | 0x217E => 500,
+        0x216F | 0x217F | 0x2180 => 1000,
+        0x2181 => 5000,
+        0x2182 => 10_000,
+        _ => return None,
+    })
+}
+
 /// Unicode folded for matching: NFKC, every decimal digit as ASCII, zero-width and soft-hyphen
-/// characters gone, marks on digits gone, every dash `-`, runs of whitespace one space.
+/// characters gone, marks on digits gone, every dash `-`, runs of whitespace one space, Roman
+/// numeral signs and CJK numerals as digits.
 fn normalize(text: &str) -> String {
+    let mut signs_as_digits = String::with_capacity(text.len());
+    for c in text.chars() {
+        match roman_sign(c) {
+            Some(value) => signs_as_digits.push_str(&value.to_string()),
+            None => signs_as_digits.push(c),
+        }
+    }
     let mut out = String::with_capacity(text.len());
-    for c in text.nfkc() {
+    for c in signs_as_digits.nfkc() {
         match c.general_category() {
+            _ if cjk_digit(c).is_some() => out.extend(cjk_digit(c)),
             GeneralCategory::DecimalNumber => {
                 out.push(char::from_digit(digit_value(c), 10).unwrap_or('0'));
             }
@@ -356,6 +404,101 @@ fn normalize(text: &str) -> String {
     }
     out.truncate(out.trim_end().len());
     out
+}
+
+/// The Latin letter a Cyrillic or Greek letter is easily taken for. Lower-case Cyrillic `т`, `м`, `н`
+/// and `в` only match Latin small capitals, and are left out so that Russian `сто` doesn't read `cto`.
+fn latin_lookalike(c: char) -> Option<char> {
+    Some(match c {
+        'а' | 'α' => 'a',
+        'с' | 'ϲ' => 'c',
+        'ԁ' => 'd',
+        'е' | 'ё' | 'ε' => 'e',
+        'г' => 'r',
+        'һ' => 'h',
+        'і' | 'ї' | 'ι' => 'i',
+        'ј' => 'j',
+        'κ' | 'к' => 'k',
+        'η' => 'n',
+        'о' | 'ο' => 'o',
+        'р' | 'ρ' => 'p',
+        'ԛ' => 'q',
+        'ѕ' => 's',
+        'υ' => 'u',
+        'ѵ' | 'ν' => 'v',
+        'ԝ' => 'w',
+        'х' | 'χ' => 'x',
+        'у' | 'γ' => 'y',
+        'А' | 'Α' => 'A',
+        'В' | 'Β' => 'B',
+        'С' | 'Ϲ' => 'C',
+        'Ԁ' => 'D',
+        'Е' | 'Ё' | 'Ε' => 'E',
+        'Ԍ' => 'G',
+        'Н' | 'Η' => 'H',
+        'І' | 'Ї' | 'Ι' => 'I',
+        'Ј' => 'J',
+        'К' | 'Κ' => 'K',
+        'М' | 'Μ' => 'M',
+        'Ν' => 'N',
+        'О' | 'Ο' => 'O',
+        'Р' | 'Ρ' => 'P',
+        'Ԛ' => 'Q',
+        'Ѕ' => 'S',
+        'Т' | 'Τ' => 'T',
+        'Ѵ' => 'V',
+        'Ԝ' => 'W',
+        'Х' | 'Χ' => 'X',
+        'У' | 'Ү' | 'Υ' => 'Y',
+        'Ζ' => 'Z',
+        _ => return None,
+    })
+}
+
+/// Text as claim and banned-phrase matching reads it: lookalikes as Latin, and runs of three or more
+/// single letters closed up, so `S e n i o r` is a word. Initials like `J. R. R.` hold dots and stay.
+/// A run starting with a word of one letter is read both ways, since `a P h D` is `a PhD` but
+/// `A b i t u r` is `Abitur`.
+fn prepare_for_words(text: &str) -> String {
+    static SPACED: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b\p{L}(?: \p{L}){2,}\b").expect("the spaced-letters pattern is valid")
+    });
+    let folded: String = text
+        .chars()
+        .map(|c| latin_lookalike(c).unwrap_or(c))
+        .collect();
+    SPACED
+        .replace_all(&folded, |caps: &regex::Captures<'_>| {
+            let closed = caps[0].replace(' ', "");
+            match closed.chars().next() {
+                Some(first @ ('a' | 'A' | 'I')) => {
+                    format!("{closed} {first} {}", &closed[first.len_utf8()..])
+                }
+                _ => closed,
+            }
+        })
+        .into_owned()
+}
+
+fn is_latin_letter(c: char) -> bool {
+    c.is_alphabetic() && (c < '\u{250}' || ('\u{1E00}'..='\u{1EFF}').contains(&c))
+}
+
+fn check_mixed_script(text: &str, known: &Known, findings: &mut Findings) {
+    for word in words(text) {
+        // Parts of a hyphenated word may honestly differ: `Москва-Berlin`, `α-Test`.
+        let mixed = word.split('-').any(|part| {
+            part.chars().any(is_latin_letter) && part.chars().any(|c| latin_lookalike(c).is_some())
+        });
+        if mixed && !known.words.contains(&word_key(word)) {
+            let start = word.as_ptr() as usize - text.as_ptr() as usize;
+            findings.add(
+                Rule::MixedScript,
+                word,
+                context(text, start, start + word.len()),
+            );
+        }
+    }
 }
 
 fn fold_case(text: &str) -> String {
@@ -709,22 +852,33 @@ fn is_count(word: &str) -> bool {
             .is_some_and(|(_, tens)| contains(tens))
 }
 
+/// An upper-case Roman numeral, which counts only next to a time unit: `CI` and `IV` are ordinary
+/// text. `I` never does: it is the pronoun.
+fn is_ascii_roman(word: &str) -> bool {
+    static ROMAN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new("^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$")
+            .expect("the Roman numeral pattern is valid")
+    });
+    !word.is_empty() && word != "I" && ROMAN.is_match(word)
+}
+
 fn check_number_words(body: &str, known: &Known, findings: &mut Findings) {
-    let lower: Vec<String> = words(body).map(str::to_lowercase).collect();
+    let originals: Vec<&str> = words(body).collect();
+    let lower: Vec<String> = originals.iter().map(|word| word.to_lowercase()).collect();
     for (i, word) in lower.iter().enumerate() {
         let mut phrase = None;
         let parts: Vec<&str> = word.split('-').collect();
-        if parts
-            .windows(2)
-            .any(|p| is_count(p[0]) && TIME_UNITS.contains(&p[1]))
-        {
+        let original_parts: Vec<&str> = originals[i].split('-').collect();
+        if parts.windows(2).zip(&original_parts).any(|(p, original)| {
+            (is_count(p[0]) || is_ascii_roman(original)) && TIME_UNITS.contains(&p[1])
+        }) {
             phrase = Some(word.clone());
         } else if let Some((count, _)) =
             word.split_once("jähr").or_else(|| word.split_once("jaehr"))
             && is_count(count)
         {
             phrase = Some(word.clone());
-        } else if is_count(word) {
+        } else if is_count(word) || is_ascii_roman(originals[i]) {
             let next = lower.get(i + 1).map(String::as_str);
             let after = lower.get(i + 2).map(String::as_str);
             if next.is_some_and(|w| TIME_UNITS.contains(&w)) {
@@ -793,12 +947,13 @@ fn check_claims(text: &str, known: &Known, findings: &mut Findings) {
 
 fn check_banned(document: &Document, facts: &Facts, findings: &mut Findings) {
     let texts = [
-        fold_case(&document.body),
-        fold_case(&document.body_with_hyphens),
-        fold_case(&document.metadata),
-    ];
+        &document.body,
+        &document.body_with_hyphens,
+        &document.metadata,
+    ]
+    .map(|text| fold_case(&prepare_for_words(text)));
     for phrase in &facts.banned_phrases {
-        let folded = fold_case(normalize(phrase).trim());
+        let folded = fold_case(&prepare_for_words(normalize(phrase).trim()));
         if !folded.is_empty()
             && let Some(found) = texts.iter().find_map(|text| {
                 text.find(&folded)
@@ -849,26 +1004,63 @@ fn anchors(facts: &Facts) -> Vec<Anchor> {
         .collect()
 }
 
+/// How many lines after a company or institution its date may stand.
+const DATE_WINDOW_LINES: usize = 2;
+
 fn check_binding(document: &Document, facts: &Facts, findings: &mut Findings) {
     let anchors = anchors(facts);
-    for line in &document.lines {
-        let lower = line.to_lowercase();
-        let on_line: Vec<&Anchor> = anchors
-            .iter()
-            .filter(|a| contains_word(&lower, &a.lower))
-            .collect();
+    let lower_lines: Vec<String> = document.lines.iter().map(|l| l.to_lowercase()).collect();
+    let on_lines: Vec<Vec<&Anchor>> = lower_lines
+        .iter()
+        .map(|lower| {
+            anchors
+                .iter()
+                .filter(|a| contains_word(lower, &a.lower))
+                .collect()
+        })
+        .collect();
+    // Names whose own date stands where a reader would take it for theirs.
+    let mut dated: HashSet<&str> = HashSet::new();
+    for (i, on_line) in on_lines.iter().enumerate() {
         if on_line.is_empty() {
             continue;
         }
+        let line = &document.lines[i];
+        let names: Vec<&str> = on_line.iter().map(|a| a.name.as_str()).collect();
+        let names = names.join(", ");
         for token in tokens(line) {
             if token_year(&token.canon).is_some()
                 && !on_line.iter().any(|a| a.date_tokens.contains(&token.canon))
             {
-                let names: Vec<&str> = on_line.iter().map(|a| a.name.as_str()).collect();
                 findings.add(
                     Rule::EntityBinding,
-                    &format!("{}: {}", names.join(", "), &line[token.start..token.end]),
+                    &format!("{names}: {}", &line[token.start..token.end]),
                     line.clone(),
+                );
+            }
+        }
+        // Everything up to the next company or institution reads as this one's.
+        let end = (i + 1..on_lines.len())
+            .find(|&next| !on_lines[next].is_empty())
+            .unwrap_or(on_lines.len());
+        let window = lower_lines[i..end.min(i + DATE_WINDOW_LINES + 1)].join(" ");
+        for anchor in on_line {
+            if contains_word(&window, &anchor.date) {
+                dated.insert(&anchor.lower);
+            }
+        }
+        let region = lower_lines[i..end].join(" ");
+        for other in &anchors {
+            // A bare year stays free: "since 2019" in a bullet is normal.
+            let bare_year = other.date.chars().all(|c| c.is_ascii_digit());
+            let its_own = on_line
+                .iter()
+                .any(|a| a.lower == other.lower || a.date == other.date);
+            if !bare_year && !its_own && contains_word(&region, &other.date) {
+                findings.add(
+                    Rule::EntityBinding,
+                    &format!("{names}: {}", other.date),
+                    format!("below {names} stands the date of {}", other.name),
                 );
             }
         }
@@ -892,6 +1084,16 @@ fn check_binding(document: &Document, facts: &Facts, findings: &mut Findings) {
                 &anchor.name,
                 format!(
                     "rendered without its exact details and date: {}",
+                    anchor.name
+                ),
+            );
+        }
+        if rendered && !anchor.date.is_empty() && !dated.contains(anchor.lower.as_str()) {
+            findings.add(
+                Rule::EntityBinding,
+                &format!("{}: no date", anchor.name),
+                format!(
+                    "its date must stand on its line or within the next {DATE_WINDOW_LINES}: {}",
                     anchor.name
                 ),
             );
@@ -926,8 +1128,10 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
     let metadata = known.mask_contact(&document.metadata);
     for masked in [&body, &metadata] {
         check_numbers(masked, &known, &mut findings);
-        check_number_words(masked, &known, &mut findings);
-        check_claims(masked, &known, &mut findings);
+        check_mixed_script(masked, &known, &mut findings);
+        let prepared = prepare_for_words(masked);
+        check_number_words(&prepared, &known, &mut findings);
+        check_claims(&prepared, &known, &mut findings);
     }
     check_banned(&document, facts, &mut findings);
     check_binding(&document, facts, &mut findings);

@@ -126,6 +126,81 @@ async fn valid_edits_pass() {
 }
 
 #[tokio::test]
+async fn valid_cross_line_layouts_pass() {
+    let bodies = [
+        // The date a little below, as long as it comes before the next company.
+        "Brightpath Logistics · Software Engineer\n\n03/2019 – 12/2022",
+        "Brightpath Logistics · Software Engineer\n\nHamburg\n\n03/2019 – 12/2022",
+        // Another company named in prose carries no date of its own there.
+        "#employment(\"quillon\")[- Moved customers over to Brightpath Logistics.]\n#employment(\"brightpath\")[- Work.]",
+        "= Summary\nFormerly at Brightpath Logistics and Quillon Systems.\n= Experience\n#employment(\"brightpath\")[- Work.]\n#employment(\"quillon\")[- Work.]",
+        // A bare year of another entry in a bullet stays allowed.
+        "#employment(\"brightpath\")[- Kept the 2016 tooling running into 2022.\n- Replaced what was left from 2014.]",
+        // Sections after the last entry.
+        "#employment(\"brightpath\")[- Work.]\n= Projects\n#project(\"Pallet\", stack: \"Rust\")[A tracker from 2016.]\n= Languages\n#languages()",
+    ];
+    let facts = facts_en();
+    for body in bodies {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+#[tokio::test]
+async fn two_roles_at_one_company_and_a_one_year_entry_pass() {
+    let mut facts = facts_en();
+    facts.employment[1].company = "Brightpath Logistics".to_owned();
+    facts.employment[2].date = "2015".to_owned();
+    let source = format!(
+        "{START}#employment(\"brightpath\")[- Shipped in 2015.]\n#employment(\"quillon\")[- Work.]\n#employment(\"tessel\")\n"
+    );
+    let report = render_and_check(&source, &facts).await;
+    clean(&report, &source);
+}
+
+#[tokio::test]
+async fn honest_scripts_initials_and_roman_numerals_pass() {
+    let bodies = [
+        // Umlauts and other accented Latin.
+        "Überführung für Müller, Straße, Ölpreis, Äpfel, Zoë, François, Søren, Łukasz.",
+        // Wholly Cyrillic and Greek words, also where they could be Latin letters.
+        "Мария Иванова из Москвы, сто человек, ООО, Ελλάδα, Αθήνα, ΑΒΓ.",
+        "A Москва-Berlin route, an α-Test and a β-Version.",
+        // Greek letters that are no lookalikes, inside technical words.
+        "Latency in μs, 5 kΩ never mind, the λ-calculus.",
+        // Initials and short letter runs.
+        "With J. R. R. Tolkien and A. B. Example, an A B test and a C-level pitch.",
+        "Grid x y z, plans A B, u. a. in Köln, z. B. hier.",
+        // ASCII Roman numerals in words are ordinary text.
+        "CI and CD, Phase IV, Louis XIV, Type V, Mix, DC, Section III: I said so.",
+        "IV drips, a CI job and a V model over many days.",
+    ];
+    let facts = Facts {
+        allowed_tokens: vec!["5".to_owned()],
+        ..facts_en()
+    };
+    for body in bodies {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+#[tokio::test]
+async fn owner_lists_free_other_numerals_and_a_fact_year_in_cjk() {
+    let facts = Facts {
+        allowed_tokens: vec!["Ⅷ".to_owned(), "VIII years".to_owned()],
+        ..facts_en()
+    };
+    for body in ["Since 二〇一五.", "Ⅷ of them.", "VIII years of it."] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+#[tokio::test]
 async fn valid_german_edits_pass() {
     let bodies = [
         "#employment(\"rheinwerk\")[- Die Wartungsplanung für Großkunden übernommen.]",
