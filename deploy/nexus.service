@@ -11,7 +11,7 @@ Group=nexus
 # /var/lib/nexus on the root filesystem. Never /home: it is encrypted and stays locked after a reboot.
 StateDirectory=nexus
 StateDirectoryMode=0700
-# Must set NEXUS_PUBLIC_BASE_URL, and NEXUS_TRUSTED_IP_HEADER behind a tunnel. See README section 3.
+# Must set NEXUS_PUBLIC_BASE_URL and NEXUS_TRUSTED_IP_HEADER. See README section 3.
 # The owner passphrase hash is read from /var/lib/nexus/owner-passphrase.argon2; without one, serve
 # refuses to start. Create it with `nexus set-passphrase`.
 EnvironmentFile=-/etc/nexus/nexus.env
@@ -41,6 +41,11 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Nexus only needs loopback: the ingress connects to it, and it connects to nothing. A bind on another
+# address would need IPAddressAllow changed too.
+IPAddressDeny=any
+IPAddressAllow=localhost
+PrivateUsers=yes
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
