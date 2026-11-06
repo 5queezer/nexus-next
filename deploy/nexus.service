@@ -25,6 +25,8 @@ TimeoutStopSec=30
 MemoryHigh=256M
 MemoryMax=384M
 TasksMax=128
+# The render worker runs in this cgroup and the kernel takes it first. Its death must not stop nexus.
+OOMPolicy=continue
 LimitNOFILE=4096
 
 NoNewPrivileges=yes

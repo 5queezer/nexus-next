@@ -24,6 +24,7 @@ hyper-util.workspace = true
 nexus-auth.workspace = true
 nexus-core.workspace = true
 nexus-mcp.workspace = true
+nexus-tailor.workspace = true
 nexus-web.workspace = true
 rpassword.workspace = true
 serde_json.workspace = true
