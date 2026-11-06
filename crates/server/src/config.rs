@@ -5,9 +5,8 @@ use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use axum::http::Uri;
-use axum::http::uri::Scheme;
 use clap::Args;
+use nexus_auth::{AuthConfig, ConfigError, normalize_base_url};
 use nexus_web::Tz;
 use tracing::Level;
 
@@ -21,8 +20,9 @@ pub struct ServeArgs {
     /// Where nexus.db and blobs/ live.
     #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
     pub data_dir: PathBuf,
-    /// Public origin clients reach this server at, for example https://nexus.example.net.
-    #[arg(long, env = "NEXUS_BASE_URL")]
+    /// Public origin clients reach this server at, for example https://nexus.example.net. It is the
+    /// OAuth issuer, so it is required unless --insecure-local-only is set.
+    #[arg(long, env = "NEXUS_PUBLIC_BASE_URL")]
     pub base_url: Option<String>,
     /// IANA time zone for dates shown on the dashboard and in the calendar feed.
     #[arg(long, env = "NEXUS_TIMEZONE", default_value = "Europe/Madrid")]
@@ -30,7 +30,8 @@ pub struct ServeArgs {
     /// File holding the secret token of /calendar.ics. Without it the feed is not served.
     #[arg(long, env = "NEXUS_CALENDAR_TOKEN_FILE")]
     pub calendar_token_file: Option<PathBuf>,
-    /// Serve the dashboard and JSON API without authentication. Binds to loopback only.
+    /// For local runs only: serve the dashboard and JSON API without any login, and no OAuth routes.
+    /// Needs a loopback --bind.
     #[arg(long)]
     pub insecure_local_only: bool,
     /// Most verbose level logged: error, warn, info, debug or trace.
@@ -38,14 +39,22 @@ pub struct ServeArgs {
     pub log_level: Level,
 }
 
+/// Who may reach the dashboard and JSON API.
+#[derive(Debug)]
+pub enum Access {
+    /// The owner, through the login page. OAuth routes are served.
+    Owner(AuthConfig),
+    /// Anyone who can reach loopback. No login, no OAuth routes.
+    InsecureLocalOnly,
+}
+
 #[derive(Debug)]
 pub struct ServeConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
-    pub base_url: Option<String>,
+    pub access: Access,
     pub timezone: Tz,
     pub calendar_token: Option<String>,
-    pub insecure_local_only: bool,
     pub log_level: Level,
 }
 
@@ -70,12 +79,23 @@ impl ServeArgs {
             ));
             Tz::UTC
         });
-        let base_url = self.base_url.as_deref().map(|url| {
-            normalize_base_url(url).unwrap_or_else(|e| {
-                problems.push(format!("--base-url: {e}"));
-                String::new()
-            })
-        });
+        let access = if self.insecure_local_only {
+            if let Some(Err(e)) = self.base_url.as_deref().map(normalize_base_url) {
+                problems.push(e.to_string());
+            }
+            Some(Access::InsecureLocalOnly)
+        } else if let Some(url) = &self.base_url {
+            AuthConfig::from_env(url, &self.data_dir)
+                .map(Access::Owner)
+                .map_err(|e| problems.push(auth_problem(&e)))
+                .ok()
+        } else {
+            problems.push(
+                "--base-url or NEXUS_PUBLIC_BASE_URL is required: it is the OAuth issuer"
+                    .to_owned(),
+            );
+            None
+        };
         let calendar_token = self.calendar_token_file.as_ref().map(|path| {
             read_token(path).unwrap_or_else(|e| {
                 problems.push(format!("--calendar-token-file {}: {e}", path.display()));
@@ -83,38 +103,27 @@ impl ServeArgs {
             })
         });
 
-        if !problems.is_empty() {
+        let (true, Some(access)) = (problems.is_empty(), access) else {
             return Err(problems.join("\n"));
-        }
+        };
         Ok(ServeConfig {
             bind: self.bind,
             data_dir: self.data_dir,
-            base_url,
+            access,
             timezone,
             calendar_token,
-            insecure_local_only: self.insecure_local_only,
             log_level: self.log_level,
         })
     }
 }
 
-/// An origin without path, query, fragment or credentials. Plain http is only for loopback.
-fn normalize_base_url(raw: &str) -> Result<String, String> {
-    let uri: Uri = raw.parse().map_err(|_| "not a valid URL".to_owned())?;
-    let (Some(scheme), Some(authority)) = (uri.scheme(), uri.authority()) else {
-        return Err("must look like https://host".to_owned());
-    };
-    if authority.as_str().contains('@') {
-        return Err("must not contain credentials".to_owned());
+fn auth_problem(error: &ConfigError) -> String {
+    match error {
+        ConfigError::MissingPassphraseHash(_) => {
+            format!("{error}. For a local run without login, pass --insecure-local-only")
+        }
+        _ => error.to_string(),
     }
-    if !matches!(uri.path(), "" | "/") || uri.query().is_some() || raw.contains('#') {
-        return Err("must be an origin only, without path, query or fragment".to_owned());
-    }
-    let loopback = matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]");
-    if *scheme != Scheme::HTTPS && !(*scheme == Scheme::HTTP && loopback) {
-        return Err("must use https (http is only accepted for localhost)".to_owned());
-    }
-    Ok(format!("{scheme}://{authority}"))
 }
 
 fn read_token(path: &std::path::Path) -> Result<String, String> {
@@ -144,6 +153,7 @@ mod tests {
 
     use super::*;
 
+    /// A local run, which needs no passphrase, for the tests about other settings.
     fn args() -> ServeArgs {
         ServeArgs {
             bind: "127.0.0.1:8080".parse().unwrap(),
@@ -151,8 +161,17 @@ mod tests {
             base_url: None,
             timezone: "Europe/Madrid".into(),
             calendar_token_file: None,
-            insecure_local_only: false,
+            insecure_local_only: true,
             log_level: Level::INFO,
+        }
+    }
+
+    fn owner_args(data_dir: &std::path::Path) -> ServeArgs {
+        ServeArgs {
+            data_dir: data_dir.to_path_buf(),
+            base_url: Some("https://nexus.example.net/".into()),
+            insecure_local_only: false,
+            ..args()
         }
     }
 
@@ -165,36 +184,53 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_valid() {
+    fn local_runs_need_no_passphrase_or_base_url() {
         let config = args().validate().unwrap();
-        assert!(config.calendar_token.is_none() && config.base_url.is_none());
+        assert!(config.calendar_token.is_none());
+        assert!(matches!(config.access, Access::InsecureLocalOnly));
     }
 
     #[test]
-    fn base_url_is_normalised_or_rejected() {
-        for (raw, expected) in [
-            ("https://nexus.example.net", "https://nexus.example.net"),
-            ("https://nexus.example.net/", "https://nexus.example.net"),
-            (
-                "https://nexus.example.net:8443",
-                "https://nexus.example.net:8443",
-            ),
-            ("http://localhost:8080", "http://localhost:8080"),
-        ] {
-            assert_eq!(normalize_base_url(raw).unwrap(), expected, "{raw}");
-        }
-        for bad in [
-            "nexus.example.net",
-            "http://nexus.example.net",
-            "https://nexus.example.net/app",
-            "https://nexus.example.net/?x=1",
-            "https://nexus.example.net/#frag",
-            "https://user:pw@nexus.example.net",
-            "ftp://nexus.example.net",
-            "",
-        ] {
-            assert!(normalize_base_url(bad).is_err(), "{bad}");
-        }
+    fn serving_for_real_needs_a_passphrase_and_says_how_to_set_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = owner_args(dir.path()).validate().unwrap_err();
+        assert!(error.contains("nexus set-passphrase"), "{error}");
+        assert!(error.contains("--insecure-local-only"), "{error}");
+
+        fs::write(
+            dir.path().join("owner-passphrase.argon2"),
+            "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .unwrap();
+        fs::set_permissions(
+            dir.path().join("owner-passphrase.argon2"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let config = owner_args(dir.path()).validate().unwrap();
+        let Access::Owner(auth) = config.access else {
+            panic!("expected owner access");
+        };
+        assert_eq!(auth.public_base_url, "https://nexus.example.net");
+    }
+
+    #[test]
+    fn serving_for_real_needs_a_base_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = owner_args(dir.path());
+        a.base_url = None;
+        assert!(a.validate().unwrap_err().contains("NEXUS_PUBLIC_BASE_URL"));
+    }
+
+    #[test]
+    fn a_bad_base_url_is_refused_in_either_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut owner = owner_args(dir.path());
+        owner.base_url = Some("http://nexus.example.net".into());
+        assert!(owner.validate().unwrap_err().contains("base URL"));
+        let mut local = args();
+        local.base_url = Some("http://nexus.example.net".into());
+        assert!(local.validate().unwrap_err().contains("base URL"));
     }
 
     #[test]

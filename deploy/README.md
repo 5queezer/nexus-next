@@ -12,7 +12,14 @@ Files here:
 
 ## What this build serves
 
-Until the auth layer is mounted, `nexus serve` mounts only `GET /healthz` and, if a calendar token is configured, `/calendar.ics`. The dashboard and JSON API are refused unless `--insecure-local-only` is passed, which also forces a loopback bind. Do not add that flag to the unit on the board. The unit therefore serves nothing useful to humans yet; that is intended.
+| Path | Who |
+|---|---|
+| `/healthz` | Open |
+| `/calendar.ics` | The secret token in its URL. Not served without a token file |
+| `/`, `/queue`, `/applications/*`, `/api/*` | The owner, logged in at `/login` |
+| `/.well-known/oauth-*`, `/api/mcp/{register,authorize,token}` | OAuth 2.1 for MCP clients |
+
+`nexus serve` refuses to start without `NEXUS_PUBLIC_BASE_URL` and an owner passphrase (section 3). `--insecure-local-only` drops the login and the OAuth routes and forces a loopback bind. It exists for local parity runs and restore drills. Never add it to the unit on the board.
 
 ## 1. Build (on the workstation)
 
@@ -47,13 +54,56 @@ sudo install -d -m 0750 /etc/nexus
 openssl rand -hex 32 | sudo install -m 0600 /dev/stdin /etc/nexus/calendar-token
 ```
 
-The owner passphrase for the OAuth login page arrives with the auth layer. It will be one more credential file in the same directory.
+Settings go in `/etc/nexus/nexus.env`:
 
-Optional settings (public origin, bind address) go in `/etc/nexus/nexus.env`, for example:
+```sh
+sudo install -m 0640 /dev/stdin /etc/nexus/nexus.env <<'ENV'
+# Required. The OAuth issuer, the same setting as --base-url. Must be the origin clients really use.
+NEXUS_PUBLIC_BASE_URL=https://nexus.example.net
+# Required behind a tunnel: see below.
+NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP
+ENV
+```
 
+| Variable | Meaning |
+|---|---|
+| `NEXUS_PUBLIC_BASE_URL` | Required. An origin only: https, no path or query |
+| `NEXUS_TRUSTED_IP_HEADER` | The header your ingress sets to the client's address. Required behind a tunnel |
+| `NEXUS_TRUSTED_PROXY_PEERS` | Comma-separated peers allowed to set that header. Default: loopback |
+| `NEXUS_OWNER_PASSPHRASE_HASH_FILE` | Where the hash lives. Default: `<data dir>/owner-passphrase.argon2` |
+| `NEXUS_OWNER_PASSPHRASE_HASH` | The hash itself, instead of a file. Overrides the file, and `set-passphrase` refuses to run while it is set |
+
+### Trusted IP header: a required step behind a tunnel
+
+Rate limits and login backoff key on the client's address. Behind `cloudflared` or Funnel every connection comes from loopback, so without this setting all of the internet is one client. One attacker request an hour then holds the login at its one-hour backoff, and a loop on the token endpoint gets real clients refused. Startup logs a warning if an https base URL has no trusted header.
+
+- **Cloudflare tunnel:** `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`.
+- **Tailscale Funnel:** not confirmed yet. Check what Funnel really sends before relying on it; `X-Forwarded-For` works if Funnel appends the client address, because the last entry is the one used.
+
+The header is only believed on connections from `NEXUS_TRUSTED_PROXY_PEERS`, so keep the bind on loopback and let nothing else on the board reach port 8080 with forged headers. Verify it after the first public request: failed-login log lines must show `source=<your real address>`, not `source=127.0.0.1`.
+
+### Owner passphrase
+
+Set it as the service user, after installing the binary, so the data directory and hash file belong to `nexus`. Never as root: the service could not read the result. It is read from a no-echo prompt, or one line of stdin, never from the command line.
+
+```sh
+sudo install -d -m 0700 -o nexus -g nexus /var/lib/nexus
+sudo -u nexus /usr/local/bin/nexus set-passphrase --data-dir /var/lib/nexus
 ```
-NEXUS_BASE_URL=https://nexus.example.net
+
+It needs at least 12 characters, and this login is on the public internet, so use a long one from the password manager. Only an argon2id hash is stored, at `/var/lib/nexus/owner-passphrase.argon2`, mode 600.
+
+**Changing it** runs the same command, then `sudo systemctl restart nexus`. It revokes every OAuth grant and the API token at once and logs that, so Claude.ai and Hermes must each authorize again and any API token must be reissued. A running server keeps accepting the old passphrase until the restart, so do not skip it. The restart also ends all login sessions; login sessions live in memory, so any restart means logging in again.
+
+Backups do not contain the hash. After restoring onto a new board, run `set-passphrase` again.
+
+### API token
+
+```sh
+sudo -u nexus /usr/local/bin/nexus issue-token --data-dir /var/lib/nexus --name hermes
 ```
+
+It prints the token once, on stdout. There is one token at a time, so this revokes any earlier one. Only its hash is stored.
 
 ### Backup key
 
@@ -86,6 +136,8 @@ The import prints counts and fails on any count, hash or foreign-key mismatch. R
 
 ## 5. Start
 
+The passphrase and `nexus.env` from section 3 must be in place, or the service exits with an error saying which is missing.
+
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now nexus.service nexus-backup.timer
@@ -94,7 +146,17 @@ sudo journalctl -u nexus -n 20 --no-pager
 systemctl list-timers nexus-backup.timer
 ```
 
-Logs carry method, route template and status only. Query strings, headers and bodies are never logged. `NEXUS_LOG_LEVEL` (default `info`) only changes verbosity; SQL text stays out at every level.
+Request logs carry method, route template and status only. Query strings, headers and bodies are never logged. `NEXUS_LOG_LEVEL` (default `info`) only changes verbosity; SQL text stays out at every level.
+
+Security events are separate lines with an `event=` field, and carry no secrets, tokens or client-supplied text. Follow them with `sudo journalctl -u nexus --grep 'event='`:
+
+| Event | Level | Means |
+|---|---|---|
+| `login_failure`, `login_lockout` | warn | A wrong passphrase; an attempt refused by backoff. `source` is the client address |
+| `login_success` | info | The owner logged in. Unexpected ones mean the passphrase leaked |
+| `client_registered`, `consent_granted` | info | A new OAuth client; the owner approved one |
+| `token_replay_detected`, `grants_revoked` | warn | A used code or refresh token came back, so its grant was revoked. A client's next call fails until it authorizes again. Investigate, because it can mean a leaked token |
+| `pkce_failure`, `rate_limited` | warn | A wrong PKCE verifier burned a code; a limit refused a request |
 
 Reboot test, with `/home` left locked: `sudo reboot`, wait, then `systemctl is-active nexus` and the healthz call above must succeed without anyone unlocking anything.
 
@@ -137,10 +199,12 @@ Restoring over the live data: `sudo systemctl stop nexus`, run `nexus restore ..
 
 `nexus serve` binds `127.0.0.1:8080` and should stay on loopback; something on the board forwards to it. Claude.ai needs a public HTTPS URL. Test both options; the M1 gate is a full Claude.ai OAuth and tool call through whichever one is chosen (SPEC section 8).
 
+Whichever is used, set `NEXUS_TRUSTED_IP_HEADER` for it (section 3) and restart before going public.
+
 - **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8080`): keeps a stable custom domain. Local notes say Cloudflare's proxy breaks MCP Streamable HTTP by buffering streaming responses unless buffering is disabled. The MCP routes must therefore send `X-Accel-Buffering: no` and `Cache-Control: no-store`. This server does not set those yet because the MCP router is not mounted; check when it lands.
 - **Tailscale Funnel** (`tailscale funnel 8080`): no Cloudflare in the path, but the hostname becomes `*.ts.net`, so every OAuth client re-registers once.
 
-Set `NEXUS_BASE_URL` to the public origin. Calendar apps that cannot send bearer tokens use the secret URL; Google Calendar cannot reach a tailnet-only URL, so use an on-device subscriber (ICSx5) or the public ingress.
+`NEXUS_PUBLIC_BASE_URL` must be the public origin. It is the OAuth issuer, so changing it later means every client registers again. Calendar apps that cannot send bearer tokens use the secret URL; Google Calendar cannot reach a tailnet-only URL, so use an on-device subscriber (ICSx5) or the public ingress.
 
 ## 8. Upgrade and rollback
 
@@ -150,6 +214,7 @@ Rollback: `sudo systemctl stop nexus`, `sudo install -m 0755 /usr/local/bin/nexu
 
 ## 9. Cutover checklist (SPEC section 7)
 
+0. Owner passphrase set, `NEXUS_PUBLIC_BASE_URL` and `NEXUS_TRUSTED_IP_HEADER` set, and a failed login from outside logs your real address.
 1. Board health: `journalctl -b | grep end0` shows no Ethernet drops (SPEC section 10), `free -h` has headroom, and a reboot with `/home` locked brings Nexus up.
 2. Restore drill passed with the real backup key; off-site hook in place or the gap accepted in writing.
 3. Ingress chosen and tested end to end with Claude.ai (OAuth and a tool call), plus Hermes.
