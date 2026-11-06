@@ -202,7 +202,7 @@ sudo rm -rf /var/tmp/nexus-export /var/tmp/nexus-approved-ids.txt
 
 The printed counts must equal `$EXPORT.summary`. `--force` is needed because step 4 wrote OAuth grants, and it empties them.
 
-If the import says the database **is in use**, a process still has it open: find it (`sudo fuser -v /var/lib/nexus/nexus.db`) and stop it. A WAL left by a crash doesn't cause this, because the importer replays it, and it doesn't matter here since the data is being replaced. The in-use check can't see a running server that has been idle for over 10 minutes, because its pool has closed every connection, which is why the `is-active` line above matters.
+If the import says the database **is in use**, a process still has it open: find it (`sudo fuser -v /var/lib/nexus/nexus.db`) and stop it. A WAL left by a crash doesn't cause this, because the importer replays it, and it doesn't matter here since the data is being replaced. The in-use check looks for that WAL, and a running server loses it once its pool closes its idle connections, after 10 to 20 idle minutes. So it can't see a server that has been idle that long, which is why the `is-active` line above matters.
 
 Leave the service stopped until step 10 passes. Starting it during the import would also remove the import's temp files, because `serve` sweeps `blobs/.tmp-*` at startup. One `removed unfinished uploads` warning at a later start only means a write was killed.
 
