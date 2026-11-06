@@ -1,6 +1,11 @@
 pub const SCOPE_TOOLS: &str = "mcp:tools";
 pub const SCOPE_SUBMISSIONS: &str = "mcp:submissions";
 
+/// The CSRF token every dashboard form of the current session must carry. The owner-session layer
+/// inserts it as a request extension, derived from the session, and the form handlers compare.
+#[derive(Clone, Debug)]
+pub struct FormToken(pub String);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthType {
     OAuth,

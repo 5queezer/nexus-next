@@ -1,43 +1,77 @@
-//! The read-only HTML dashboard.
+//! The HTML dashboard: pages that only read, and the forms that change an application through the
+//! tools.
 
 use std::cmp::Reverse;
 
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use std::sync::Arc;
+
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
-use axum::{Router, middleware};
+use axum::routing::{get, post};
+use axum::{Extension, Router};
 use chrono_tz::Tz;
 use nexus_core::Db;
+use nexus_core::auth::FormToken;
 use nexus_core::repo::applications::{self, Application};
 use nexus_core::repo::{contacts, documents, events, submissions};
+use nexus_mcp::McpState;
+use rand::Rng;
 use serde::Deserialize;
 
+use crate::forms::{self, Actions};
 use crate::queue::{self, Clock, Group};
 use crate::views::{self, Detail, Nav, PipelineView};
 
 const STATUSES: [&str; 5] = ["interview", "offer", "applied", "inbound", "rejected"];
-const CSS: &str = include_str!("style.css");
+/// A form is a few KB; a note of 5000 characters percent-encoded stays well inside this.
+const FORM_BODY_LIMIT: usize = 128 * 1024;
 
 #[derive(Clone)]
-struct Dashboard {
-    db: Db,
-    tz: Tz,
+pub(crate) struct Dashboard {
+    pub db: Db,
+    pub mcp: Arc<McpState>,
+    pub tz: Tz,
 }
 
-/// Mounts `/`, `/queue`, `/applications/{id}` and `/assets/app.css`, showing times in `tz`. Auth
-/// is the caller's.
-pub fn dashboard_router(db: Db, tz: Tz) -> Router {
+/// Mounts `/`, `/queue`, `/applications/{id}` and the form posts under it, showing times in `tz`.
+/// Auth is the caller's: its layer puts the session's `FormToken` into the request. Without one
+/// (no login in local mode) every form carries this router's own random token instead, so the same
+/// check runs. Pages and the form routes are all that is mounted: the static files are
+/// `static_router`.
+pub fn dashboard_router(state: McpState, tz: Tz) -> Router {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    let local = FormToken(hex::encode(bytes));
     Router::new()
         .route("/", get(pipeline))
         .route("/queue", get(follow_ups))
         .route("/applications/{id}", get(application))
-        .route("/assets/app.css", get(stylesheet))
+        .route(
+            "/applications/{id}/{form}",
+            post(forms::submit).layer(DefaultBodyLimit::max(FORM_BODY_LIMIT)),
+        )
+        .layer(middleware::from_fn(
+            move |mut request: Request, next: Next| {
+                let local = local.clone();
+                async move {
+                    if request.extensions().get::<FormToken>().is_none() {
+                        request.extensions_mut().insert(local);
+                    }
+                    next.run(request).await
+                }
+            },
+        ))
         .layer(middleware::map_response(crate::secure))
-        .with_state(Dashboard { db, tz })
+        .with_state(Dashboard {
+            db: state.db.clone(),
+            mcp: Arc::new(state),
+            tz,
+        })
 }
 
-struct PageError(StatusCode);
+pub(crate) struct PageError(pub StatusCode);
 
 impl From<nexus_core::Error> for PageError {
     fn from(e: nexus_core::Error) -> Self {
@@ -68,19 +102,6 @@ impl IntoResponse for PageError {
 
 type Page = Result<Html<String>, PageError>;
 
-async fn stylesheet() -> impl IntoResponse {
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("text/css; charset=utf-8"),
-            ),
-            (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
-        ],
-        CSS,
-    )
-}
-
 #[derive(Deserialize, Default)]
 struct PipelineQuery {
     status: Option<String>,
@@ -108,7 +129,7 @@ fn overdue_count(all: &[Application], clock: Clock) -> usize {
 }
 
 async fn pipeline(
-    State(Dashboard { db, tz }): State<Dashboard>,
+    State(Dashboard { db, tz, .. }): State<Dashboard>,
     Query(query): Query<PipelineQuery>,
 ) -> Page {
     let all = applications::list(&mut *db.conn().await?).await?;
@@ -168,7 +189,7 @@ async fn pipeline(
     Ok(Html(views::page("Pipeline", Nav::Pipeline, overdue, view)))
 }
 
-async fn follow_ups(State(Dashboard { db, tz }): State<Dashboard>) -> Page {
+async fn follow_ups(State(Dashboard { db, tz, .. }): State<Dashboard>) -> Page {
     let all = applications::list(&mut *db.conn().await?).await?;
     let clock = Clock::now(tz);
     let open = all.iter().filter(|a| a.archived_at.is_none());
@@ -186,11 +207,28 @@ async fn follow_ups(State(Dashboard { db, tz }): State<Dashboard>) -> Page {
     )))
 }
 
+#[derive(Deserialize, Default)]
+struct DetailQuery {
+    done: Option<String>,
+}
+
 async fn application(
-    State(Dashboard { db, tz }): State<Dashboard>,
+    State(dash): State<Dashboard>,
+    Extension(FormToken(token)): Extension<FormToken>,
     Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
 ) -> Page {
     let id: i64 = id.parse().map_err(|_| PageError(StatusCode::NOT_FOUND))?;
+    let mut actions = Actions::new(token);
+    actions.flash = query.done.as_deref().and_then(forms::done_notice);
+    Ok(Html(detail_page(&dash, id, actions).await?))
+}
+
+pub(crate) async fn detail_page(
+    Dashboard { db, tz, .. }: &Dashboard,
+    id: i64,
+    actions: Actions,
+) -> Result<String, PageError> {
     let mut conn = db.conn().await?;
     let application = applications::get(&mut conn, id)
         .await?
@@ -199,7 +237,7 @@ async fn application(
     let contacts = contacts::list_for_application(&mut conn, id).await?;
     let documents = documents::list_for_application(&mut conn, id).await?;
     let submissions = submissions::list_for_application(&mut conn, id, true).await?;
-    let clock = Clock::now(tz);
+    let clock = Clock::now(*tz);
     let overdue = overdue_count(&applications::list(&mut conn).await?, clock);
     let view = views::detail(Detail {
         application: &application,
@@ -208,7 +246,8 @@ async fn application(
         documents: &documents,
         submissions: &submissions,
         clock,
+        actions: &actions,
     });
     let title = format!("{} #{}", application.company, application.id);
-    Ok(Html(views::page(&title, Nav::None, overdue, view)))
+    Ok(views::page(&title, Nav::None, overdue, view))
 }

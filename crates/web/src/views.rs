@@ -11,7 +11,9 @@ use nexus_core::repo::events::ApplicationEvent;
 use nexus_core::repo::submissions::Submission;
 use serde_json::Value;
 
+use crate::assets::VERSION;
 use crate::format::{self, VISIBLE_METADATA};
+use crate::forms::{self, Actions};
 use crate::queue::{self, Clock, Group};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,7 +33,12 @@ pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> Strin
                 <meta name="color-scheme" content="light dark" />
                 <meta name="robots" content="noindex" />
                 <title>{format!("{title} - Nexus")}</title>
-                <link rel="stylesheet" href="/assets/app.css" />
+                <meta name="theme-color" content="#1f5f4a" />
+                <link rel="manifest" href="/manifest.webmanifest" />
+                <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+                <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+                <link rel="stylesheet" href=format!("/assets/app.css?v={}", *VERSION) />
+                <script src=format!("/assets/app.js?v={}", *VERSION) defer></script>
             </head>
             <body>
                 <header class="top">
@@ -350,6 +357,7 @@ pub struct Detail<'a> {
     pub documents: &'a [Document],
     pub submissions: &'a [Submission],
     pub clock: Clock,
+    pub actions: &'a Actions,
 }
 
 pub fn detail(d: Detail<'_>) -> impl IntoView {
@@ -491,6 +499,7 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
         <div class="card">{overview}</div>
         {prose("Notes", a.notes.as_deref())}
         {prose("Job summary", a.job_summary.as_deref())}
+        {forms::actions_view(a, d.actions)}
         <h2>"Role and posting"</h2>
         <div class="card">{role}</div>
         {description}

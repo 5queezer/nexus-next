@@ -8,7 +8,7 @@ mod zod;
 use std::sync::{Arc, LazyLock};
 
 use nexus_core::Db;
-use nexus_core::auth::AuthContext;
+use nexus_core::auth::{AuthContext, AuthType, SCOPE_TOOLS};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, Implementation, ProtocolVersion, ServerCapabilities,
     ServerConfig,
@@ -18,6 +18,26 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
 
 pub use http::router;
+pub use rmcp::model::CallToolResult;
+
+/// Runs one tool for a caller inside this process: the same validation, handlers and error codes
+/// as the HTTP route. `scopes` are the grants the caller holds, so a caller without `mcp:tools`
+/// is refused and one without `mcp:submissions` can't reach submission data.
+pub async fn call_tool(
+    state: Arc<McpState>,
+    scopes: &[&str],
+    name: &str,
+    args: Value,
+) -> CallToolResult {
+    let auth = AuthContext {
+        auth_type: AuthType::OAuth,
+        scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+    };
+    if !auth.has_scope(SCOPE_TOOLS) {
+        return tools::code_error("insufficient_scope");
+    }
+    tools::call(state, &auth, name, Some(args)).await
+}
 
 const SNAPSHOT: &str = include_str!("../../../contract/mcp-tools.snapshot.json");
 

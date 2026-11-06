@@ -97,12 +97,24 @@ async fn the_dashboard_and_api_need_a_session_unless_the_run_is_local() {
     let db = Db::open(dir.path()).await.unwrap();
 
     let owner = serve::build_app(&db, &config(dir.path(), true, false)).unwrap();
-    for path in ["/", "/queue", "/applications/1", "/assets/app.css"] {
+    for path in ["/", "/queue", "/applications/1"] {
         let request = Request::get(path).body(Body::empty()).unwrap();
         let response = owner.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER, "{path}");
         let location = response.headers()["location"].to_str().unwrap();
         assert!(location.starts_with("/login?next="), "{path}: {location}");
+    }
+    // The static files hold nothing personal and a browser fetches the manifest and the worker
+    // without cookies, so a logged-out request gets them rather than a redirect.
+    for path in [
+        "/assets/app.css",
+        "/assets/app.js",
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/icons/icon-192.png",
+        "/offline",
+    ] {
+        assert_eq!(status(&owner, path).await, StatusCode::OK, "{path}");
     }
     for path in [
         "/api/applications",

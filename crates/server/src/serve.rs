@@ -313,7 +313,7 @@ async fn local_only(State(bind): State<IpAddr>, request: Request, next: Next) ->
 /// `/healthz` sits outside the limits so it still answers when the server is saturated. Auth runs
 /// before a slot is taken, so a caller without credentials can only ever occupy the public pool.
 pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
-    let mut public = Router::new();
+    let mut public = nexus_web::static_router();
     if let Some(token) = &config.calendar_token {
         public = public.merge(nexus_web::calendar_router(db.clone(), token.clone()));
     }
@@ -322,18 +322,19 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         .clone()
         .zip(config.owner_email.clone())
         .context("the owner is not resolved")?;
-    let mcp = nexus_mcp::router(McpState {
+    let state = McpState {
         db: db.clone(),
         owner_id,
         owner_email,
-    });
+    };
+    let mcp = nexus_mcp::router(state.clone());
     let mcp = harden_mcp(
         Router::new()
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp),
     );
     let humans = harden(
-        nexus_web::dashboard_router(db.clone(), config.timezone)
+        nexus_web::dashboard_router(state, config.timezone)
             .merge(nexus_web::api_router(db.clone())),
         OWNER,
     );
