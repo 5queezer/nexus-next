@@ -788,10 +788,32 @@ async fn guard_target(target: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// The highest ID a table has issued: its largest row ID or its Postgres sequence, whichever is
+/// higher, so the ID of a deleted row is never reused. Tables without an ID have none.
+fn issued_through(
+    spec: &Spec,
+    rows: &[Row],
+    sequences: &HashMap<String, i64>,
+) -> Result<Option<i64>> {
+    if !spec.columns.iter().any(|(name, _)| *name == "id") {
+        return Ok(None);
+    }
+    let sequence = sequences
+        .get(spec.file)
+        .ok_or_else(|| invalid!("sequences.json has no value for {}", spec.file))?;
+    let max_id = rows
+        .iter()
+        .filter_map(|row| row.int("id"))
+        .max()
+        .unwrap_or(0);
+    Ok(Some(max_id.max(*sequence)))
+}
+
 struct Plan<'a> {
     tables: [(&'a Spec, Vec<Row>); 8],
     blobs: &'a [BlobPlan],
     manifest_sha256: &'a str,
+    sequences: &'a HashMap<String, i64>,
 }
 
 /// Writes the temp database. Foreign keys stay off while loading so that a bad reference reaches
@@ -823,6 +845,20 @@ async fn build_database(path: &Path, plan: &Plan<'_>) -> Result<()> {
         .bind(blob.document_id)
         .execute(&mut *tx)
         .await?;
+    }
+    for (spec, rows) in &plan.tables {
+        let Some(issued) = issued_through(spec, rows, plan.sequences)? else {
+            continue;
+        };
+        sqlx::query("DELETE FROM sqlite_sequence WHERE name = ?")
+            .bind(spec.table)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)")
+            .bind(spec.table)
+            .bind(issued)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
 
@@ -859,7 +895,7 @@ async fn build_database(path: &Path, plan: &Plan<'_>) -> Result<()> {
         return Err(invalid!("integrity_check failed: {integrity}"));
     }
     for (spec, rows) in &plan.tables {
-        let Some(max_id) = rows.iter().filter_map(|row| row.int("id")).max() else {
+        let Some(issued) = issued_through(spec, rows, plan.sequences)? else {
             continue;
         };
         let sequence: Option<i64> =
@@ -867,11 +903,8 @@ async fn build_database(path: &Path, plan: &Plan<'_>) -> Result<()> {
                 .bind(spec.table)
                 .fetch_optional(&mut conn)
                 .await?;
-        if sequence != Some(max_id) {
-            return Err(invalid!(
-                "{}: ID sequence does not continue after the max",
-                spec.table
-            ));
+        if sequence != Some(issued) {
+            return Err(invalid!("{}: ID sequence is not {issued}", spec.table));
         }
     }
 
@@ -896,6 +929,8 @@ fn partition(rows: Vec<Row>, skip: impl Fn(&Row) -> bool) -> (Vec<Row>, HashSet<
 
 pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
     let export = Export::open(&options.export_dir)?;
+    let counts: HashMap<String, usize> = export.read_json("row-counts.json")?;
+    let sequences: HashMap<String, i64> = export.read_json("sequences.json")?;
     let approvals = match &options.approve_recovered {
         Some(path) => read_approvals(path)?,
         None => BTreeSet::new(),
@@ -921,6 +956,27 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
         }
     }
     let scanned_emails = export.rows("ScannedEmail")?;
+    let loaded = [
+        (APPLICATIONS.file, applications.len()),
+        (CONTACTS.file, contacts.len()),
+        (SUBMISSIONS.file, submissions.len()),
+        (DOCUMENTS.file, documents.len()),
+        (LINKS.file, links.len()),
+        (EVENTS.file, events.len()),
+        (CV_PROFILE.file, cv_profiles.len()),
+        (CV_PATCHES.file, cv_patches.len()),
+        ("ScannedEmail", scanned_emails.len()),
+    ];
+    for (file, rows) in loaded {
+        let expected = counts
+            .get(file)
+            .ok_or_else(|| invalid!("row-counts.json has no count for {file}"))?;
+        if *expected != rows {
+            return Err(invalid!(
+                "{file}: {rows} rows in its jsonl file, row-counts.json says {expected}"
+            ));
+        }
+    }
     if !scanned_emails.is_empty() {
         return Err(invalid!(
             "ScannedEmail has {} rows; the spec drops this table because it was empty",
@@ -1019,6 +1075,7 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
         tables,
         blobs: &blobs,
         manifest_sha256: &export.manifest_sha256,
+        sequences: &sequences,
     };
     if let Err(e) = build_database(&temp, &plan).await {
         remove_if_present(&temp)?;

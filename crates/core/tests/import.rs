@@ -107,7 +107,8 @@ impl Env {
         edit(&mut rows);
         let lines: Vec<String> = rows.iter().map(|row| format!("{row}\n")).collect();
         fs::write(path, lines.concat()).unwrap();
-        self.reseal();
+        let count = rows.len();
+        self.edit_json("row-counts.json", |counts| counts[file] = json!(count));
     }
 
     fn edit_json(&self, relative: &str, edit: impl FnOnce(&mut Value)) {
@@ -222,7 +223,7 @@ async fn ids_are_preserved_and_new_ids_continue_after_the_max() {
     let created = applications::create(&mut conn, "New Co", "Engineer", Default::default())
         .await
         .unwrap();
-    assert_eq!(created.id, 13);
+    assert_eq!(created.id, 15);
     let event: i64 = sqlx::query_scalar(
         "INSERT INTO application_events (application_id, type, occurred_at)
          VALUES (3, 'note', '2026-05-01T00:00:00.000Z') RETURNING id",
@@ -239,6 +240,109 @@ async fn ids_are_preserved_and_new_ids_continue_after_the_max() {
     assert_eq!(profile_id, 2);
     drop(conn);
     db.close().await;
+}
+
+#[tokio::test]
+async fn next_ids_follow_the_postgres_sequence_or_the_max_whichever_is_higher() {
+    let env = Env::new();
+    env.import().await.unwrap();
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+
+    // Contact's largest row is 5 but its sequence is 6, so ID 6 was issued and must not be reused.
+    let contact: i64 = sqlx::query_scalar(
+        "INSERT INTO contacts (name, application_id) VALUES ('Synthetic Contact', 3) RETURNING id",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(contact, 7);
+
+    // Document's sequence is 2, below its largest row of 24, so the max wins.
+    let document: i64 = sqlx::query_scalar(
+        "INSERT INTO documents (filename, original_name, size, mime_type)
+         VALUES ('synthetic.txt', 'synthetic.txt', 1, 'text/plain') RETURNING id",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(document, 25);
+
+    let issued: String = sqlx::query_scalar(
+        "SELECT group_concat(name || '=' || seq, ' ') FROM (SELECT name, seq FROM sqlite_sequence ORDER BY name)",
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        issued,
+        "application_events=12 application_submissions=9 applications=14 contacts=7 \
+         cv_patches=6 cv_profile=2 documents=25"
+    );
+    drop(conn);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_truncated_or_miscounted_jsonl_fails_the_row_count() {
+    let env = Env::new();
+    let path = env.export.join("jsonl/Application.jsonl");
+    let text = fs::read_to_string(&path).unwrap();
+    let kept: Vec<&str> = text.lines().take(3).collect();
+    fs::write(&path, kept.join("\n") + "\n").unwrap();
+    env.reseal();
+    assert_invalid(
+        env.import().await,
+        "Application: 3 rows in its jsonl file, row-counts.json says 4",
+    );
+    assert!(!db_path(&env.data).exists());
+
+    let env = Env::new();
+    env.edit_json("row-counts.json", |counts| counts["Contact"] = json!(4));
+    assert_invalid(
+        env.import().await,
+        "Contact: 3 rows in its jsonl file, row-counts.json says 4",
+    );
+    assert!(!db_path(&env.data).exists());
+
+    let env = Env::new();
+    env.edit_json("row-counts.json", |counts| {
+        counts.as_object_mut().unwrap().shift_remove("Document");
+    });
+    assert_invalid(
+        env.import().await,
+        "row-counts.json has no count for Document",
+    );
+}
+
+#[tokio::test]
+async fn sequences_and_row_counts_are_required() {
+    for relative in ["sequences.json", "row-counts.json"] {
+        let env = Env::new();
+        fs::remove_file(env.export.join(relative)).unwrap();
+        assert_invalid(env.import().await, &format!("cannot read {relative}"));
+        assert!(!db_path(&env.data).exists());
+
+        let env = Env::new();
+        let path = env.export.join("MANIFEST.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        manifest["files"]
+            .as_object_mut()
+            .unwrap()
+            .shift_remove(relative);
+        fs::write(&path, manifest.to_string()).unwrap();
+        assert_invalid(env.import().await, &format!("{relative} is not listed"));
+        assert!(!db_path(&env.data).exists());
+    }
+
+    let env = Env::new();
+    env.edit_json("sequences.json", |sequences| {
+        sequences.as_object_mut().unwrap().shift_remove("Contact");
+    });
+    assert_invalid(
+        env.import().await,
+        "sequences.json has no value for Contact",
+    );
 }
 
 #[tokio::test]
