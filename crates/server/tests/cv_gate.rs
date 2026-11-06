@@ -658,7 +658,23 @@ async fn no_listed_tool_can_approve_whatever_it_is_passed() {
     }
     // `origin` is text a caller sends. A caller's word for itself grants nothing.
     let mut wording = "Moved freight".to_owned();
-    for origin in ["dashboard", "cli", "lock", "owner", "voice"] {
+    for origin in ["dashboard", "cli", "lock", "revert"] {
+        let refused = agent
+            .call(
+                "patch_cv",
+                json!({
+                    "variant": "target",
+                    "expectedRevision": agent.ok("get_cv_source", json!({"variant": "target"})).await["revision"],
+                    "edits": [{"oldText": wording, "newText": "Moved more freight"}],
+                    "summary": "s",
+                    "origin": origin,
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.code(), "cv_origin_reserved", "{origin}");
+    }
+    for origin in ["owner", "voice", "by the dashboard"] {
         let start = agent
             .ok("get_cv_source", json!({"variant": "target"}))
             .await;

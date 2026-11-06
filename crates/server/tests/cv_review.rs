@@ -379,9 +379,16 @@ async fn nothing_an_agent_wrote_reaches_the_owners_terminal_raw() {
     let locked = cv_facts(&node.dir, &["lock", "--confirm", hash]);
     assert!(locked.status.success(), "{locked:?}");
 
+    // That profile's bidi override can't render, so the rest starts from a clean one.
+    assert!(cv_facts(&node.dir, &["unlock"]).status.success());
+    agent.ok("upsert_cv_profile", profile()).await;
+    raw(&cv_facts(&node.dir, &["lock"]));
+    lock_confirmed(&node.dir);
+
     let source = agent.ok("get_cv_source", json!({})).await;
     let source = source["source"].as_str().unwrap().to_owned();
-    let drafted = format!("{source}\n#\"One{ESC}Two\"\n");
+    // The bidi override is a hard refusal in a CV's text, so this carries only the terminal's controls.
+    let drafted = format!("{source}\n#\"One\u{1b}[2K\u{7}Two\"\n");
     let patched = agent
         .ok(
             "patch_cv",
@@ -390,6 +397,7 @@ async fn nothing_an_agent_wrote_reaches_the_owners_terminal_raw() {
         )
         .await;
     assert_eq!(patched["state"], "draft", "{patched}");
+    assert!(patched["reviewItems"].is_array());
     let read = cv_facts(
         &node.dir,
         &["approve", "--variant", "default", "--revision", "1"],

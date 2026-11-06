@@ -102,7 +102,7 @@
     },
     {
       "name": "render_cv_pdf",
-      "description": "Render a CV variant. A draft gives PNG previews stamped DRAFT, NOT APPROVED, no PDF, its reviewItems and approvalPath, and saving it returns cv_approval_required. A revision the owner approved gives the real PDF and clean previews, and can be saved as a document linked to an application. Never call a CV final unless state is approved.",
+      "description": "Render a CV variant. A draft gives PNG previews stamped DRAFT, NOT APPROVED, no PDF, its reviewItems and approvalPath, and saving it returns cv_approval_required. A revision the owner approved, and hasn't since replaced with a newer approval in this variant, gives the real PDF and clean previews, and can be saved as a document linked to an application. Never call a CV final unless state is approved.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -176,7 +176,7 @@
     },
     {
       "name": "revert_cv",
-      "description": "Add a new revision holding an older revision's source. History never shrinks. Needs locked facts, and the old source must compile and pass the hard rules. It is approved at once only if the owner approved that same text under today's facts, and otherwise a draft.",
+      "description": "Add a new revision holding an older revision's source. History never shrinks. Needs locked facts, and the old source must compile and pass the hard rules. It is approved at once only if that text is this variant's newest approved text under today's facts, so undoing drafts needs no approval, and otherwise a draft: text the owner has since replaced stays replaced until they approve it again.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -42,7 +42,7 @@ A changed fact makes everything built on it a draft again. An unlock and relock 
 
 A good reply: "Saved as a draft. Please check these before approving: `8 years` is a new number here, and `Stanford` is a new word. Approve it at https://your-dashboard/cv/variants/default#cv-approval, and only then is there a PDF."
 
-`revert_cv` covers "go back to how it was": it adds a new revision holding the old source, so history never shrinks. If that text was approved, the new revision is approved too.
+`revert_cv` covers "go back to how it was": it adds a new revision holding the old source, so history never shrinks. Undoing drafts back to the newest text the owner approved is approved at once, so an undo needs no tap. Text the owner has since replaced stays replaced: a revert to it is a draft, and the review shows what it undoes. So does naming its old revision to `render_cv_pdf`: no PDF, and no document. Only the owner approving it again brings it back.
 
 ## When `patch_cv` says no
 
@@ -61,9 +61,9 @@ Nothing is stored in any of these cases, and the revision stays as it was.
 
 ## When a document is asked for
 
-`generate_tailored_cv` and `render_cv_pdf` with `saveToApplicationId` store a document only for text the owner approved. Otherwise they answer `{"error":{"code":"cv_approval_required","variant":...,"revision":...,"approvalPath":...}}`, having stored the revision and no document. Hermes tells the owner the path and stops. Once the owner has approved it, the same call goes through, and there is no second approval: identical text is already approved.
+`generate_tailored_cv` and `render_cv_pdf` with `saveToApplicationId` store a document only for text the owner approved. Otherwise they answer `{"error":{"code":"cv_approval_required","variant":...,"revision":...,"approvalPath":...}}`, having stored the revision and no document. Hermes tells the owner the path and stops. Once the owner has approved it, the same call goes through, and there is no second approval: text identical to the newest approved text of that variant is already approved.
 
-A generate from the owner's own wording, unchanged since the last lock and with no `profileOverride`, needs no tap: the lock approved it. A `profileOverride`, or wording changed since the lock, is a draft like any other.
+A generate from the owner's own wording, unchanged since the last lock and with no `profileOverride`, needs no tap if it is a plain selection of the locked jobs, in any order: the lock approved it. A `profileOverride`, wording changed since the lock in any way, a regroup or a changed tier included, a job or category named twice, no job at all, or a variant where the owner has since approved something else, is a draft like any other. So is wording the owner has replaced, even if an agent writes it back.
 
 **A submission must only use a document made from an approved revision.**
 
