@@ -1,7 +1,8 @@
-//! Voice sessions: `POST /api/voice/session` mints a short-lived OpenAI secret, and
+//! Voice sessions: `POST /api/voice/session` mints a short-lived OpenAI secret,
 //! `POST /api/voice/tool` runs the function calls the model makes, through an allowlist this server
-//! enforces. The browser only relays them, and whatever a job description talks the model into
-//! arrives here as just another call. See SPEC section 9b.
+//! enforces, and `GET /api/voice/status` tells the page whether its session is still live. The
+//! browser only relays the calls, and whatever a job description talks the model into arrives here as
+//! just another call. See SPEC section 9b.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};

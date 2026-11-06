@@ -18,6 +18,11 @@
   const NETWORK_GRACE_MS = 8000;
   const CHANNEL_OPEN_MS = 15000;
   const MAX_TRANSCRIPT_ITEMS = 200;
+  const CHECK_MS = 20000;
+  const CHECK_TIMEOUT_MS = 10000;
+  const FAILED_CHECKS_TO_END = 2;
+  // Shorter than this holds too little sound for OpenAI to accept, and asks for nothing.
+  const MIN_HOLD_MS = 300;
 
   // One object per connection. Anything arriving for an older one is ignored.
   let session = null;
@@ -39,6 +44,7 @@
     holdButton.disabled = false;
     holdButton.classList.remove("holding");
     holdButton.setAttribute("aria-pressed", "false");
+    holdButton.textContent = "Hold to talk";
     handsFreeBox.checked = false;
   }
 
@@ -48,6 +54,7 @@
     if (!ending) return;
     session = null;
     clearInterval(ending.ticker);
+    clearInterval(ending.checker);
     clearTimeout(ending.channelTimer);
     clearTimeout(ending.graceTimer);
     if (ending.channel) ending.channel.close();
@@ -78,6 +85,7 @@
     const live = session;
     if (!live || !live.ready || live.handsFree || live.holding) return;
     live.holding = true;
+    live.pressedAt = performance.now();
     touch(live);
     holdButton.classList.add("holding");
     holdButton.setAttribute("aria-pressed", "true");
@@ -97,8 +105,14 @@
     holdButton.classList.remove("holding");
     holdButton.setAttribute("aria-pressed", "false");
     holdButton.textContent = "Hold to talk";
-    send(live, { type: "input_audio_buffer.commit" });
-    send(live, { type: "response.create" });
+    if (performance.now() - live.pressedAt < MIN_HOLD_MS) {
+      send(live, { type: "input_audio_buffer.clear" });
+      if (live.responseOwed) send(live, { type: "response.create" });
+    } else {
+      send(live, { type: "input_audio_buffer.commit" });
+      send(live, { type: "response.create" });
+    }
+    live.responseOwed = false;
   }
 
   function setHandsFree(on) {
@@ -144,6 +158,17 @@
     return state;
   }
 
+  // What to tell the person if this answer from the server means their session is over.
+  function endedBy(status, code) {
+    if (status === 401) {
+      return "You are logged out, or the server restarted, so this session has ended and the microphone is off. Log in again to go on.";
+    }
+    if (code === "voice_session_invalid" || code === "csrf_invalid") {
+      return "The server ended this session, and the microphone is off. Connect again to go on.";
+    }
+    return null;
+  }
+
   // The tool's answer as the model should read it, and what the list says about it.
   async function runTool(live, call) {
     let args;
@@ -171,9 +196,9 @@
       body = { error: { code: `voice_http_${response.status}` } };
     }
     if (body.error) {
-      const expired = body.error.code === "voice_session_invalid";
-      const { code } = body.error;
-      return { output: JSON.stringify({ error: { code } }), label: `refused: ${code}`, expired };
+      const code = body.error.code || `voice_http_${response.status}`;
+      const ended = endedBy(response.status, code);
+      return { output: JSON.stringify({ error: { code } }), label: `refused: ${code}`, ended };
     }
     let label = body.isError ? "refused" : "done";
     if (body.isError) {
@@ -200,14 +225,15 @@
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: call.call_id, output: answer.output },
       });
-      if (answer.expired) {
-        stop("The session has expired. Connect again to go on.");
+      if (answer.ended) {
+        stop(answer.ended);
         return;
       }
     }
     touch(live);
     // Someone holding the button will ask for the response when they let go.
-    if (!live.holding) send(live, { type: "response.create" });
+    if (live.holding) live.responseOwed = true;
+    else send(live, { type: "response.create" });
   }
 
   function onEvent(live, event) {
@@ -251,7 +277,8 @@
         touch(live);
         const output = (event.response && event.response.output) || [];
         const calls = output.filter((item) => item.type === "function_call");
-        if (calls.length) answerCalls(live, calls);
+        // A cancelled response is someone saying "no, don't", whatever it had got as far as.
+        if (calls.length && event.response.status === "completed") answerCalls(live, calls);
         break;
       }
       case "error":
@@ -281,6 +308,36 @@
     }
     const seconds = Math.ceil(left / 1000);
     remaining.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} left`;
+  }
+
+  // Only this page can close the connection to OpenAI, and hands-free can send sound for up to an
+  // hour with no tool call to find out that the login has gone. A failed check proves nothing alone,
+  // but a server that stays out of reach can't enforce anything either, so two in a row end it.
+  async function checkStatus(live) {
+    let status;
+    let code;
+    try {
+      const response = await fetch("/api/voice/status", {
+        headers: { "X-Nexus-Voice-Session": live.id },
+        signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+      });
+      ({ status } = response);
+      if (!response.ok) ({ code } = (await response.json()).error);
+    } catch {
+      // Counted below, unless the status has already said enough.
+    }
+    if (session !== live) return;
+    const ended = endedBy(status, code);
+    if (ended) {
+      stop(ended);
+    } else if (status === 200) {
+      live.failedChecks = 0;
+    } else {
+      live.failedChecks += 1;
+      if (live.failedChecks >= FAILED_CHECKS_TO_END) {
+        stop("The server can't be reached, so this session has ended and the microphone is off. Check the network and connect again.");
+      }
+    }
   }
 
   function networkLost(live) {
@@ -347,6 +404,8 @@
     live.idleMs = minted.idleSeconds * 1000;
     live.startedAt = performance.now();
     live.ticker = setInterval(() => tick(live), 1000);
+    live.failedChecks = 0;
+    live.checker = setInterval(() => checkStatus(live), CHECK_MS);
     tick(live);
 
     try {
