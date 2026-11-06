@@ -78,7 +78,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> Router {
     }
     if config.insecure_local_only {
         routes = routes
-            .merge(nexus_web::dashboard_router(db.clone()))
+            .merge(nexus_web::dashboard_router(db.clone(), config.timezone))
             .merge(nexus_web::api_router(db.clone()));
     }
     harden(routes)
@@ -131,6 +131,7 @@ pub async fn run(
     tracing::info!(
         addr = %listener.local_addr()?,
         base_url = config.base_url.as_deref().unwrap_or("unset"),
+        timezone = %config.timezone,
         calendar = config.calendar_token.is_some(),
         "listening"
     );
