@@ -11,6 +11,7 @@ publish = false
 nexus-auth = { path = "crates/auth" }
 nexus-core = { path = "crates/core" }
 nexus-mcp = { path = "crates/mcp" }
+nexus-tailor = { path = "crates/tailor" }
 nexus-web = { path = "crates/web" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
@@ -50,6 +51,12 @@ age = { version = "0.12.1", default-features = false }
 tar = { version = "0.4.46", default-features = false }
 tower-http = { version = "0.6.11", default-features = false, features = ["limit", "timeout"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry"] }
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-pdf = "=0.15.1"
+typst-render = "=0.15.1"
+unicode-normalization = "0.1.26"
+rustix = { version = "1.1.6", default-features = false, features = ["std", "param"] }
 
 [profile.release]
 lto = "fat"

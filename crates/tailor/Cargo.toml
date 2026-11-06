@@ -1,0 +1,24 @@
+[package]
+name = "nexus-tailor"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
+typst.workspace = true
+typst-layout.workspace = true
+typst-pdf.workspace = true
+typst-render.workspace = true
+unicode-normalization.workspace = true
+unicode-properties.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
