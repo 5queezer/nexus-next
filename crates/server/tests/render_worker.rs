@@ -7,7 +7,7 @@ use nexus_tailor::{
     Contact, Employment, Facts, RenderError, RenderRequest, Renderer, check, default_source,
 };
 
-const RSS_LIMIT: u64 = 256 * 1024 * 1024;
+const RSS_LIMIT: u64 = nexus_tailor::DEFAULT_RSS_LIMIT_BYTES;
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Runs for days in constant memory.
 const SLOW: &str = "#for a in range(9999) { for b in range(9999) { for c in range(9999) { } } }\n";

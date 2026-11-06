@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
+use tokio::time::MissedTickBehavior;
 
 use crate::{Diagnostic, MAX_PDF_BYTES, RenderError, RenderRequest, Rendered, RenderedText};
 
@@ -171,6 +172,9 @@ pub(crate) async fn render_in_child(
     };
     let watch_rss = async {
         let mut ticks = tokio::time::interval(RSS_POLL);
+        // Over MemoryHigh the kernel stalls every read here for up to seconds. Bursts of late ticks
+        // would then hold this task for minutes and starve the timeout.
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             ticks.tick().await;
             if rss_bytes(pid).is_some_and(|rss| rss > rss_limit_bytes) {
@@ -179,9 +183,10 @@ pub(crate) async fn render_in_child(
         }
     };
     let output = tokio::select! {
+        biased;
+        () = tokio::time::sleep(timeout) => Err(RenderError::Timeout),
         output = exchange => output.map_err(worker_error),
         () = watch_rss => Err(RenderError::MemoryExceeded),
-        () = tokio::time::sleep(timeout) => Err(RenderError::Timeout),
     };
     let output = match output {
         Ok(output) if (output.len() as u64) <= MAX_OUTPUT_BYTES => output,

@@ -8,7 +8,7 @@
 #let _find(list, key, value, kind) = {
   let found = list.find(entry => entry.at(key) == value)
   if found == none {
-    let known = list.map(entry => entry.at(key)).join(", ", last: ", ")
+    let known = list.map(entry => entry.at(key)).join(", ")
     panic("no " + kind + " with " + key + " \"" + value + "\" in the facts. Known: " + if known == none { "none" } else { known })
   }
   found

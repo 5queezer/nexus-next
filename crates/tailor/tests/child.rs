@@ -123,10 +123,20 @@ async fn a_dropped_future_kills_the_child() {
     );
     let renderer = renderer(exe, u64::MAX, Duration::from_secs(60));
     let request = request();
-    let render = renderer.render(request);
-    let waited = tokio::time::timeout(Duration::from_millis(400), render).await;
-    assert!(waited.is_err());
-    let pid = std::fs::read_to_string(&pid_file).unwrap();
+    let mut render = Box::pin(renderer.render(request));
+    // Other tests may hold the one-compile lock first, so wait for this child to really run.
+    let pid = loop {
+        tokio::select! {
+            result = &mut render => panic!("{result:?}"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        if let Ok(pid) = std::fs::read_to_string(&pid_file)
+            && !pid.trim().is_empty()
+        {
+            break pid;
+        }
+    };
+    drop(render);
     wait_gone(pid.trim()).await;
 }
 

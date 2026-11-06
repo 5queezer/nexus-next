@@ -25,9 +25,11 @@ pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 pub const MAX_PAGES: u32 = 10;
 pub const MAX_PDF_BYTES: usize = 10 * 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Must stay below the unit's `MemoryMax=384M`, with the server's own use on top. The board's
-/// measurement decides it.
-pub const DEFAULT_RSS_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
+/// A 10-page CV peaks at 56 MiB on x86-64. The unit's `MemoryHigh=256M` is the real ceiling, not
+/// `MemoryMax`: above it the kernel stalls the whole cgroup, server included, instead of killing
+/// anything. So this limit, the server's own peak of about 85 MiB, and what a compile can allocate
+/// between two polls must fit below it. The board's measurement has the last word.
+pub const DEFAULT_RSS_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The locked facts. Serialized as `/facts.json` for the template library.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

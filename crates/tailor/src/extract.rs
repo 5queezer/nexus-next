@@ -129,7 +129,10 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
         if let Some(Numbering::Pattern(pattern)) = &page.numbering {
             let prefixes = pattern.pieces.iter().map(|(prefix, _)| prefix.as_str());
             let label: Vec<&str> = prefixes.chain([pattern.suffix.as_str()]).collect();
-            result.metadata.push(label.join(" ").trim().to_owned());
+            let label = label.join(" ");
+            if !label.trim().is_empty() {
+                result.metadata.push(label);
+            }
         }
     }
     let mut tilings = Vec::new();

@@ -55,7 +55,7 @@ fn markup(text: &str) -> String {
         let next = chars.peek().copied();
         let special = match c {
             '\\' | '#' | '$' | '*' | '_' | '`' | '@' | '<' | '>' | '[' | ']' | '~' => true,
-            '/' => matches!(next, Some('/' | '*')),
+            '/' => at_start || matches!(next, Some('/' | '*')),
             '-' => at_start || matches!(next, Some('-' | '?')),
             '=' | '+' => at_start,
             '.' => !out.is_empty() && out.bytes().all(|b| b.is_ascii_digit()),

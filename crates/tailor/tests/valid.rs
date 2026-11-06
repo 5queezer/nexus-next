@@ -161,6 +161,68 @@ async fn a_long_word_hyphenated_at_a_line_end_is_read_whole() {
     assert_eq!(report.violations[0].rule, Rule::BannedPhrases);
 }
 
+#[tokio::test]
+async fn owner_lists_free_exactly_what_they_name() {
+    let mut facts = facts_en();
+    let source = format!("{START}With eight years of Rust as Staff Engineer on EC2 for €900k.\n");
+    let rules = |report: &nexus_tailor::Report| {
+        let mut rules: Vec<Rule> = report.violations.iter().map(|v| v.rule).collect();
+        rules.dedup();
+        rules
+    };
+    let report = render_and_check(&source, &facts).await;
+    assert_eq!(
+        rules(&report),
+        [Rule::Numbers, Rule::NumberWords, Rule::ClaimWords]
+    );
+    facts
+        .allowed_tokens
+        .extend(["eight years", "€900k"].map(str::to_owned));
+    facts
+        .vocabulary
+        .extend(["EC2", "Staff Engineer"].map(str::to_owned));
+    let report = render_and_check(&source, &facts).await;
+    assert_eq!(report.violations, []);
+    // The whole token, not its parts.
+    let source = format!("{START}900 years in EC2. A Staff of two.\n");
+    let report = render_and_check(&source, &facts).await;
+    assert_eq!(rules(&report), [Rule::Numbers]);
+}
+
+#[tokio::test]
+async fn injected_markup_in_profile_text_stays_text() {
+    let content = CvContent {
+        summary: "#hide[x] #image(\"/etc/passwd\") ] #let a = 1 [".to_owned(),
+        employment: vec![nexus_tailor::CvEmployment {
+            id: "no\"pe".to_owned(),
+            tier: 1,
+            bullets: vec!["x".to_owned()],
+        }],
+        ..CvContent::default()
+    };
+    let source = source_from_profile(&content);
+    let Err(RenderError::Diagnostics(diagnostics)) = render(&source, &Facts::default()).await
+    else {
+        panic!("an id not in the facts must not compile");
+    };
+    assert!(
+        diagnostics[0].message.contains("no employment with id"),
+        "{diagnostics:?}"
+    );
+    let without_entry = CvContent {
+        employment: Vec::new(),
+        ..content
+    };
+    let rendered = render(&source_from_profile(&without_entry), &Facts::default())
+        .await
+        .unwrap();
+    assert!(
+        rendered.text.lines.join(" ").contains("#hide[x] #image"),
+        "{:?}",
+        rendered.text
+    );
+}
+
 fn text(lines: &[&str]) -> RenderedText {
     RenderedText {
         lines: lines.iter().map(|l| (*l).to_owned()).collect(),

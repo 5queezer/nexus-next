@@ -261,15 +261,7 @@ const CLAIMS: &[&str] = &[
     "ielts",
 ];
 /// As `CLAIMS`, but only when capitalized: in lower case they are everyday words.
-const CAPITALIZED_CLAIMS: &[&str] = &[
-    "Master",
-    "Masters",
-    "Promotion",
-    "Lead",
-    "Manager",
-    "Head",
-    "Partner",
-];
+const CAPITALIZED_CLAIMS: &[&str] = &["Master", "Masters", "Promotion", "Lead", "Manager"];
 /// A compound holding one of these still claims it: `Masterstudium`, `Seniorentwickler`.
 const CLAIM_PREFIXES: &[&str] = &[
     "bachelor",
@@ -568,22 +560,22 @@ impl Known {
         let mut tokens_known = HashSet::new();
         let mut known_words = HashSet::new();
         let mut phrases = String::new();
-        for text in fact_texts {
+        let mut add_fact = |text: &str, is_wording: bool| {
             let text = normalize(text);
-            add_words(&mut known_words, &text);
+            if is_wording {
+                add_words(&mut known_words, &text);
+            }
             phrases.push_str(&text.to_lowercase());
             phrases.push('\n');
             for token in tokens(&text) {
                 tokens_known.extend(date_parts(&token.canon).into_iter().map(str::to_owned));
             }
+        };
+        for text in fact_texts {
+            add_fact(text, true);
         }
         for allowed in &facts.allowed_tokens {
-            let text = normalize(allowed);
-            phrases.push_str(&text.to_lowercase());
-            phrases.push('\n');
-            for token in tokens(&text) {
-                tokens_known.extend(date_parts(&token.canon).into_iter().map(str::to_owned));
-            }
+            add_fact(allowed, false);
         }
         let mut alternatives = Vec::new();
         for entry in &facts.vocabulary {
@@ -759,11 +751,11 @@ fn is_claim(key: &str) -> bool {
 }
 
 fn check_claims(text: &str, known: &Known, findings: &mut Findings) {
-    let unmasked;
+    let without_phrases;
     let text = match &known.vocabulary_phrases {
         Some(phrases) => {
-            unmasked = phrases.replace_all(text, " ");
-            unmasked.as_ref()
+            without_phrases = phrases.replace_all(text, " ");
+            without_phrases.as_ref()
         }
         None => text,
     };
