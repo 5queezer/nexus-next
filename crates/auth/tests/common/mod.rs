@@ -248,6 +248,24 @@ impl Harness {
         .await
     }
 
+    /// Moves every rotation far enough back that the retry grace is over.
+    pub async fn end_refresh_grace(&self) {
+        sqlx::query(
+            "UPDATE oauth_refresh_tokens SET rotated_at = '2020-01-01T00:00:00.000Z'
+             WHERE rotated_at IS NOT NULL",
+        )
+        .execute(self.db.pool())
+        .await
+        .unwrap();
+    }
+
+    pub async fn live_refresh_tokens(&self) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM oauth_refresh_tokens WHERE rotated_at IS NULL")
+            .fetch_one(self.db.pool())
+            .await
+            .unwrap()
+    }
+
     /// What `require_mcp_auth` made of a bearer token.
     pub async fn whoami(&self, token: &str) -> Reply {
         self.send(bearer_req(token)).await

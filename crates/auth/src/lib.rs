@@ -19,10 +19,12 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
 pub use admin::{PassphraseError, hash_passphrase, issue_api_token, set_owner_passphrase};
-pub use config::{AuthConfig, ConfigError, TrustedProxy, default_passphrase_file};
+pub use config::{
+    AuthConfig, ConfigError, TrustedProxy, normalize_base_url, owner_passphrase_file,
+};
 pub use oauth::{SENSITIVE_CONSENT_VERSION, effective_mcp_scopes, require_mcp_auth};
 pub use session::require_owner_session;
-pub use state::AuthState;
+pub use state::{AuthState, ClientKey};
 
 /// Larger than any real login, consent or token request, and enough for a long `state`.
 const BODY_LIMIT: usize = 64 * 1024;

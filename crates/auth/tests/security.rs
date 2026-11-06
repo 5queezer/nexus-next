@@ -11,8 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use common::*;
 use nexus_auth::{
-    AuthConfig, AuthState, ConfigError, PassphraseError, TrustedProxy, default_passphrase_file,
-    set_owner_passphrase,
+    AuthConfig, AuthState, ConfigError, PassphraseError, TrustedProxy, set_owner_passphrase,
 };
 use nexus_core::repo::oauth::{self as repo, NewOAuthToken};
 use nexus_core::time::Timestamp;
@@ -94,6 +93,18 @@ async fn registration_validates_redirect_uris_like_old_nexus() {
             "redirect_uri must use https (got javascript:): javascript:alert(1)",
         ),
         (
+            "https://client.example.test/cb#fragment",
+            "redirect_uri must not contain a fragment: https://client.example.test/cb#fragment",
+        ),
+        (
+            "https://client.example.test/cb#",
+            "redirect_uri must not contain a fragment: https://client.example.test/cb#",
+        ),
+        (
+            "http://localhost:1234/cb#fragment",
+            "redirect_uri must not contain a fragment: http://localhost:1234/cb#fragment",
+        ),
+        (
             "custom-scheme://cb",
             "redirect_uri must use https (got custom-scheme:): custom-scheme://cb",
         ),
@@ -119,14 +130,30 @@ async fn registration_validates_redirect_uris_like_old_nexus() {
 }
 
 #[tokio::test]
-async fn registration_keeps_old_nexus_500_for_an_unparseable_body() {
+async fn malformed_registration_bodies_get_400() {
     let h = Harness::new().await;
-    let request = Request::post("/api/mcp/register")
-        .body(Body::from("{not json"))
-        .unwrap();
-    h.send(request)
-        .await
-        .assert_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error");
+    for body in ["{not json", "", "null", "[]", "\"text\""] {
+        let request = Request::post("/api/mcp/register")
+            .body(Body::from(body))
+            .unwrap();
+        h.send(with_ip(request, "203.0.113.1"))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid_client_metadata");
+    }
+    for field in [
+        json!({ "client_name": 5 }),
+        json!({ "grant_types": "authorization_code" }),
+        json!({ "token_endpoint_auth_method": ["none"] }),
+    ] {
+        let mut body = json!({ "redirect_uris": [REDIRECT] });
+        body.as_object_mut()
+            .unwrap()
+            .extend(field.as_object().unwrap().clone());
+        h.send(with_ip(json_req("/api/mcp/register", &body), "203.0.113.2"))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid_client_metadata");
+    }
+    assert_eq!(h.count("oauth_clients").await, 0);
 }
 
 #[tokio::test]
@@ -298,7 +325,15 @@ async fn expired_codes_and_tokens_are_pruned_and_live_ones_kept() {
             .await;
         }
     }
-    for (code, used, expires) in [("old", 1, PAST), ("old2", 0, PAST), ("live", 0, FUTURE)] {
+    let yesterday = Timestamp::now()
+        .plus(chrono::Duration::days(-1))
+        .to_string();
+    for (code, used, expires) in [
+        ("used-long-ago", 1, PAST),
+        ("unused-expired", 0, yesterday.as_str()),
+        ("used-recently", 1, yesterday.as_str()),
+        ("live", 0, FUTURE),
+    ] {
         execute(
             &h,
             &format!(
@@ -313,7 +348,16 @@ async fn expired_codes_and_tokens_are_pruned_and_live_ones_kept() {
     h.token("client_id=mcp_unknown").await;
     assert_eq!(h.count("oauth_access_tokens").await, 1);
     assert_eq!(h.count("oauth_refresh_tokens").await, 1);
-    assert_eq!(h.count("oauth_auth_codes").await, 1);
+    let mut kept: Vec<String> = sqlx::query_scalar("SELECT code FROM oauth_auth_codes")
+        .fetch_all(h.db.pool())
+        .await
+        .unwrap();
+    kept.sort();
+    assert_eq!(
+        kept,
+        ["live", "used-recently"],
+        "a used code stays to catch its replay"
+    );
 }
 
 // ── Authorization endpoint ───────────────────────────────────────────────────
@@ -571,18 +615,85 @@ async fn consent_page_escapes_reflected_values_and_blocks_framing() {
 // ── Token endpoint ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn codes_are_single_use() {
+async fn replaying_a_code_revokes_everything_from_that_grant_only() {
     let h = Harness::new().await;
     let id = h.register().await;
+    let other_grant = h.grant(&id, "mcp:tools").await;
+
     let code = h.code_for(&id, "mcp:tools").await;
-    assert_eq!(h.exchange(&id, &code).await.status, StatusCode::OK);
+    let first = h.exchange(&id, &code).await.json();
+    let rotated = h
+        .refresh(&id, first["refresh_token"].as_str().unwrap(), None)
+        .await
+        .json();
+
     h.exchange(&id, &code)
         .await
         .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+
+    for token in [&first["access_token"], &rotated["access_token"]] {
+        assert_eq!(
+            h.whoami(token.as_str().unwrap()).await.status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    h.refresh(&id, rotated["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+
+    assert_eq!(
+        h.whoami(other_grant["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.refresh(&id, other_grant["refresh_token"].as_str().unwrap(), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_code_replayed_under_another_client_or_after_expiry_still_revokes() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let thief = h.register().await;
+
+    let code = h.code_for(&id, "mcp:tools").await;
+    let tokens = h.exchange(&id, &code).await.json();
+    h.exchange(&thief, &code)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(
+        h.whoami(tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let code = h.code_for(&id, "mcp:tools").await;
+    let tokens = h.exchange(&id, &code).await.json();
+    let yesterday = Timestamp::now().plus(chrono::Duration::days(-1));
+    execute(
+        &h,
+        &format!("UPDATE oauth_auth_codes SET expires_at = '{yesterday}'"),
+    )
+    .await;
+    h.exchange(&id, &code)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(
+        h.whoami(tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn concurrent_code_and_refresh_replays_have_one_winner() {
+async fn concurrent_code_exchanges_have_one_winner_and_the_losers_revoke_it() {
     let h = Arc::new(Harness::new().await);
     let id = h.register().await;
     let code = h.code_for(&id, "mcp:tools").await;
@@ -592,20 +703,174 @@ async fn concurrent_code_and_refresh_replays_have_one_winner() {
         let (h, id, code) = (h.clone(), id.clone(), code.clone());
         tasks.push(tokio::spawn(async move { h.exchange(&id, &code).await }));
     }
-    let mut refresh = None;
     let mut wins = 0;
     for task in tasks {
         let reply = task.await.unwrap();
         if reply.status == StatusCode::OK {
             wins += 1;
-            refresh = Some(reply.json()["refresh_token"].as_str().unwrap().to_owned());
         } else {
             reply.assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
         }
     }
     assert_eq!(wins, 1);
+    assert_eq!(h.count("oauth_access_tokens").await, 0);
+    assert_eq!(h.count("oauth_refresh_tokens").await, 0);
+}
 
-    let refresh = refresh.unwrap();
+#[tokio::test]
+async fn a_lost_refresh_response_can_be_retried_within_the_grace() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let first = h.grant(&id, "mcp:tools mcp:submissions").await;
+    let old = first["refresh_token"].as_str().unwrap();
+
+    // The server rotated, but the client never saw this response. It still holds `old`.
+    let lost = h.refresh(&id, old, None).await.json();
+    let retried = h.refresh(&id, old, None).await;
+    assert_eq!(retried.status, StatusCode::OK, "{}", retried.body);
+    let retried = retried.json();
+    assert_eq!(retried["scope"], "mcp:tools mcp:submissions");
+    assert_ne!(retried["refresh_token"], lost["refresh_token"]);
+    assert_eq!(
+        h.whoami(retried["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(h.live_refresh_tokens().await, 1, "no branch in the grant");
+
+    // The client carries on normally, long after the grace.
+    h.end_refresh_grace().await;
+    let next = h
+        .refresh(&id, retried["refresh_token"].as_str().unwrap(), None)
+        .await;
+    assert_eq!(next.status, StatusCode::OK, "{}", next.body);
+}
+
+#[tokio::test]
+async fn a_thief_who_uses_the_grace_is_caught_at_the_real_clients_next_refresh() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let first = h.grant(&id, "mcp:tools").await;
+    let stolen = first["refresh_token"].as_str().unwrap();
+
+    let real_client = h.refresh(&id, stolen, None).await.json();
+    let thief = h.refresh(&id, stolen, None).await.json();
+    assert_eq!(h.live_refresh_tokens().await, 1);
+
+    // A day later the real client refreshes with a token the thief's retry superseded.
+    h.end_refresh_grace().await;
+    h.refresh(&id, real_client["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+
+    assert_eq!(
+        h.whoami(thief["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.refresh(&id, thief["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+}
+
+#[tokio::test]
+async fn a_retry_after_the_grace_revokes_the_grant_and_a_new_authorization_recovers() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let first = h.grant(&id, "mcp:tools").await;
+    let old = first["refresh_token"].as_str().unwrap();
+    let rotated = h.refresh(&id, old, None).await.json();
+    let other_grant = h.grant(&id, "mcp:tools").await;
+
+    h.end_refresh_grace().await;
+    h.refresh(&id, old, None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+
+    assert_eq!(
+        h.whoami(rotated["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.refresh(&id, rotated["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(
+        h.whoami(other_grant["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK,
+        "only that grant ends"
+    );
+
+    let fresh = h.grant(&id, "mcp:tools").await;
+    assert_eq!(
+        h.whoami(fresh["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn the_grace_is_for_the_same_client_and_does_not_restart_on_retries() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let thief = h.register().await;
+    let first = h.grant(&id, "mcp:tools").await;
+    let old = first["refresh_token"].as_str().unwrap();
+    h.refresh(&id, old, None).await;
+
+    let rotated_at = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT rotated_at FROM oauth_refresh_tokens WHERE token_hash = ?",
+        )
+        .bind(sha256(old))
+        .fetch_one(h.db.pool())
+        .await
+        .unwrap()
+    };
+    let first_rotation = rotated_at().await;
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    assert_eq!(h.refresh(&id, old, None).await.status, StatusCode::OK);
+    assert_eq!(rotated_at().await, first_rotation);
+
+    h.refresh(&thief, old, None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(h.count("oauth_refresh_tokens").await, 0, "and it revokes");
+}
+
+#[tokio::test]
+async fn a_widening_retry_within_the_grace_changes_nothing() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let first = h.grant(&id, "mcp:tools").await;
+    let old = first["refresh_token"].as_str().unwrap();
+    let rotated = h.refresh(&id, old, None).await.json();
+    h.refresh(&id, old, Some("mcp:tools mcp:submissions"))
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_scope");
+    assert_eq!(
+        h.refresh(&id, rotated["refresh_token"].as_str().unwrap(), None)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_refreshes_leave_one_live_token() {
+    let h = Arc::new(Harness::new().await);
+    let id = h.register().await;
+    let refresh = h.grant(&id, "mcp:tools").await["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let (h, id, refresh) = (h.clone(), id.clone(), refresh.clone());
@@ -613,14 +878,10 @@ async fn concurrent_code_and_refresh_replays_have_one_winner() {
             async move { h.refresh(&id, &refresh, None).await },
         ));
     }
-    let mut wins = 0;
     for task in tasks {
-        if task.await.unwrap().status == StatusCode::OK {
-            wins += 1;
-        }
+        assert_eq!(task.await.unwrap().status, StatusCode::OK);
     }
-    assert_eq!(wins, 1);
-    assert_eq!(h.count("oauth_refresh_tokens").await, 1);
+    assert_eq!(h.live_refresh_tokens().await, 1);
 }
 
 #[tokio::test]
@@ -835,6 +1096,73 @@ async fn token_endpoint_is_rate_limited_per_source() {
     assert_eq!(h.send(other).await.status, StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn authorize_is_rate_limited_per_source_on_get_and_post() {
+    let h = Harness::new().await;
+    for _ in 0..30 {
+        h.send(get_req("/api/mcp/authorize")).await;
+        h.send(form_req("/api/mcp/authorize", "")).await;
+    }
+    let limited = h.send(get_req("/api/mcp/authorize")).await;
+    limited.assert_error(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable");
+    assert!(limited.header(RETRY_AFTER.as_str()).parse::<u64>().unwrap() > 0);
+    h.send(form_req("/api/mcp/authorize", ""))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "temporarily_unavailable");
+
+    let other = h
+        .send(with_ip(get_req("/api/mcp/authorize"), "203.0.113.9"))
+        .await;
+    other.assert_error(StatusCode::BAD_REQUEST, "invalid_request");
+}
+
+#[tokio::test]
+async fn failed_bearer_checks_are_limited_and_valid_tokens_never_are() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let token = h.grant(&id, "mcp:tools").await["access_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for i in 0..30 {
+        let reply = h.whoami(&format!("jt_guess{i}")).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    }
+    for guess in ["jt_more", "mcp_at_more"] {
+        let limited = h.whoami(guess).await;
+        assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(limited.header(RETRY_AFTER.as_str()).parse::<u64>().unwrap() > 0);
+    }
+
+    // The limited source's valid token still works, well past the failure limit.
+    for _ in 0..50 {
+        assert_eq!(h.whoami(&token).await.status, StatusCode::OK);
+    }
+    // A client starting discovery gets its 401, not a 429.
+    let tokenless = h
+        .send(Request::post("/api/mcp").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(tokenless.status, StatusCode::UNAUTHORIZED);
+    assert!(tokenless.headers.contains_key("www-authenticate"));
+
+    let elsewhere = with_ip(bearer_req("jt_elsewhere"), "203.0.113.9");
+    assert_eq!(h.send(elsewhere).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn successful_bearer_traffic_does_not_count_towards_the_failure_limit() {
+    let h = Harness::new().await;
+    let raw = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    for _ in 0..40 {
+        assert_eq!(h.whoami(&raw).await.status, StatusCode::OK);
+    }
+    assert_eq!(
+        h.whoami("jt_one_typo").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 // ── Scopes ───────────────────────────────────────────────────────────────────
 
 async fn scopes_of(h: &Harness, access_token: &Value) -> Value {
@@ -931,6 +1259,7 @@ async fn pre_consent_version_submission_grants_stay_narrow() {
     let id = h.register().await;
     let legacy = |hash: String| NewOAuthToken {
         token_hash: hash,
+        grant_id: "legacy".to_owned(),
         client_id: id.clone(),
         scopes: vec!["mcp:tools".to_owned(), "mcp:submissions".to_owned()],
         sensitive_consent_version: 0,
@@ -1528,22 +1857,69 @@ async fn auth_state_refuses_to_build_without_a_valid_hash_or_base_url() {
 }
 
 #[tokio::test]
+async fn changing_the_passphrase_revokes_all_grants_and_api_tokens() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let tokens = h.grant(&id, "mcp:tools").await;
+    let pending_code = h.code_for(&id, "mcp:tools").await;
+    let api_token = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    let path = h.dir.path().join("hash");
+
+    // A refused passphrase revokes nothing.
+    assert!(matches!(
+        set_owner_passphrase(&h.db, &path, "too short").await,
+        Err(PassphraseError::TooShort)
+    ));
+    assert_eq!(h.whoami(&api_token).await.status, StatusCode::OK);
+
+    set_owner_passphrase(&h.db, &path, PASSPHRASE)
+        .await
+        .unwrap();
+
+    assert_eq!(h.whoami(&api_token).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.whoami(tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.refresh(&id, tokens["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    h.exchange(&id, &pending_code)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+    assert_eq!(h.count("oauth_clients").await, 1, "clients stay registered");
+
+    // The client can authorize again.
+    let again = h.grant(&id, "mcp:tools").await;
+    assert_eq!(
+        h.whoami(again["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
 async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let path = default_passphrase_file(dir.path());
+    let path = dir.path().join("hash");
+    let store = tempfile::tempdir().unwrap();
+    let db = nexus_core::db::Db::open(store.path()).await.unwrap();
     assert!(matches!(
-        set_owner_passphrase(&path, "too short").await,
+        set_owner_passphrase(&db, &path, "too short").await,
         Err(PassphraseError::TooShort)
     ));
     assert!(matches!(
-        set_owner_passphrase(&path, &"x".repeat(1025)).await,
+        set_owner_passphrase(&db, &path, &"x".repeat(1025)).await,
         Err(PassphraseError::TooLong)
     ));
     assert!(!path.exists());
 
-    set_owner_passphrase(&path, PASSPHRASE).await.unwrap();
+    set_owner_passphrase(&db, &path, PASSPHRASE).await.unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -1558,7 +1934,7 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
     );
 
     // Replacing keeps the mode, and the hash really verifies through the login route.
-    set_owner_passphrase(&path, PASSPHRASE).await.unwrap();
+    set_owner_passphrase(&db, &path, PASSPHRASE).await.unwrap();
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600

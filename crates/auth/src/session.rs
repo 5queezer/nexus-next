@@ -248,6 +248,13 @@ pub(crate) async fn login(
         &[source, GLOBAL_KEY]
     };
     if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
+        tracing::warn!(
+            event = "login_lockout",
+            source = %client,
+            known_device,
+            retry_after = retry,
+            "login refused by backoff"
+        );
         let mut response = respond(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many attempts. Please wait and try again.",
@@ -269,10 +276,17 @@ pub(crate) async fn login(
         .unwrap_or(false)
     };
     if !verified {
+        tracing::warn!(
+            event = "login_failure",
+            source = %client,
+            known_device,
+            "wrong owner passphrase"
+        );
         return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
     }
 
     state.0.login_limit.succeed(source, !known_device);
+    tracing::info!(event = "login_success", source = %client, known_device, "owner logged in");
     let session = create_session(&state);
     let response = redirect_after_login(next.as_deref());
     let response = with_cookie(response, SESSION_COOKIE, &session, SESSION_TTL.as_secs());
