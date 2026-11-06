@@ -2,15 +2,17 @@
 
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_SECURITY_POLICY, COOKIE, REFERRER_POLICY, RETRY_AFTER, SET_COOKIE,
-    X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, REFERRER_POLICY, RETRY_AFTER,
+    SET_COOKIE, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use serde_json::json;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
@@ -45,6 +47,17 @@ fn device_token(state: &AuthState) -> String {
     sign(state.0.passphrase_hash.as_bytes(), DEVICE_PURPOSE, "")
 }
 
+pub(crate) async fn stylesheet() -> impl IntoResponse {
+    (
+        [
+            (CONTENT_TYPE, "text/css; charset=utf-8"),
+            (CACHE_CONTROL, "no-cache"),
+            (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        include_str!("auth.css"),
+    )
+}
+
 /// A page that can't be framed, cached or indexed. `form_target` is an extra origin forms may lead
 /// to: Chrome applies `form-action` to redirects, so the consent form must name the client's.
 ///
@@ -58,7 +71,7 @@ pub(crate) fn html_page(
 ) -> Response {
     let form_action = form_target.map_or("'self'".to_owned(), |origin| format!("'self' {origin}"));
     let csp = format!(
-        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}"
+        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}"
     );
     (
         status,
@@ -71,8 +84,8 @@ pub(crate) fn html_page(
         ],
         Html(format!(
             r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{}</title></head>
-<body><main>{body}</main></body></html>"#,
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css"><title>{}</title></head>
+<body><main><p class="brand">Nexus</p>{body}</main></body></html>"#,
             escape_html(title)
         )),
     )
@@ -148,6 +161,17 @@ fn safe_next(base_url: &str, next: &str) -> Option<String> {
     (base.join(next).ok()?.origin() == base.origin()).then(|| next.to_owned())
 }
 
+/// The wait as a person reads it, rounded up so that trying again at that moment works.
+fn wait_text(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds} second{}", if seconds == 1 { "" } else { "s" }),
+        _ => {
+            let minutes = seconds.div_ceil(60);
+            format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+        }
+    }
+}
+
 fn login_form(
     state: &AuthState,
     status: StatusCode,
@@ -175,7 +199,7 @@ fn login_form(
         "Log in to Nexus",
         &format!(
             r#"<h1>Log in to Nexus</h1>{message}
-<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label>Passphrase <input type="password" name="passphrase" autocomplete="current-password" required autofocus></label> <button type="submit">Log in</button></form>"#
+<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><button type="submit">Log in</button></form>"#
         ),
         None,
     );
@@ -257,7 +281,7 @@ pub(crate) async fn login(
         );
         let mut response = respond(
             StatusCode::TOO_MANY_REQUESTS,
-            "Too many attempts. Please wait and try again.",
+            &format!("Too many attempts. Try again in {}.", wait_text(retry)),
         );
         response
             .headers_mut()
@@ -345,7 +369,8 @@ pub(crate) async fn logout(
 }
 
 /// Dashboard middleware: passes a logged-in owner through, sends anyone else to `/login`, returning
-/// them to the same page afterwards if they were reading one.
+/// them to the same page afterwards if they were reading one. `/api/*` callers get a 401 JSON error
+/// instead, since a script can't follow a login page.
 pub async fn require_owner_session(
     State(state): State<AuthState>,
     request: Request,
@@ -353,6 +378,17 @@ pub async fn require_owner_session(
 ) -> Response {
     if current_session(&state, request.headers()).is_some() {
         return next.run(request).await;
+    }
+    if request.uri().path().starts_with("/api/") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [
+                (CACHE_CONTROL, "no-store"),
+                (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            Json(json!({ "error": "Not logged in" })),
+        )
+            .into_response();
     }
     let target = request
         .uri()
@@ -406,6 +442,15 @@ mod tests {
             safe_next(BASE, &format!("/{}", "a".repeat(MAX_NEXT_BYTES))),
             None
         );
+    }
+
+    #[test]
+    fn waits_are_worded_for_people() {
+        assert_eq!(wait_text(1), "1 second");
+        assert_eq!(wait_text(59), "59 seconds");
+        assert_eq!(wait_text(60), "1 minute");
+        assert_eq!(wait_text(61), "2 minutes");
+        assert_eq!(wait_text(3600), "60 minutes");
     }
 
     #[test]

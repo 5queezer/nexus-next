@@ -521,15 +521,32 @@ pub(crate) async fn authorize(
     } else {
         "read and change CRM applications and download ordinary documents"
     };
+    let scope_items: String = scopes
+        .iter()
+        .map(|scope| {
+            let meaning = if *scope == SCOPE_SUBMISSIONS {
+                "Access exact application submissions."
+            } else {
+                "Read and change CRM applications and download ordinary documents."
+            };
+            format!("<li><code>{scope}</code> {meaning}</li>")
+        })
+        .collect();
+    let sensitive = if scopes.contains(&SCOPE_SUBMISSIONS) {
+        r#"<p class="sensitive">This includes <code>mcp:submissions</code>: the client can read the exact application submissions stored in Nexus.</p>"#
+    } else {
+        ""
+    };
     Ok(html_page(
         StatusCode::OK,
         "Authorize MCP access",
         &format!(
             r#"<h1>Authorize MCP access?</h1>
+<dl class="facts"><div><dt>Client</dt><dd><strong>{client}</strong></dd></div><div><dt>Returns to</dt><dd>{origin}</dd></div><div><dt>Scopes</dt><dd><code>{scope}</code></dd></div></dl>
 <p><strong>{client}</strong> ({origin}) is requesting permission to {requested_access}.</p>
-<p>Scopes: <code>{scope}</code>. Only continue if you trust this client.</p>
+<ul class="scopes">{scope_items}</ul>{sensitive}
 <form method="post" action="/api/mcp/authorize"><input type="hidden" name="consent" value="{consent}"><button type="submit">Allow access</button></form>
-<p>You can close this page to deny access.</p>"#,
+<p class="hint">Only continue if you trust this client. Close this page to deny access.</p>"#,
             client = escape_html(client_label),
             origin = escape_html(&redirect_origin),
             scope = escape_html(&scope),
