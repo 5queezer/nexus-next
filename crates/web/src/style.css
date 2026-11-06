@@ -270,6 +270,31 @@ details[open] > summary { border-bottom: 1px solid var(--line); }
 .qa .a { white-space: pre-wrap; overflow-wrap: anywhere; }
 .sub-head { display: flex; flex-wrap: wrap; gap: 4px 16px; padding: 12px 0 4px; }
 
+.actions details > summary { min-height: 44px; display: flex; align-items: center; color: var(--ink); font-weight: 600; }
+.actions details + details { border-top: 1px solid var(--line); }
+form.act { display: grid; gap: 12px; padding: 12px 0 16px; }
+form.act label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+form.act input[type="text"], form.act input[type="email"], form.act input[type="tel"],
+form.act input[type="datetime-local"], form.act textarea, form.act select {
+  font: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+form.act textarea { resize: vertical; }
+form.act button, .button { min-height: 44px; justify-self: start; }
+form.act button.danger { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+button:disabled { opacity: 0.6; cursor: progress; }
+.button { display: inline-flex; align-items: center; padding: 7px 14px; border-radius: 6px; text-decoration: none; background: var(--accent); color: var(--accent-ink); }
+.button.secondary { background: var(--chip); color: var(--ink); }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.hint { margin: 0; color: var(--muted); font-size: 13px; }
+
 @media (max-width: 40rem) {
   main { padding-top: 16px; }
   .head { display: none; }
@@ -286,4 +311,5 @@ details[open] > summary { border-bottom: 1px solid var(--line); }
   dl.facts dt { border-bottom: 0; padding-bottom: 0; }
   dl.facts dd { padding-top: 0; }
   .top > div { gap: 12px; }
+  form.act button, .button { justify-self: stretch; justify-content: center; }
 }

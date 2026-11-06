@@ -97,12 +97,24 @@ async fn the_dashboard_and_api_need_a_session_unless_the_run_is_local() {
     let db = Db::open(dir.path()).await.unwrap();
 
     let owner = serve::build_app(&db, &config(dir.path(), true, false)).unwrap();
-    for path in ["/", "/queue", "/applications/1", "/assets/app.css"] {
+    for path in ["/", "/queue", "/applications/1"] {
         let request = Request::get(path).body(Body::empty()).unwrap();
         let response = owner.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER, "{path}");
         let location = response.headers()["location"].to_str().unwrap();
         assert!(location.starts_with("/login?next="), "{path}: {location}");
+    }
+    // The static files hold nothing personal and a browser fetches the manifest and the worker
+    // without cookies, so a logged-out request gets them rather than a redirect.
+    for path in [
+        "/assets/app.css",
+        "/assets/app.js",
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/icons/icon-192.png",
+        "/offline",
+    ] {
+        assert_eq!(status(&owner, path).await, StatusCode::OK, "{path}");
     }
     for path in [
         "/api/applications",
@@ -136,6 +148,27 @@ async fn the_dashboard_and_api_need_a_session_unless_the_run_is_local() {
     for path in ["/login", "/.well-known/oauth-authorization-server"] {
         assert_eq!(status(&local, path).await, StatusCode::NOT_FOUND, "{path}");
     }
+
+    // A form post from a no-referrer page carries `Origin: null`: the form route lets it reach its
+    // CSRF check (a bad token here), the tool route never does.
+    let null_origin = |path: &str| {
+        Request::post(path)
+            .header("origin", "null")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("csrf=x"))
+            .unwrap()
+    };
+    let form = local
+        .clone()
+        .oneshot(null_origin("/applications/1/note"))
+        .await
+        .unwrap();
+    assert_eq!(form.status(), StatusCode::FORBIDDEN);
+    let body = form.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("This form has expired"));
+    let mcp = local.oneshot(null_origin("/api/mcp")).await.unwrap();
+    let body = mcp.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("answers only to localhost"));
 }
 
 #[tokio::test]

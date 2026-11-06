@@ -631,3 +631,102 @@ async fn grants_are_listed_and_revoked_from_the_command_line() {
     assert!(text(&revoke.stdout).contains("revoked 1 access and 1 refresh tokens"));
     assert_eq!(text(&grants(&["list"]).stdout), "");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dashboard_forms_carry_a_token_of_their_own_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = set_passphrase(dir.path(), PASSPHRASE);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let db = Db::open(dir.path()).await.unwrap();
+    let id = nexus_core::repo::applications::create(
+        &mut db.conn().await.unwrap(),
+        "Acme",
+        "Engineer",
+        Default::default(),
+    )
+    .await
+    .unwrap()
+    .id;
+    db.close().await;
+
+    let server = Server::start(dir.path(), &[]);
+    let addr = server.addr;
+    let page_path = format!("/applications/{id}");
+    let form_path = format!("{page_path}/note");
+
+    // A logged-out browser gets the worker script itself, not a login redirect it cannot register.
+    for path in ["/sw.js", "/manifest.webmanifest", "/offline"] {
+        let reply = request(addr, "GET", path, &[], "").await;
+        assert_eq!(reply.status, 200, "{path}");
+    }
+
+    let token_of = |page: &str| {
+        let marker = "name=\"csrf\" value=\"";
+        let start = page.find(marker).unwrap() + marker.len();
+        page[start..start + page[start..].find('"').unwrap()].to_owned()
+    };
+    let note = |csrf: &str, key: &str| {
+        let at = "2030-01-01T00:00:00.000Z";
+        format!("csrf={csrf}&expected=&at={at}&key={key}&note=Hello")
+    };
+    let form = [("Content-Type", "application/x-www-form-urlencoded")];
+
+    let mut first = Browser::default();
+    assert_eq!(first.login(addr, PASSPHRASE, &[]).await.status, 303);
+    let mut second = Browser::default();
+    assert_eq!(second.login(addr, PASSPHRASE, &[]).await.status, 303);
+    let first_page = first.send(addr, "GET", &page_path, &[], "").await;
+    let second_page = second.send(addr, "GET", &page_path, &[], "").await;
+    let (first_token, second_token) = (token_of(&first_page.body), token_of(&second_page.body));
+    assert_ne!(first_token, second_token, "a token belongs to one session");
+
+    let expected = |page: &str| {
+        let marker = "name=\"expected\" value=\"";
+        let start = page.find(marker).unwrap() + marker.len();
+        page[start..start + page[start..].find('"').unwrap()].to_owned()
+    };
+    let body = |token: &str, page: &str| {
+        note(token, "abcdefgh12345").replace("expected=", &format!("expected={}", expected(page)))
+    };
+
+    let foreign = first
+        .send(
+            addr,
+            "POST",
+            &form_path,
+            &form,
+            &body(&second_token, &first_page.body),
+        )
+        .await;
+    assert_eq!(foreign.status, 403, "another session's token");
+    let missing = first
+        .send(addr, "POST", &form_path, &form, "note=Hello")
+        .await;
+    assert_eq!(missing.status, 403);
+    let logged_out = request(
+        addr,
+        "POST",
+        &form_path,
+        &form,
+        &body(&first_token, &first_page.body),
+    )
+    .await;
+    assert_eq!(logged_out.status, 303);
+    assert_eq!(logged_out.header("location"), Some("/login"));
+
+    let done = first
+        .send(
+            addr,
+            "POST",
+            &form_path,
+            &form,
+            &body(&first_token, &first_page.body),
+        )
+        .await;
+    assert_eq!(done.status, 303, "{}", done.body);
+    assert_eq!(
+        done.header("location"),
+        Some(format!("{page_path}?done=note#actions").as_str())
+    );
+    server.stop();
+}

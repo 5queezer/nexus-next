@@ -16,6 +16,8 @@ use serde_json::json;
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
+use nexus_core::auth::FormToken;
+
 use crate::admin::verify_passphrase;
 use crate::crypto::{escape_html, parse_params, random_bytes, secret_eq, sha256_hex, sign};
 use crate::limit::GLOBAL_KEY;
@@ -35,6 +37,7 @@ pub(crate) const MAX_NEXT_BYTES: usize = 8192;
 
 const LOGIN_CSRF_PURPOSE: &str = "login-csrf";
 const LOGOUT_CSRF_PURPOSE: &str = "logout-csrf";
+const FORM_CSRF_PURPOSE: &str = "form-csrf";
 const DEVICE_PURPOSE: &str = "known-device";
 /// The limiter bucket of browsers holding the device cookie.
 const DEVICE_KEY: &str = "known-device";
@@ -368,15 +371,17 @@ pub(crate) async fn logout(
     )
 }
 
-/// Dashboard middleware: passes a logged-in owner through, sends anyone else to `/login`, returning
+/// Dashboard middleware: passes a logged-in owner through with their session's `FormToken`, sends anyone else to `/login`, returning
 /// them to the same page afterwards if they were reading one. `/api/*` callers get a 401 JSON error
 /// instead, since a script can't follow a login page.
 pub async fn require_owner_session(
     State(state): State<AuthState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    if current_session(&state, request.headers()).is_some() {
+    if let Some(session) = current_session(&state, request.headers()) {
+        let token = sign(&state.0.key, FORM_CSRF_PURPOSE, &session);
+        request.extensions_mut().insert(FormToken(token));
         return next.run(request).await;
     }
     if request.uri().path().starts_with("/api/") {

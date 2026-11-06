@@ -318,7 +318,7 @@ pub(crate) struct EventCommand {
     outcome: Option<String>,
 }
 
-/// Port of `parseApplicationEventCommand`, with `source` always `mcp`.
+/// Port of `parseApplicationEventCommand`, with `source` taken from the caller (`mcp` on the route).
 fn parse_command(
     ctx: &Ctx,
     event_type: &str,
@@ -473,7 +473,7 @@ async fn record_event(
         "applicationId": application_ref,
         "type": command.event_type,
         "occurredAt": occurred_at,
-        "source": "mcp",
+        "source": ctx.source,
         "actor": command.actor,
         "metadata": metadata_value,
         "contactId": command.contact_id,
@@ -556,7 +556,7 @@ async fn record_event(
             idempotency_key: command.idempotency_key,
             request_hash: Some(hash),
             occurred_at: Some(command.occurred_at),
-            source: Some("mcp".to_owned()),
+            source: Some(ctx.source.to_owned()),
             actor: Some(command.actor),
             contact_id: command.contact_id,
             outcome: command.outcome,
