@@ -24,6 +24,13 @@ pub struct ServeArgs {
     /// OAuth issuer, so it is required unless --insecure-local-only is set.
     #[arg(long, env = "NEXUS_PUBLIC_BASE_URL")]
     pub base_url: Option<String>,
+    /// The owner's ID in old Nexus. MCP responses still carry it as `userId`.
+    #[arg(long, env = "NEXUS_OWNER_ID")]
+    pub owner_id: Option<String>,
+    /// The owner's email in old Nexus. New events record it as `actor`, and event request hashes
+    /// cover it, so it must match the imported events for their idempotency keys to replay.
+    #[arg(long, env = "NEXUS_OWNER_EMAIL")]
+    pub owner_email: Option<String>,
     /// IANA time zone for dates shown on the dashboard and in the calendar feed.
     #[arg(long, env = "NEXUS_TIMEZONE", default_value = "Europe/Madrid")]
     pub timezone: String,
@@ -53,6 +60,8 @@ pub struct ServeConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
     pub access: Access,
+    pub owner_id: String,
+    pub owner_email: String,
     pub timezone: Tz,
     pub calendar_token: Option<String>,
     pub log_level: Level,
@@ -103,6 +112,18 @@ impl ServeArgs {
             })
         });
 
+        let mut required = |value: Option<String>, name: &str| {
+            let value = value.filter(|value| !value.trim().is_empty());
+            if value.is_none() {
+                problems.push(format!(
+                    "{name} is required: MCP responses and event hashes depend on it"
+                ));
+            }
+            value.unwrap_or_default()
+        };
+        let owner_id = required(self.owner_id, "--owner-id or NEXUS_OWNER_ID");
+        let owner_email = required(self.owner_email, "--owner-email or NEXUS_OWNER_EMAIL");
+
         let (true, Some(access)) = (problems.is_empty(), access) else {
             return Err(problems.join("\n"));
         };
@@ -110,6 +131,8 @@ impl ServeArgs {
             bind: self.bind,
             data_dir: self.data_dir,
             access,
+            owner_id,
+            owner_email,
             timezone,
             calendar_token,
             log_level: self.log_level,
@@ -159,6 +182,8 @@ mod tests {
             bind: "127.0.0.1:8080".parse().unwrap(),
             data_dir: "/var/lib/nexus".into(),
             base_url: None,
+            owner_id: Some("owner-1".into()),
+            owner_email: Some("owner@example.net".into()),
             timezone: "Europe/Madrid".into(),
             calendar_token_file: None,
             insecure_local_only: true,
@@ -173,6 +198,16 @@ mod tests {
             insecure_local_only: false,
             ..args()
         }
+    }
+
+    #[test]
+    fn the_owner_settings_are_required() {
+        let mut a = args();
+        a.owner_id = None;
+        a.owner_email = Some("  ".into());
+        let problems = a.validate().unwrap_err();
+        assert!(problems.contains("NEXUS_OWNER_ID"), "{problems}");
+        assert!(problems.contains("NEXUS_OWNER_EMAIL"), "{problems}");
     }
 
     fn token_file(mode: u32, content: &str) -> (tempfile::TempDir, PathBuf) {

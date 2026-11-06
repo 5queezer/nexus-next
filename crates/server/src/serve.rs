@@ -6,14 +6,16 @@ use std::pin::pin;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use axum::Router;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::get;
-use nexus_auth::{AuthState, require_owner_session};
+use axum::{Extension, Router};
+use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
+use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
+use nexus_mcp::McpState;
 use tokio::net::TcpListener;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -39,12 +41,13 @@ pub const MAX_IN_FLIGHT: usize = 32;
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const HEALTH_DB_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Compact logging without timestamps (journald adds its own). sqlx statement logging is cut off
-/// at warnings whatever the level, so SQL text can never reach the log.
+/// Compact logging without timestamps (journald adds its own). sqlx and rmcp are cut off at warnings
+/// whatever the level, so SQL text and tool arguments and results can never reach the log.
 pub fn init_logging(level: Level, writer: impl for<'a> MakeWriter<'a> + Send + Sync + 'static) {
     let filter = Targets::new()
         .with_default(level)
-        .with_target("sqlx", LevelFilter::WARN);
+        .with_target("sqlx", LevelFilter::WARN)
+        .with_target("rmcp", LevelFilter::WARN);
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
@@ -80,6 +83,14 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     if let Some(token) = &config.calendar_token {
         routes = routes.merge(nexus_web::calendar_router(db.clone(), token.clone()));
     }
+    let mcp = nexus_mcp::router(McpState {
+        db: db.clone(),
+        owner_id: config.owner_id.clone(),
+        owner_email: config.owner_email.clone(),
+    });
+    let mcp = Router::new()
+        .nest("/api/mcp", mcp.clone())
+        .nest("/mcp", mcp);
     let humans = nexus_web::dashboard_router(db.clone(), config.timezone)
         .merge(nexus_web::api_router(db.clone()));
     let routes = match &config.access {
@@ -87,9 +98,15 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             let auth = AuthState::new(db.clone(), auth.clone())?;
             routes
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(mcp.layer(from_fn_with_state(auth.clone(), require_mcp_auth)))
                 .merge(nexus_auth::router(auth))
         }
-        Access::InsecureLocalOnly => routes.merge(humans),
+        Access::InsecureLocalOnly => {
+            routes.merge(humans).merge(mcp.layer(Extension(AuthContext {
+                auth_type: AuthType::ApiToken,
+                scopes: vec![SCOPE_TOOLS.to_owned(), SCOPE_SUBMISSIONS.to_owned()],
+            })))
+        }
     };
     Ok(harden(routes)
         .route("/healthz", get(healthz).with_state(db.clone()))

@@ -60,6 +60,9 @@ Settings go in `/etc/nexus/nexus.env`:
 sudo install -m 0640 /dev/stdin /etc/nexus/nexus.env <<'ENV'
 # Required. The OAuth issuer, the same setting as --base-url. Must be the origin clients really use.
 NEXUS_PUBLIC_BASE_URL=https://nexus.example.net
+# Required. The owner in old Nexus: see below.
+NEXUS_OWNER_ID=replace-with-the-userId-in-the-export
+NEXUS_OWNER_EMAIL=replace-with-the-actor-on-imported-events
 # Required behind a tunnel: see below.
 NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP
 ENV
@@ -68,6 +71,8 @@ ENV
 | Variable | Meaning |
 |---|---|
 | `NEXUS_PUBLIC_BASE_URL` | Required. An origin only: https, no path or query |
+| `NEXUS_OWNER_ID` | Required. The `userId` on rows in the export's `Application.jsonl`. MCP responses still carry it |
+| `NEXUS_OWNER_EMAIL` | Required. The `actor` on imported MCP events. New events record it, and event request hashes cover it, so a different value makes replays of imported idempotency keys conflict |
 | `NEXUS_TRUSTED_IP_HEADER` | The header your ingress sets to the client's address. Required behind a tunnel |
 | `NEXUS_TRUSTED_PROXY_PEERS` | Comma-separated peers allowed to set that header. Default: loopback |
 | `NEXUS_OWNER_PASSPHRASE_HASH_FILE` | Where the hash lives. Default: `<data dir>/owner-passphrase.argon2` |

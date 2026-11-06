@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 nexus-auth = { path = "crates/auth" }
 nexus-core = { path = "crates/core" }
+nexus-mcp = { path = "crates/mcp" }
 nexus-web = { path = "crates/web" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
