@@ -159,6 +159,8 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 - For every application: `get_application`, `list_application_events`, contacts, documents and submissions return the same content from both servers, allowing only for documented differences.
 - Writes go to a copy, never to live: replay recorded calls and compare responses and readbacks.
 
+**Parity result, 2026-11-06.** Golden scenarios of 1,809 calls through the real `nexus serve` binary, compared with old Nexus at `235138d` restored locally: 1,805 pass, 3 documented (the `generate_tailored_cv` gap), 1 fail (`sort: company`). That one is an artifact of the baseline: it ran under glibc `en_US` collation, while production compares bytewise (`'Z' < 'a'` is true there), as Rust does. Contact and linked-application order is compared unordered, because old Nexus returned Postgres heap order, which no client can rely on. About 18,000 further fuzzed calls matched apart from explained differences. The baseline goes stale for time-dependent `pipeline_healthcheck` checks from 2026-11-09, so re-record it after that.
+
 **Cutover:** stop writes to old Nexus, re-export, import, re-run parity, then repoint clients. Keep old Nexus stopped but restorable for 30 days.
 
 ## 8. Deployment and open risks
@@ -167,7 +169,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 **Storage.** SQLite and blobs live on the root filesystem under `/var/lib/nexus`, never in `/home`, so the service survives an unattended reboot.
 
-**RAM.** Target 30-60 MB at idle **[handoff]**, unmeasured. Measure it on the board for M1. Typst's compile peak and font loading are the main unknowns for M2.
+**RAM.** Target 30-60 MB at idle **[handoff]**. Measured on the board on 2026-11-06 at `0d5b5d8` with synthetic fixtures: 6.8 MB after start, 12.7 MB after 500 requests including 200 MCP calls, tool calls about 10 ms, binary 12.8 MB. With the real data set on x86-64, an earlier measurement before MCP was merged: 7.5 MiB after start, 29 MiB peak under 16 parallel clients. The real data set hasn't been measured on the board. Typst's compile peak and font loading are the main unknowns for M2.
 
 **Backup.** Litestream or rsync **[handoff]**. Backups must be encrypted before leaving the board, since the data on it isn't. The destination is undecided.
 
