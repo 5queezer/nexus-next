@@ -3,6 +3,7 @@
 pub mod blob;
 pub mod db;
 pub mod error;
+pub mod repo;
 pub mod time;
 
 pub use blob::BlobStore;
