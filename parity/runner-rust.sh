@@ -3,7 +3,8 @@
 # on a throwaway import without recovered documents, because the old baseline has none.
 # Usage: runner-rust.sh <nexus binary> <export dir> <out dir>
 # Needs sqlite3 and python3. Private data stays in the working dir (tmpfs, mode 700), and the server
-# never holds this script's stdio. Port: PARITY_RUST_PORT.
+# never holds this script's stdio. Port: PARITY_RUST_PORT. The working dir holds a real import, so it
+# is deleted on exit. Set PARITY_RUST_KEEP=1 to keep it for debugging, then delete it by hand.
 set -euo pipefail
 W=${PARITY_RUST_WORK:-${XDG_RUNTIME_DIR:-/tmp}/nexus-rust-parity}
 PORT=${PARITY_RUST_PORT:-55431}
@@ -25,7 +26,11 @@ EXPORT=$2
 OUT=$(realpath -m "$3")
 SCRIPT=$(realpath "$0")
 HERE=$(dirname "$SCRIPT")
-stop() { [ -f "$W/pid" ] && kill "$(cat "$W/pid")" 2>/dev/null; rm -f "$W/pid"; }
+stop() {
+  [ -f "$W/pid" ] && kill "$(cat "$W/pid")" 2>/dev/null
+  rm -f "$W/pid"
+  [ -n "${PARITY_RUST_KEEP:-}" ] || rm -rf "$W"
+}
 trap stop EXIT
 up && { echo "port $PORT is in use" >&2; exit 1; }
 
