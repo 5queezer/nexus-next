@@ -53,10 +53,11 @@ impl Timestamp {
         &self.0
     }
 
+    /// Columns only check a timestamp's shape, so a stored value can be `2026-99-99T...`. That reads
+    /// as the epoch: an odd date on one row beats a panic that takes the whole page with it.
     pub fn to_datetime(&self) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(&self.0)
-            .expect("Timestamp holds canonical RFC 3339 text")
-            .with_timezone(&Utc)
+            .map_or(DateTime::UNIX_EPOCH, |value| value.with_timezone(&Utc))
     }
 
     pub fn plus(&self, duration: Duration) -> Self {
@@ -155,5 +156,11 @@ mod tests {
             "\"2026-01-02T02:04:05.000Z\""
         );
         assert!(serde_json::from_str::<Timestamp>("\"yesterday\"").is_err());
+    }
+
+    #[test]
+    fn a_stored_value_that_is_no_real_instant_reads_as_the_epoch() {
+        let stored: Timestamp = Timestamp("2026-99-99T99:99:99.999Z".to_owned());
+        assert_eq!(stored.to_datetime(), DateTime::UNIX_EPOCH);
     }
 }

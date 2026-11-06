@@ -116,13 +116,14 @@ pub async fn list_for_application(
     if !applications::exists(&mut *conn, application_id).await? {
         return Err(Error::NotFound);
     }
-    let mut rows: Vec<Submission> = sqlx::query_as(
+    let rows = sqlx::query(
         "SELECT * FROM application_submissions WHERE application_id = ?
          ORDER BY submitted_at DESC, id DESC",
     )
     .bind(application_id)
     .fetch_all(conn)
     .await?;
+    let mut rows: Vec<Submission> = super::decode_rows(rows);
     if !include_answers {
         for row in &mut rows {
             row.answers = Json(json!([]));
