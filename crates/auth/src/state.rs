@@ -48,10 +48,20 @@ pub(crate) struct Inner {
 impl AuthState {
     pub fn new(db: Db, config: AuthConfig) -> Result<Self, ConfigError> {
         validate_passphrase_hash(&config.owner_passphrase_hash)?;
+        let base_url = normalize_base_url(&config.public_base_url)?;
+        if config.trusted_proxy.is_none()
+            && !base_url.contains("://localhost")
+            && !base_url.contains("://127.0.0.1")
+        {
+            tracing::warn!(
+                "no trusted proxy configured: behind a tunnel or reverse proxy all clients share one \
+                 rate-limit bucket, so set NEXUS_TRUSTED_IP_HEADER"
+            );
+        }
         let hour = Duration::from_secs(3600);
         Ok(Self(Arc::new(Inner {
             db,
-            base_url: normalize_base_url(&config.public_base_url)?,
+            base_url,
             passphrase_hash: config.owner_passphrase_hash,
             trusted_proxy: config.trusted_proxy,
             key: random_bytes(),

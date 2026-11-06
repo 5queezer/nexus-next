@@ -1099,17 +1099,89 @@ async fn login_backs_off_per_source_even_for_the_right_passphrase() {
 #[tokio::test]
 async fn login_backs_off_globally_across_sources() {
     let h = Harness::new().await;
-    for i in 0..21 {
-        let mut browser = Browser::default();
-        let ip = format!("203.0.113.{i}");
-        let reply = browser.attempt_login(&h, "wrong guess here", &ip).await;
-        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "attempt {i}");
-    }
+    exhaust_global_backoff(&h).await;
     let mut browser = Browser::default();
     let blocked = browser
         .attempt_login(&h, PASSPHRASE, "198.51.100.200")
         .await;
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+async fn exhaust_global_backoff(h: &Harness) {
+    for i in 0..21 {
+        let reply = Browser::default()
+            .attempt_login(h, "wrong guess here", &format!("203.0.113.{i}"))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "attempt {i}");
+    }
+}
+
+#[tokio::test]
+async fn a_known_device_can_log_in_through_an_attack_on_the_global_backoff() {
+    let h = Harness::new().await;
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    let cookie = owner
+        .cookies
+        .get("__Host-nexus_device")
+        .expect("login marks the device")
+        .clone();
+    assert_eq!(cookie.len(), 64);
+
+    // Logging out leaves the mark, and the owner is back at the login form when the attack starts.
+    let page = owner.send(&h, get_req("/logout")).await;
+    owner
+        .send(
+            &h,
+            form_req("/logout", &format!("csrf={}", page.field("csrf"))),
+        )
+        .await;
+    assert!(owner.cookies.contains_key("__Host-nexus_device"));
+    exhaust_global_backoff(&h).await;
+
+    let blocked = Browser::default()
+        .attempt_login(&h, PASSPHRASE, "198.51.100.200")
+        .await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // A forged mark doesn't help.
+    let mut forged = Browser::default();
+    forged
+        .cookies
+        .insert("__Host-nexus_device".to_owned(), "0".repeat(64));
+    let reply = forged.attempt_login(&h, PASSPHRASE, "198.51.100.201").await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let reply = owner.attempt_login(&h, PASSPHRASE, "198.51.100.202").await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+}
+
+#[tokio::test]
+async fn a_known_device_still_needs_the_passphrase_and_has_its_own_backoff() {
+    let h = Harness::new().await;
+    let mut device = Browser::default();
+    device.login(&h).await;
+    let page = device.send(&h, get_req("/logout")).await;
+    device
+        .send(
+            &h,
+            form_req("/logout", &format!("csrf={}", page.field("csrf"))),
+        )
+        .await;
+
+    // Rotating source addresses doesn't escape the device bucket.
+    for i in 0..6 {
+        let reply = device
+            .attempt_login(&h, "wrong guess here", &format!("203.0.113.{i}"))
+            .await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "attempt {i}");
+        assert!(!device.cookies.contains_key("__Host-nexus_session"));
+    }
+    let reply = device.attempt_login(&h, PASSPHRASE, "203.0.113.50").await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // Its failures don't count against anyone else.
+    Browser::default().login(&h).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -23,14 +23,27 @@ use crate::state::{AuthState, ClientKey};
 // subdomain can't plant them.
 const SESSION_COOKIE: &str = "__Host-nexus_session";
 const LOGIN_CSRF_COOKIE: &str = "__Host-nexus_login_csrf";
+const DEVICE_COOKIE: &str = "__Host-nexus_device";
 const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 const LOGIN_CSRF_TTL_SECS: u64 = 3600;
+const DEVICE_TTL_SECS: u64 = 400 * 24 * 3600;
 /// Well above what one owner has open; the oldest session goes first.
 const MAX_SESSIONS: usize = 32;
 pub(crate) const MAX_NEXT_BYTES: usize = 8192;
 
 const LOGIN_CSRF_PURPOSE: &str = "login-csrf";
 const LOGOUT_CSRF_PURPOSE: &str = "logout-csrf";
+const DEVICE_PURPOSE: &str = "known-device";
+/// The limiter bucket of browsers holding the device cookie.
+const DEVICE_KEY: &str = "known-device";
+
+/// Marks a browser that has logged in before. An attacker can hold the global backoff open with a
+/// few requests, which would lock the owner out of re-authorizing clients, so a marked browser's
+/// attempts count on a bucket of their own. It grants nothing else: the passphrase is still needed.
+/// Keyed by the stored hash, it survives restarts and dies when the passphrase changes.
+fn device_token(state: &AuthState) -> String {
+    sign(state.0.passphrase_hash.as_bytes(), DEVICE_PURPOSE, "")
+}
 
 /// A page that can't be framed, cached or indexed. `form_target` is an extra origin forms may lead
 /// to: Chrome applies `form-action` to redirects, so the consent form must name the client's.
@@ -226,8 +239,15 @@ pub(crate) async fn login(
         );
     }
 
-    let keys = [client.as_str(), GLOBAL_KEY];
-    if let Err(retry) = state.0.login_limit.reserve(&keys, Instant::now()) {
+    let known_device = cookie_value(&headers, DEVICE_COOKIE)
+        .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
+    let source = if known_device { DEVICE_KEY } else { &client };
+    let keys: &[&str] = if known_device {
+        &[source]
+    } else {
+        &[source, GLOBAL_KEY]
+    };
+    if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
         let mut response = respond(
             StatusCode::TOO_MANY_REQUESTS,
             "Too many attempts. Please wait and try again.",
@@ -252,10 +272,16 @@ pub(crate) async fn login(
         return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
     }
 
-    state.0.login_limit.succeed(&client);
+    state.0.login_limit.succeed(source, !known_device);
     let session = create_session(&state);
     let response = redirect_after_login(next.as_deref());
     let response = with_cookie(response, SESSION_COOKIE, &session, SESSION_TTL.as_secs());
+    let response = with_cookie(
+        response,
+        DEVICE_COOKIE,
+        &device_token(&state),
+        DEVICE_TTL_SECS,
+    );
     with_cookie(response, LOGIN_CSRF_COOKIE, "", 0)
 }
 
@@ -397,6 +423,27 @@ mod tests {
             HeaderValue::from_str(&format!("{SESSION_COOKIE}={id}")).unwrap(),
         );
         headers
+    }
+
+    #[tokio::test]
+    async fn the_device_mark_survives_restarts_and_dies_with_the_passphrase() {
+        let (first, dir) = state().await;
+        let db = Db::open(dir.path()).await.unwrap();
+        let config = |hash: &str| AuthConfig {
+            public_base_url: BASE.to_owned(),
+            owner_passphrase_hash: hash.to_owned(),
+            trusted_proxy: None,
+        };
+        let restarted = AuthState::new(db.clone(), config(&first.0.passphrase_hash)).unwrap();
+        assert_ne!(first.0.key, restarted.0.key);
+        assert_eq!(device_token(&first), device_token(&restarted));
+
+        let rotated = AuthState::new(
+            db,
+            config("$argon2id$v=19$m=8,t=1,p=1$b3RoZXJzYWx0$AAAAAAAAAAAAAAAAAAAAAA"),
+        )
+        .unwrap();
+        assert_ne!(device_token(&first), device_token(&rotated));
     }
 
     #[tokio::test]

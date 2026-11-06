@@ -162,10 +162,11 @@ impl Backoff {
         Ok(())
     }
 
-    pub(crate) fn succeed(&self, source: &str) {
+    /// `counted_globally` says whether the attempt being settled also reserved `GLOBAL_KEY`.
+    pub(crate) fn succeed(&self, source: &str, counted_globally: bool) {
         let mut entries = self.entries.lock().unwrap();
         entries.remove(source);
-        if let Some(global) = entries.get_mut(GLOBAL_KEY) {
+        if counted_globally && let Some(global) = entries.get_mut(GLOBAL_KEY) {
             global.attempts = global.attempts.saturating_sub(1);
         }
     }
@@ -259,7 +260,7 @@ mod tests {
             limit.reserve(&["a"], now).unwrap();
         }
         assert!(limit.reserve(&["a"], now).is_err());
-        limit.succeed("a");
+        limit.succeed("a", false);
         assert!(limit.reserve(&["a"], now).is_ok());
 
         for _ in 0..2 {
@@ -276,7 +277,9 @@ mod tests {
         for source in ["a", "b", "c"] {
             limit.reserve(&[source, GLOBAL_KEY], now).unwrap();
         }
-        limit.succeed("c");
+        limit.succeed("c", true);
+        assert_eq!(limit.entries.lock().unwrap()[GLOBAL_KEY].attempts, 2);
+        limit.succeed("d", false);
         assert_eq!(limit.entries.lock().unwrap()[GLOBAL_KEY].attempts, 2);
     }
 
