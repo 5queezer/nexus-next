@@ -1,5 +1,6 @@
-use std::fs::DirBuilder;
-use std::os::unix::fs::DirBuilderExt;
+use std::fs::{self, DirBuilder, Permissions};
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -27,6 +28,19 @@ pub fn db_path(data_dir: &Path) -> PathBuf {
     data_dir.join(DB_FILE)
 }
 
+/// SQLite creates its files by the umask, and `set-passphrase` runs outside the unit's `UMask`, so
+/// the data directory's mode would be the only thing protecting them.
+fn make_db_files_private(data_dir: &Path) -> io::Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = data_dir.join(format!("{DB_FILE}{suffix}"));
+        match fs::set_permissions(path, Permissions::from_mode(0o600)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The database pool (WAL, foreign keys on) plus the blob store of one data directory.
 #[derive(Debug, Clone)]
 pub struct Db {
@@ -50,6 +64,7 @@ impl Db {
             .connect_with(options)
             .await?;
         MIGRATOR.run(&pool).await?;
+        make_db_files_private(data_dir)?;
         Ok(Self {
             pool,
             blobs: BlobStore::new(data_dir),
@@ -80,5 +95,38 @@ impl Db {
     /// Closes the pool, checkpointing the WAL.
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn database_files_are_private_whatever_the_umask() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        for name in ["nexus.db", "nexus.db-wal", "nexus.db-shm"] {
+            let mode = fs::metadata(dir.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{name}");
+        }
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn opening_tightens_a_database_left_world_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        Db::open(dir.path()).await.unwrap().close().await;
+        let path = dir.path().join(DB_FILE);
+        fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        db.close().await;
     }
 }

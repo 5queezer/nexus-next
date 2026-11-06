@@ -4,9 +4,9 @@
 //! while the server runs) and `blobs/<sha256>` for every blob that snapshot references. The board
 //! only holds public recipient keys, so a stolen backup or board cannot decrypt older backups.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions, Permissions};
 use std::io::{self, BufReader, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,6 +19,8 @@ use sqlx::{ConnectOptions, SqliteConnection};
 
 const BLOBS_DIR: &str = "blobs";
 const REPLACED_DB: &str = "nexus.db.before-restore";
+const STAGE_PREFIX: &str = ".backup-";
+const BACKUP_LOCK: &str = ".backup.lock";
 
 #[derive(Debug)]
 pub struct Summary {
@@ -95,8 +97,48 @@ async fn verify_database(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(refs)
 }
 
+/// Held for a whole backup, and released by the kernel however the process dies, so whatever
+/// `remove_stale` finds really is left over.
+fn lock_backups(data_dir: &Path) -> anyhow::Result<File> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(data_dir.join(BACKUP_LOCK))?;
+    lock.try_lock()
+        .context("another backup of this data directory is running")?;
+    Ok(lock)
+}
+
+/// A kill skips `TempDir`'s cleanup. This also clears the plaintext stage directories older builds
+/// left next to the backups.
+fn remove_stale(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(STAGE_PREFIX)
+        {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
 /// Writes an encrypted, verified backup of `data_dir` to `out`. The file appears under its final
 /// name only once complete.
+///
+/// The plaintext snapshot is staged under `data_dir`, which already holds the same data and is never
+/// synced anywhere, so a kill can't leave it where the backups go. The encrypted file is written
+/// beside `out`: in the systemd unit the two directories are separate mounts, and `rename` can't
+/// cross them.
 pub async fn backup(
     data_dir: &Path,
     out: &Path,
@@ -109,9 +151,13 @@ pub async fn backup(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     private_dir(parent)?;
+    let _lock = lock_backups(data_dir)?;
+    remove_stale(data_dir)?;
+    remove_stale(parent)?;
     let stage = tempfile::Builder::new()
-        .prefix(".backup-")
-        .tempdir_in(parent)?;
+        .prefix(STAGE_PREFIX)
+        .permissions(Permissions::from_mode(0o700))
+        .tempdir_in(data_dir)?;
     let copy = stage.path().join(DB_FILE);
 
     let mut conn = open_existing(&source).await?;
@@ -123,31 +169,31 @@ pub async fn backup(
     sqlx::Connection::close(conn).await?;
     let refs = verify_database(&copy).await?;
 
-    let partial = stage.path().join("backup.partial");
+    let partial = tempfile::Builder::new()
+        .prefix(STAGE_PREFIX)
+        .suffix(".partial")
+        .tempfile_in(parent)?;
     let summary = write_archive(
-        &partial,
+        partial.as_file().try_clone()?,
         &copy,
         &BlobStore::new(data_dir),
         &refs,
         recipients,
     )?;
-    fs::rename(&partial, out).with_context(|| format!("cannot write {}", out.display()))?;
+    partial
+        .persist(out)
+        .with_context(|| format!("cannot write {}", out.display()))?;
     File::open(parent)?.sync_all()?;
     Ok(summary)
 }
 
 fn write_archive(
-    partial: &Path,
+    file: File,
     db_copy: &Path,
     store: &BlobStore,
     refs: &[String],
     recipients: &[x25519::Recipient],
 ) -> anyhow::Result<Summary> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(partial)?;
     let encryptor =
         age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))?;
     let mut tar = tar::Builder::new(encryptor.wrap_output(file)?);
@@ -171,13 +217,36 @@ fn write_archive(
     })
 }
 
+/// Anyone holding the public key can build a complete backup: age proves confidentiality, not who
+/// wrote the file. So unless asked, a restored database brings no way in with it.
+async fn clear_credentials(path: &Path) -> anyhow::Result<()> {
+    let mut conn = open_existing(path).await?;
+    sqlx::raw_sql(
+        "BEGIN IMMEDIATE;
+         DELETE FROM api_tokens;
+         DELETE FROM oauth_access_tokens;
+         DELETE FROM oauth_refresh_tokens;
+         DELETE FROM oauth_auth_codes;
+         DELETE FROM oauth_clients;
+         COMMIT;",
+    )
+    .execute(&mut conn)
+    .await
+    .context("cannot clear credentials from the backup")?;
+    sqlx::Connection::close(conn).await?;
+    Ok(())
+}
+
 /// Decrypts `from`, verifies it and installs it into `data_dir`. Stop the server first. An
-/// existing database is only replaced with `force`, and is kept as `nexus.db.before-restore`.
+/// existing database is only replaced with `force`, and is kept as `nexus.db.before-restore`. API
+/// tokens and OAuth clients and grants are cleared unless `keep_credentials`, and blobs no document
+/// references are not installed.
 pub async fn restore(
     from: &Path,
     identity_file: &Path,
     data_dir: &Path,
     force: bool,
+    keep_credentials: bool,
 ) -> anyhow::Result<Summary> {
     let target = db_path(data_dir);
     ensure!(
@@ -211,15 +280,20 @@ pub async fn restore(
             "the backup lacks blob {sha} that a document references"
         );
     }
+    if !keep_credentials {
+        clear_credentials(&staged_db).await?;
+    }
 
     let blobs_dir = data_dir.join(BLOBS_DIR);
     private_dir(&blobs_dir)?;
-    for sha in &present {
+    for sha in &refs {
         fs::rename(stage.path().join(BLOBS_DIR).join(sha), blobs_dir.join(sha))?;
     }
     File::open(&blobs_dir)?.sync_all()?;
     if target.exists() {
-        fs::rename(&target, data_dir.join(REPLACED_DB))?;
+        let replaced = data_dir.join(REPLACED_DB);
+        fs::rename(&target, &replaced)?;
+        fs::set_permissions(&replaced, Permissions::from_mode(0o600))?;
     }
     for suffix in ["-wal", "-shm"] {
         let _ = fs::remove_file(data_dir.join(format!("{DB_FILE}{suffix}")));
@@ -227,7 +301,7 @@ pub async fn restore(
     fs::rename(&staged_db, &target)?;
     File::open(data_dir)?.sync_all()?;
     Ok(Summary {
-        blobs: present.len(),
+        blobs: refs.len(),
         bytes: fs::metadata(&target)?.len(),
     })
 }

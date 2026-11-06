@@ -11,7 +11,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, middleware};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use nexus_core::repo::{applications, events};
 use nexus_core::{Db, Timestamp};
 use serde::Deserialize;
@@ -20,6 +20,8 @@ use subtle::ConstantTimeEq;
 use crate::queue;
 
 const DEFAULT_DURATION_MINUTES: i64 = 60;
+/// Metadata is free-form and agents copy it from untrusted pages. A day is longer than any interview.
+const MAX_DURATION_MINUTES: i64 = 1440;
 
 #[derive(Clone)]
 struct CalendarState {
@@ -138,7 +140,7 @@ fn interviews(scheduled: &[events::ApplicationEvent]) -> Vec<Interview> {
         let minutes = metadata
             .and_then(|m| m.get("durationMinutes"))
             .and_then(|v| v.as_i64())
-            .filter(|m| *m > 0)
+            .filter(|m| (1..=MAX_DURATION_MINUTES).contains(m))
             .unwrap_or(DEFAULT_DURATION_MINUTES);
         let replaced = found
             .iter_mut()
@@ -203,7 +205,11 @@ impl Calendar {
 
     fn interview(&mut self, application: &applications::Application, interview: &Interview) {
         let start = interview.start.to_datetime();
-        let end = start + Duration::minutes(interview.minutes);
+        // A year past 9999 has no form in iCalendar's DATE-TIME.
+        let end = start
+            .checked_add_signed(Duration::minutes(interview.minutes))
+            .filter(|end| end.year() <= 9999)
+            .unwrap_or(start);
         self.line("BEGIN:VEVENT");
         self.line(&format!(
             "UID:interview-{}-{}@nexus",
@@ -246,12 +252,9 @@ impl Calendar {
     }
 }
 
+/// The feed's URL may live in a third party's systems, so free-text `next_action` stays out.
 fn description(application: &applications::Application) -> String {
-    let mut lines = vec![format!("{} (#{})", application.role, application.id)];
-    if let Some(action) = application.next_action.as_deref().filter(|a| !a.is_empty()) {
-        lines.push(format!("Next action: {action}"));
-    }
-    lines.join("\n")
+    format!("{} (#{})", application.role, application.id)
 }
 
 fn utc(value: DateTime<Utc>) -> String {

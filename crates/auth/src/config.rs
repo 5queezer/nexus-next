@@ -8,6 +8,9 @@ use axum::http::HeaderName;
 use url::Url;
 
 const PASSPHRASE_FILE: &str = "owner-passphrase.argon2";
+/// Where a client may be sent with an authorization code, besides loopback. Claude.ai's real
+/// callback host is unverified until the M1 gate: see `event=redirect_host_rejected` in the log.
+const DEFAULT_REDIRECT_HOSTS: [&str; 2] = ["claude.ai", "claude.com"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -25,6 +28,16 @@ pub enum ConfigError {
     InvalidTrustedHeader,
     #[error("NEXUS_TRUSTED_PROXY_PEERS must be a comma-separated list of IP addresses")]
     InvalidTrustedPeers,
+    #[error(
+        "NEXUS_TRUSTED_IP_HEADER is required with an https base URL: name the header your ingress \
+         sets to the client address, or set it to `none` if clients reach this server directly"
+    )]
+    MissingTrustedHeader,
+    #[error(
+        "NEXUS_OAUTH_REDIRECT_HOSTS must be comma-separated host names, such as claude.ai: letters, \
+         digits, hyphens and dots only, no scheme, port or wildcard"
+    )]
+    InvalidRedirectHosts,
     #[error("reading {0}: {1}")]
     Io(PathBuf, #[source] std::io::Error),
 }
@@ -47,6 +60,8 @@ pub struct AuthConfig {
     pub owner_passphrase_hash: String,
     /// `None` (the default) means rate limits key on the socket address, ignoring forwarded headers.
     pub trusted_proxy: Option<TrustedProxy>,
+    /// Hosts an https redirect URI may name, matched exactly. Loopback is always allowed.
+    pub redirect_hosts: Vec<String>,
 }
 
 /// Where the owner passphrase's hash lives: `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else the data dir.
@@ -87,7 +102,8 @@ impl AuthConfig {
     /// Takes the public origin from the caller (the server's `--base-url`), and reads the rest:
     /// `NEXUS_OWNER_PASSPHRASE_HASH`, else the file named by `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else
     /// `<data_dir>/owner-passphrase.argon2`; and optionally `NEXUS_TRUSTED_IP_HEADER` with
-    /// `NEXUS_TRUSTED_PROXY_PEERS` (default: loopback only). Everything is checked here.
+    /// `NEXUS_TRUSTED_PROXY_PEERS` (default: loopback only), required with an https base URL unless
+    /// it says `none`; and `NEXUS_OAUTH_REDIRECT_HOSTS`. Everything is checked here.
     pub fn from_env(public_base_url: &str, data_dir: &Path) -> Result<Self, ConfigError> {
         Self::from_vars(|name| std::env::var(name).ok(), public_base_url, data_dir)
     }
@@ -103,7 +119,12 @@ impl AuthConfig {
             None => read_hash_file(&passphrase_file(&var, data_dir))?,
         };
         validate_passphrase_hash(&owner_passphrase_hash)?;
-        let trusted_proxy = var("NEXUS_TRUSTED_IP_HEADER")
+        let trusted_header = var("NEXUS_TRUSTED_IP_HEADER");
+        if trusted_header.is_none() && public_base_url.starts_with("https://") {
+            return Err(ConfigError::MissingTrustedHeader);
+        }
+        let trusted_proxy = trusted_header
+            .filter(|header| !header.trim().eq_ignore_ascii_case("none"))
             .map(|header| {
                 let peers = match var("NEXUS_TRUSTED_PROXY_PEERS") {
                     Some(list) => list
@@ -120,12 +141,34 @@ impl AuthConfig {
                 Ok(TrustedProxy { header, peers })
             })
             .transpose()?;
+        let redirect_hosts = match var("NEXUS_OAUTH_REDIRECT_HOSTS") {
+            Some(list) => parse_redirect_hosts(&list)?,
+            None => DEFAULT_REDIRECT_HOSTS.map(str::to_owned).to_vec(),
+        };
         Ok(Self {
             public_base_url,
             owner_passphrase_hash,
             trusted_proxy,
+            redirect_hosts,
         })
     }
+}
+
+fn parse_redirect_hosts(list: &str) -> Result<Vec<String>, ConfigError> {
+    list.split(',')
+        .map(|host| host.trim().to_ascii_lowercase())
+        .filter(|host| !host.is_empty())
+        .map(|host| {
+            if host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            {
+                Ok(host)
+            } else {
+                Err(ConfigError::InvalidRedirectHosts)
+            }
+        })
+        .collect()
 }
 
 /// The canonical origin of a configured base URL. Cookies use `Path=/` and routes are absolute, so
@@ -164,13 +207,22 @@ mod tests {
 
     const BASE: &str = "https://crm.example.test";
     const ENV_HASH: (&str, &str) = ("NEXUS_OWNER_PASSPHRASE_HASH", HASH);
+    const NO_PROXY: (&str, &str) = ("NEXUS_TRUSTED_IP_HEADER", "none");
 
     fn config(vars: &[(&str, &str)], dir: &Path) -> Result<AuthConfig, ConfigError> {
         let vars: HashMap<String, String> = vars
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        AuthConfig::from_vars(|name| vars.get(name).cloned(), BASE, dir)
+        AuthConfig::from_vars(
+            |name| {
+                vars.get(name)
+                    .cloned()
+                    .or_else(|| (name == NO_PROXY.0).then(|| NO_PROXY.1.to_owned()))
+            },
+            BASE,
+            dir,
+        )
     }
 
     fn write_private(path: &Path, contents: &str) {
@@ -257,6 +309,66 @@ mod tests {
             config(&[ENV_HASH, header, bad], dir.path()),
             Err(ConfigError::InvalidTrustedPeers)
         ));
+    }
+
+    #[test]
+    fn an_https_base_url_needs_the_trusted_header_or_an_explicit_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let var = |base: &'static str, header: Option<&'static str>| {
+            AuthConfig::from_vars(
+                move |name| match name {
+                    "NEXUS_OWNER_PASSPHRASE_HASH" => Some(HASH.to_owned()),
+                    "NEXUS_TRUSTED_IP_HEADER" => header.map(str::to_owned),
+                    _ => None,
+                },
+                base,
+                dir.path(),
+            )
+        };
+        assert!(matches!(
+            var(BASE, None),
+            Err(ConfigError::MissingTrustedHeader)
+        ));
+        for none in ["none", "NONE", " none "] {
+            assert!(var(BASE, Some(none)).unwrap().trusted_proxy.is_none());
+        }
+        assert!(
+            var(BASE, Some("CF-Connecting-IP"))
+                .unwrap()
+                .trusted_proxy
+                .is_some()
+        );
+        assert!(var("http://127.0.0.1:3000", None).is_ok());
+    }
+
+    #[test]
+    fn redirect_hosts_default_to_claude_and_the_setting_replaces_them() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            config(&[ENV_HASH], dir.path()).unwrap().redirect_hosts,
+            ["claude.ai", "claude.com"]
+        );
+        let set = (
+            "NEXUS_OAUTH_REDIRECT_HOSTS",
+            " Hermes.Example.net, ,a-b.example.net ",
+        );
+        assert_eq!(
+            config(&[ENV_HASH, set], dir.path()).unwrap().redirect_hosts,
+            ["hermes.example.net", "a-b.example.net"]
+        );
+        let empty = ("NEXUS_OAUTH_REDIRECT_HOSTS", "");
+        assert!(
+            config(&[ENV_HASH, empty], dir.path())
+                .unwrap()
+                .redirect_hosts
+                .is_empty()
+        );
+        for bad in ["https://claude.ai", "*.claude.ai", "claude.ai:443", "a b"] {
+            assert!(matches!(
+                config(&[ENV_HASH, ("NEXUS_OAUTH_REDIRECT_HOSTS", bad)], dir.path()),
+                Err(ConfigError::InvalidRedirectHosts)
+            ));
+        }
     }
 
     #[test]

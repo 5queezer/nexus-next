@@ -27,6 +27,7 @@ use nexus_core::time::Timestamp;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use unicode_properties::general_category::{GeneralCategory, UnicodeGeneralCategory};
 use url::Url;
 use url::form_urlencoded::byte_serialize;
 
@@ -50,6 +51,9 @@ const MAX_CLIENTS: i64 = 50;
 /// registration limit cannot fill the cap within this time.
 const EVICTION_MIN_AGE_MINUTES: i64 = 10;
 const MAX_CLIENT_NAME_CHARS: usize = 200;
+/// The longest DNS name. A rejected host is logged, and nothing longer can be a real one.
+const MAX_LOGGED_HOST_CHARS: usize = 253;
+const MAX_LOGGED_NAME_CHARS: usize = 64;
 const CHALLENGE_LEN: usize = 43;
 /// How long a rotated refresh token may be presented again without counting as a replay. Both MCP
 /// SDKs keep the old token when a refresh response is lost, and retry it, and an unattended agent
@@ -183,7 +187,28 @@ fn invalid_metadata(description: &str) -> Reject {
     bad_request("invalid_client_metadata", description)
 }
 
-fn validate_registered_redirect(uri: &Value) -> Result<String, Reject> {
+/// Exact match, so only hosts the operator listed can receive a code: no suffixes or subdomains,
+/// and the list itself holds nothing but letters, digits, hyphens and dots.
+fn redirect_host_allowed(state: &AuthState, host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1") || state.0.redirect_hosts.iter().any(|h| h == host)
+}
+
+/// The refusal an operator diagnoses from the log: Claude.ai's real callback host is unverified.
+fn log_rejected_host(source: &str, host: &str) {
+    let host: String = host.chars().take(MAX_LOGGED_HOST_CHARS).collect();
+    tracing::warn!(
+        event = "redirect_host_rejected",
+        host = ?host,
+        source,
+        "redirect host is not in NEXUS_OAUTH_REDIRECT_HOSTS"
+    );
+}
+
+fn validate_registered_redirect(
+    state: &AuthState,
+    source: &str,
+    uri: &Value,
+) -> Result<String, Reject> {
     let shown = uri.as_str().map_or_else(|| uri.to_string(), str::to_owned);
     let parsed = uri
         .as_str()
@@ -201,6 +226,13 @@ fn validate_registered_redirect(uri: &Value) -> Result<String, Reject> {
             "redirect_uri must not contain a fragment: {shown}"
         )));
     }
+    let host = parsed.host_str().unwrap_or_default();
+    if !redirect_host_allowed(state, host) {
+        log_rejected_host(source, host);
+        return Err(invalid_metadata(&format!(
+            "redirect_uri host is not allowed: {host}"
+        )));
+    }
     Ok(shown)
 }
 
@@ -209,16 +241,8 @@ pub(crate) async fn register(
     ClientKey(client): ClientKey,
     body: Bytes,
 ) -> Result<Response, Reject> {
-    let now = std::time::Instant::now();
-    state
-        .0
-        .register_ip_limit
-        .check(&client, now)
-        .and_then(|()| state.0.register_global_limit.check(GLOBAL_KEY, now))
-        .map_err(|retry| {
-            too_many_requests("register", &client, "Too many registration requests", retry)
-        })?;
-
+    // Everything is validated first: a refused registration must not spend the budget that real
+    // clients need at cutover.
     let body: Value = serde_json::from_slice(&body)
         .map_err(|_| invalid_metadata("Request body is not valid JSON"))?;
     let uris = body
@@ -228,7 +252,7 @@ pub(crate) async fn register(
         .ok_or_else(|| invalid_metadata("redirect_uris is required"))?;
     let redirect_uris = uris
         .iter()
-        .map(validate_registered_redirect)
+        .map(|uri| validate_registered_redirect(&state, &client, uri))
         .collect::<Result<Vec<_>, _>>()?;
     let metadata: ClientMetadata = serde_json::from_value(body.clone())
         .map_err(|_| invalid_metadata("Client metadata has a field of the wrong type"))?;
@@ -239,6 +263,25 @@ pub(crate) async fn register(
     {
         return Err(invalid_metadata("client_name is too long"));
     }
+    if metadata
+        .client_name
+        .as_ref()
+        .is_some_and(|name| name.chars().any(is_control_or_format))
+    {
+        return Err(invalid_metadata(
+            "client_name must not contain control or format characters",
+        ));
+    }
+
+    let now = std::time::Instant::now();
+    state
+        .0
+        .register_ip_limit
+        .check(&client, now)
+        .and_then(|()| state.0.register_global_limit.check(GLOBAL_KEY, now))
+        .map_err(|retry| {
+            too_many_requests("register", &client, "Too many registration requests", retry)
+        })?;
 
     let token_endpoint_auth = metadata
         .token_endpoint_auth_method
@@ -294,6 +337,22 @@ pub(crate) async fn register(
         Json(response),
     )
         .into_response())
+}
+
+/// Bidi overrides, zero-width characters and the like, which make a name read as something else.
+fn is_control_or_format(c: char) -> bool {
+    matches!(
+        c.general_category(),
+        GeneralCategory::Control | GeneralCategory::Format
+    )
+}
+
+/// A client's name as it may appear in a log or terminal.
+pub(crate) fn printable_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !is_control_or_format(*c))
+        .take(MAX_LOGGED_NAME_CHARS)
+        .collect()
 }
 
 /// A used code is kept this long past its expiry: long enough for every token it can have produced
@@ -482,6 +541,18 @@ pub(crate) async fn authorize(
             "redirect_uri not registered for this client",
         ));
     }
+    // A client registered before the list changed is held to it too.
+    let host = Url::parse(redirect_uri)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_default();
+    if !redirect_host_allowed(&state, &host) {
+        log_rejected_host(&source, &host);
+        return Err(bad_request(
+            "invalid_request",
+            &format!("redirect_uri host is not allowed: {host}"),
+        ));
+    }
 
     let Some(session) = current_session(&state, &headers) else {
         let next: String =
@@ -542,8 +613,8 @@ pub(crate) async fn authorize(
         "Authorize MCP access",
         &format!(
             r#"<h1>Authorize MCP access?</h1>
-<dl class="facts"><div><dt>Client</dt><dd><strong>{client}</strong></dd></div><div><dt>Returns to</dt><dd>{origin}</dd></div><div><dt>Scopes</dt><dd><code>{scope}</code></dd></div></dl>
-<p><strong>{client}</strong> ({origin}) is requesting permission to {requested_access}.</p>
+<dl class="facts"><div><dt>Client</dt><dd><strong><bdi>{client}</bdi></strong></dd></div><div><dt>Returns to</dt><dd>{origin}</dd></div><div><dt>Scopes</dt><dd><code>{scope}</code></dd></div></dl>
+<p><strong><bdi>{client}</bdi></strong> ({origin}) is requesting permission to {requested_access}.</p>
 <ul class="scopes">{scope_items}</ul>{sensitive}
 <form method="post" action="/api/mcp/authorize"><input type="hidden" name="consent" value="{consent}"><button type="submit">Allow access</button></form>
 <p class="hint">Only continue if you trust this client. Close this page to deny access.</p>"#,
@@ -594,13 +665,15 @@ pub(crate) async fn approve(
     state.prune_if_due().await?;
     let mut conn = state.0.db.conn().await?;
     // The client can have been evicted since the page was shown.
-    let client = repo::find_client(&mut conn, &consent.client_id).await?;
-    if !client.is_some_and(|c| is_redirect_uri_allowed(&c.redirect_uris.0, &consent.redirect_uri)) {
+    let client = repo::find_client(&mut conn, &consent.client_id)
+        .await?
+        .filter(|c| is_redirect_uri_allowed(&c.redirect_uris.0, &consent.redirect_uri));
+    let Some(client) = client else {
         return Err(consent_refused(
             StatusCode::BAD_REQUEST,
             &format!("This client is no longer registered. {RESTART}"),
         ));
-    }
+    };
 
     let scopes: Vec<String> = consent.scope.split(' ').map(str::to_owned).collect();
     let code = URL_SAFE_NO_PAD.encode(random_bytes());
@@ -626,6 +699,9 @@ pub(crate) async fn approve(
     tracing::info!(
         event = "consent_granted",
         client = %consent.client_id,
+        client_name = ?printable_name(client.client_name.as_deref().unwrap_or_default()),
+        redirect_origin = %Url::parse(&consent.redirect_uri)
+            .map_or_else(|_| "invalid".to_owned(), |url| url.origin().ascii_serialization()),
         scopes = %consent.scope,
         grant = grant_label(&code_hash),
         "owner approved an OAuth client"
@@ -641,7 +717,7 @@ pub(crate) async fn approve(
 }
 
 /// Enough of a grant id to follow one grant through the logs.
-fn grant_label(grant_id: &str) -> &str {
+pub(crate) fn grant_label(grant_id: &str) -> &str {
     &grant_id[..grant_id.len().min(12)]
 }
 
@@ -949,6 +1025,12 @@ async fn exchange_refresh_token(
             );
             return Err(invalid());
         }
+        tracing::warn!(
+            event = "refresh_grace_used",
+            client = %stored.client_id,
+            grant = grant_label(&stored.grant_id),
+            "a rotated refresh token was presented again inside the retry window"
+        );
     } else if stored.client_id != client_id {
         return Err(invalid());
     }
@@ -1220,6 +1302,7 @@ mod tests {
                 owner_passphrase_hash:
                     "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA".to_owned(),
                 trusted_proxy: None,
+                redirect_hosts: Vec::new(),
             },
         )
         .unwrap();

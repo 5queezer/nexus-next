@@ -15,6 +15,24 @@ pub mod oauth;
 pub mod submissions;
 
 use serde::{Serialize, Serializer};
+use sqlx::FromRow;
+use sqlx::sqlite::SqliteRow;
+
+/// A JSON column only has to pass `json_valid`, and SQLite accepts things serde_json refuses, such
+/// as `1e999` or very deep nesting. One such row costs only itself, not the whole page. The error
+/// carries positions, never values.
+pub(crate) fn decode_rows<T>(rows: Vec<SqliteRow>) -> Vec<T>
+where
+    T: for<'r> FromRow<'r, SqliteRow>,
+{
+    rows.iter()
+        .filter_map(|row| {
+            T::from_row(row)
+                .inspect_err(|error| tracing::error!(%error, "skipped a stored row: cannot decode"))
+                .ok()
+        })
+        .collect()
+}
 
 /// Old Nexus's adapter returned every ID as a string; these keep the JSON shape.
 pub(crate) fn id_string<S: Serializer>(id: &i64, serializer: S) -> Result<S::Ok, S::Error> {

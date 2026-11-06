@@ -23,6 +23,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+unicode-properties.workspace = true
 url.workspace = true
 
 [dev-dependencies]

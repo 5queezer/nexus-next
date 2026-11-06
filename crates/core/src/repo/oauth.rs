@@ -272,6 +272,51 @@ pub async fn revoke_grant(conn: &mut SqliteConnection, grant_id: &str) -> Result
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Grant {
+    pub grant_id: String,
+    pub client_id: String,
+    pub client_name: Option<String>,
+    /// From the grant's authorization code, which is pruned 90 days after it expires.
+    pub redirect_uri: Option<String>,
+    pub scopes: Json<Vec<String>>,
+    pub issued_at: Timestamp,
+    pub expires_at: Timestamp,
+}
+
+/// Authorizations with an unexpired token, newest first. The `MAX` makes the bare columns those of
+/// the longest-lived token, the refresh token, which keeps the grant's full scopes. Old tokens with
+/// no grant are not listed.
+pub async fn list_grants(conn: &mut SqliteConnection) -> Result<Vec<Grant>> {
+    Ok(sqlx::query_as(
+        "SELECT t.grant_id, t.client_id, c.client_name, a.redirect_uri, t.scopes,
+             COALESCE(a.created_at, t.created_at) AS issued_at, MAX(t.expires_at) AS expires_at
+         FROM (SELECT grant_id, client_id, scopes, created_at, expires_at
+               FROM oauth_refresh_tokens WHERE rotated_at IS NULL
+               UNION ALL
+               SELECT grant_id, client_id, scopes, created_at, expires_at
+               FROM oauth_access_tokens) t
+         LEFT JOIN oauth_clients c ON c.client_id = t.client_id
+         LEFT JOIN oauth_auth_codes a ON a.code = t.grant_id
+         WHERE t.grant_id <> '' AND t.expires_at > ?
+         GROUP BY t.grant_id ORDER BY issued_at DESC",
+    )
+    .bind(Timestamp::now())
+    .fetch_all(conn)
+    .await?)
+}
+
+/// Grant IDs that start with `prefix` and still hold a token of any age.
+pub async fn grants_with_prefix(conn: &mut SqliteConnection, prefix: &str) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT grant_id FROM oauth_refresh_tokens WHERE instr(grant_id, ?1) = 1
+         UNION SELECT grant_id FROM oauth_access_tokens WHERE instr(grant_id, ?1) = 1",
+    )
+    .bind(prefix)
+    .fetch_all(conn)
+    .await?)
+}
+
 /// Deletes every code and token of every client. Client registrations stay. Run inside
 /// `Db::begin_write`.
 pub async fn revoke_all(conn: &mut SqliteConnection) -> Result<Revoked> {

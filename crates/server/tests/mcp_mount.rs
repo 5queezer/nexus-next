@@ -70,6 +70,7 @@ fn owner() -> Access {
         owner_passphrase_hash: "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA"
             .to_owned(),
         trusted_proxy: None,
+        redirect_hosts: Vec::new(),
     })
 }
 
@@ -198,7 +199,7 @@ async fn the_auth_routes_sit_beside_the_mcp_routes() {
         server.addr,
         "/api/mcp/register",
         None,
-        json!({"redirect_uris": ["https://client.example.test/callback"]}).to_string(),
+        json!({"redirect_uris": ["http://127.0.0.1:39123/callback"]}).to_string(),
     )
     .send()
     .await
@@ -325,7 +326,7 @@ async fn get_streams_end_at_once_and_free_their_slots() {
     let server = start(owner()).await;
     let client = reqwest::Client::new();
     let url = format!("http://{}/api/mcp", server.addr);
-    let gets = (0..serve::MAX_IN_FLIGHT * 2).map(|_| {
+    let gets = (0..serve::MCP.in_flight * 8).map(|_| {
         let request = client
             .get(&url)
             .bearer_auth(FULL)
