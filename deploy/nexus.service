@@ -28,6 +28,8 @@ TasksMax=128
 # The render worker runs in this cgroup and the kernel takes it first. Its death must not stop nexus.
 OOMPolicy=continue
 LimitNOFILE=4096
+# The process holds the OpenAI key and personal data: a crash must not write them to a core file.
+LimitCORE=0
 
 NoNewPrivileges=yes
 PrivateTmp=yes

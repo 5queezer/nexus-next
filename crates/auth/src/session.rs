@@ -363,6 +363,7 @@ pub(crate) async fn logout(
         );
     }
     state.0.sessions.lock().unwrap().remove(&session);
+    state.0.logouts.send_modify(|count| *count += 1);
     with_cookie(
         Redirect::to("/login").into_response(),
         SESSION_COOKIE,

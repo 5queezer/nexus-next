@@ -27,9 +27,10 @@ use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
 use nexus_mcp::McpState;
+use nexus_web::CutConnection;
 use serde_json::Value;
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore, watch};
 use tokio::time::{sleep, timeout};
 use tower::ServiceExt;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -335,16 +336,25 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp),
     );
+    let voice = nexus_web::Voice::new(config.voice.clone());
     // Outside the owner pool: an open stream is neither a request in flight nor bound by its
-    // deadline. It still sits behind the session check.
-    let streams = nexus_web::cv_events_router(state.clone(), config.stream_shutdown.subscribe());
+    // deadline, and a voice session's status check mustn't read a busy dashboard as a lost server.
+    // They still sit behind the session check.
+    let unpooled = {
+        let (state, voice) = (state.clone(), voice.clone());
+        let shutdown = config.stream_shutdown.subscribe();
+        move |logouts| {
+            nexus_web::cv_events_router(state, shutdown, logouts, nexus_web::STREAM_LIFE)
+                .merge(nexus_web::voice_status_router(voice))
+        }
+    };
     let humans = harden(
         nexus_web::dashboard_router(state.clone(), config.timezone)
             .merge(nexus_web::api_router(db.clone()))
             .merge(nexus_web::cv_router(
                 state,
                 config.timezone,
-                config.voice.clone(),
+                voice,
                 &config.data_dir,
             )),
         OWNER,
@@ -358,7 +368,10 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             let auth = AuthState::new(db.clone(), auth.clone())?;
             let routes = harden(public.merge(nexus_auth::router(auth.clone())), PUBLIC)
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
-                .merge(streams.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(
+                    unpooled(auth.logouts())
+                        .layer(from_fn_with_state(auth.clone(), require_owner_session)),
+                )
                 .merge(
                     mcp.layer(from_fn_with_state(auth, require_mcp_auth))
                         .merge(slashes)
@@ -372,7 +385,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         }
         Access::InsecureLocalOnly => harden(public, PUBLIC)
             .merge(humans)
-            .merge(streams)
+            .merge(unpooled(watch::Sender::new(0)))
             .merge(
                 mcp.layer(Extension(AuthContext {
                     auth_type: AuthType::ApiToken,
@@ -520,15 +533,23 @@ pub async fn serve(
             continue;
         };
         let app = app.clone();
+        let cut = Arc::new(Notify::new());
+        let cut_handle = CutConnection(cut.clone());
         let service = service_fn(move |mut request: hyper::Request<Incoming>| {
             request.extensions_mut().insert(ConnectInfo(peer));
+            request.extensions_mut().insert(cut_handle.clone());
             app.clone().oneshot(request.map(Body::new))
         });
         let connection = graceful.watch(http.serve_connection(TokioIo::new(stream), service));
         tokio::spawn(async move {
             let _slot = slot;
-            if let Err(error) = connection.await {
-                tracing::debug!(%error, "connection ended with an error");
+            tokio::select! {
+                result = connection => {
+                    if let Err(error) = result {
+                        tracing::debug!(%error, "connection ended with an error");
+                    }
+                }
+                () = cut.notified() => {}
             }
         });
     }

@@ -22,11 +22,13 @@ pub use assets::static_router;
 pub use calendar::calendar_router;
 pub use chrono_tz::Tz;
 pub use cv::cv_router;
-pub use cv_events::{HEARTBEAT, MAX_STREAMS, cv_events_router};
+pub use cv_events::{
+    CutConnection, HEARTBEAT, MAX_STREAMS, STREAM_LIFE, StreamLife, cv_events_router,
+};
 pub use dashboard::dashboard_router;
 pub use voice::{
-    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, VOICE_TOOLS,
-    VoiceConfig, VoiceKey, tool_definitions,
+    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, VOICE_TOOLS, Voice,
+    VoiceConfig, VoiceKey, tool_definitions, voice_status_router,
 };
 
 /// Default response headers: no inline script or foreign asset can load, nothing sniffs types, and

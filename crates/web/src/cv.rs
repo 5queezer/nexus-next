@@ -7,6 +7,7 @@
 
 use std::path::Path as FilePath;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -30,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use crate::cv_events::head_number;
+use crate::cv_events::head_of;
 use crate::dashboard::{PageError, with_form_token};
 use crate::format;
 use crate::forms::{Flash, Typed, csrf_ok, notice_page};
@@ -47,6 +48,9 @@ const FACTS_ACTOR: &str = "dashboard";
 const MAX_LISTED_ITEMS: usize = 200;
 /// Unchanged lines kept around a change in the diff, so that it reads in place.
 const DIFF_CONTEXT_LINES: usize = 1;
+/// How long a preview waits for another's compile, holding an owner slot: well under the 10 s any
+/// other page will queue for one, so that misses can't take the slots from them.
+const PREVIEW_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct Cv {
@@ -59,14 +63,10 @@ pub(crate) struct Cv {
     rendering: Arc<Mutex<()>>,
 }
 
-/// Mounts `/cv/*`, `/api/voice/*` and the slow-poll fallback. `voice` is `None` without a key file:
-/// the routes then answer that voice is off, and nothing can reach out. Auth is the caller's.
-pub fn cv_router(
-    state: McpState,
-    tz: Tz,
-    voice: Option<VoiceConfig>,
-    data_dir: &FilePath,
-) -> Router {
+/// Mounts `/cv/*`, `/api/voice/session`, `/api/voice/tool` and the slow-poll fallback. `voice` has no
+/// config without a key file: the routes then answer that voice is off, and nothing can reach out.
+/// Auth is the caller's.
+pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> Router {
     with_form_token(
         Router::new()
             .route("/cv", get(list_page))
@@ -96,7 +96,7 @@ pub fn cv_router(
         db: state.db.clone(),
         mcp: Arc::new(state),
         tz,
-        voice: Voice::new(voice),
+        voice,
         cache: RenderCache::open(data_dir),
         rendering: Arc::default(),
     })
@@ -1237,7 +1237,11 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
             pages,
         };
     }
-    let _rendering = cv.rendering.lock().await;
+    let Ok(_rendering) = tokio::time::timeout(PREVIEW_WAIT, cv.rendering.lock()).await else {
+        let mut busy = CallToolResult::error(Vec::new());
+        busy.structured_content = Some(json!({"error": {"code": "cv_render_busy"}}));
+        return Preview::Refused(Box::new(told(busy)));
+    };
     if let Ok(Some(pages)) = cached().await {
         return Preview::Ready {
             revision: number,
@@ -1377,11 +1381,9 @@ async fn pdf(
 
 /// The fallback when a stream can't stay open: a page asks this every so often.
 async fn head(State(cv): State<Cv>, Path(variant): Path<String>) -> Result<Response, PageError> {
-    let Some(revision) = head_number(&cv.db, &variant).await? else {
+    let Some((revision, state)) = head_of(&cv.db, &cv.mcp, &variant).await? else {
         return Err(PageError(StatusCode::NOT_FOUND));
     };
-    let read = call(&cv, "get_cv_source", json!({"variant": variant})).await;
-    let state = read.value["state"].as_str().unwrap_or("draft").to_owned();
     Ok(Json(json!({"revision": revision, "state": state})).into_response())
 }
 

@@ -308,8 +308,11 @@ Use a key from an OpenAI project made for this, with a budget limit set on the p
 | Goes | Stays |
 |---|---|
 | Your voice while the button is held, or all the time in hands-free, and its transcript | The API key, which never reaches the browser |
-| The CV source, and the facts it renders: name, contact, jobs, dates, education, languages, metrics, allowed tokens and vocabulary | Banned phrases |
-| What `list_applications_filtered`, `get_application` and `list_application_events` return when the model asks: **job descriptions, notes, salaries, event text** | Documents, PDFs, preview images and the answers in submission records |
+| The CV source of whichever variant the model asks for, its revisions' origins, summaries, warnings and dates, and the facts it renders: name, contact, jobs, dates, education, languages, metrics, allowed tokens and vocabulary | Banned phrases |
+| What `get_application` and `list_applications_filtered` return when the model asks: every field of an application, including **job descriptions, notes, salaries**, ratings, triage and rejection reasons, links, work and visa requirements, stage and next action | Documents, PDFs and preview images. Events name a document only by its id |
+| **Other people's details:** each contact's name, **email, phone number**, role and LinkedIn. `get_application` always includes them, `list_applications_filtered` when the model asks | The answers in submission records. Events give only how many there were |
+| What `list_application_events` returns: each event's type, time, source and outcome, **your email address** as its actor, contact ids, and its text: **notes, rejection reasons, interview types, next actions** | |
+| When a session starts: Nexus's instructions to the model, the tool definitions and the name of the variant on screen | |
 
 The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass through Nexus. A tool result is cut at 32 KiB, with a marker the model can read.
 
@@ -320,7 +323,9 @@ The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass t
 - 12 sessions an hour can be started, failed attempts included, so a page bug can't run up costs. A restart resets this count and ends every session.
 - `render_cv_pdf` sends the model a summary only: no images.
 
-**The limit Nexus can't enforce.** Only the page can close a live connection. A browser that ignores the page's timers (altered, or a debugger) could keep talking to OpenAI past the limit, until OpenAI ends the session itself, though its tool calls stop working. The project budget limit is the backstop for that.
+**Logging out or restarting ends a session.** The page asks Nexus every 20 s whether its session is still live (`GET /api/voice/status`), because a session can run with no tool call to find out. After a logout or a restart the answer is no, and the page stops the microphone, closes the connection and says so, within about 20 s. A check also fails if it gets a network error, no answer in 10 s or a proxy's error page, which proves nothing alone. But a server that stays out of reach can't enforce anything, so two failures in a row end the session too, within about 50 s. A tool call that gets the same refusal ends it at once.
+
+**The limit Nexus can't enforce.** Only the page can close a live connection. A browser that ignores the page's timers (altered, or a debugger, or a machine asleep) could keep talking to OpenAI past the limit or past a logout, until OpenAI ends the session itself, though its tool calls stop working. The project budget limit is the backstop for that.
 
 **What a voice session can do.** Eight tools and no others, enforced on the server: `get_cv_source`, `patch_cv`, `render_cv_pdf` (no saving), `list_cv_revisions`, `revert_cv`, `list_applications_filtered`, `get_application`, `list_application_events`. It can't change an application or mark one applied. Its edits pass the same hard rules as any other, and stay drafts until you approve them on screen: it can't approve, and its preview stays stamped. The log names the tools called, never their arguments.
 

@@ -9,6 +9,13 @@ if ("serviceWorker" in navigator) {
 document.addEventListener("submit", (event) => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement) || form.method !== "post") return;
+  // When this happened is when it was sent, not when the page was built. Once only: the time is part
+  // of what makes a resent form the same change.
+  const at = form.querySelector("input[name=at]");
+  if (at && !at.dataset.sent) {
+    at.value = new Date().toISOString();
+    at.dataset.sent = "true";
+  }
   for (const button of form.querySelectorAll("button[type=submit]")) {
     button.disabled = true;
   }

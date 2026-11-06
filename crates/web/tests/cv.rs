@@ -1,6 +1,6 @@
 //! The CV workspace against a real SQLite file and real compiles, with invented data.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::Extension;
 use axum::Router;
@@ -55,7 +55,7 @@ fn build(state: &McpState, dir: &TempDir, voice: Option<VoiceConfig>) -> Router 
     nexus_web::cv_router(
         state.clone(),
         "Europe/Madrid".parse().unwrap(),
-        voice,
+        nexus_web::Voice::new(voice),
         dir.path(),
     )
     .layer(Extension(FormToken(TOKEN.to_owned())))
@@ -722,6 +722,47 @@ fn cache_entries(f: &Fixture) -> Vec<String> {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_preview_waiting_behind_another_compile_gives_up_in_words() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = locked().await;
+    let worker = f.dir.path().join("hanging-worker");
+    std::fs::write(&worker, "#!/bin/sh\nexec /usr/bin/sleep 60\n").unwrap();
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let hanging = McpState::new(
+        f.db.clone(),
+        "owner-1".to_owned(),
+        "owner@example.com".to_owned(),
+        nexus_mcp::Renderer::Subprocess {
+            exe: worker,
+            rss_limit_bytes: 512 * 1024 * 1024,
+            timeout: Duration::from_secs(20),
+        },
+    );
+    let app = build(&hanging, &f.dir, None);
+    let uri = format!("{VARIANT}/preview.json?revision=0");
+    let compiling = tokio::spawn({
+        let (app, uri) = (app.clone(), uri.clone());
+        async move { get(&app, &uri).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = Instant::now();
+    let (status, _, json) = get(&app, &uri).await;
+    let waited = started.elapsed();
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{json}");
+    assert!(json.contains("Other CVs are rendering"), "{json}");
+    assert!(waited < Duration::from_secs(8), "{waited:?}");
+    assert!(!compiling.is_finished(), "the compile itself goes on");
+    let request = Request::get(format!("{VARIANT}/preview.png?revision=0"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, text) = send(&app, request).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(String::from_utf8_lossy(&text).contains("Other CVs are rendering"));
+    compiling.abort();
 }
 
 #[tokio::test]
