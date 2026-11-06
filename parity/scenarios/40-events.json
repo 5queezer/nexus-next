@@ -1,0 +1,1022 @@
+{
+  "name": "40-events",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Events Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$app.id",
+        "name": "Pat Parity"
+      },
+      "save": {
+        "contact": "."
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$app.id"
+        ]
+      },
+      "save": {
+        "doc": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "opportunity_discovered",
+        "metadata": {
+          "channel": "linkedin",
+          "nextAction": "read JD"
+        },
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      },
+      "save": {
+        "seed": "event"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "recruiter_contacted",
+        "metadata": {
+          "contactId": "$contact.id",
+          "outcome": "positive",
+          "nextAction": "wait",
+          "channel": "email",
+          "direction": "inbound",
+          "followUpAt": "2026-02-02T09:00:00.000Z",
+          "toStage": "screening"
+        },
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "outbound_contact_recorded",
+        "metadata": {
+          "contactId": "$contact.id",
+          "outcome": "sent",
+          "channel": "email"
+        },
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "status": "applied"
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "reply_received",
+        "metadata": {
+          "responseKind": "human",
+          "replyDateKnown": true,
+          "channel": "email"
+        },
+        "occurredAt": "2026-02-02T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "stage_changed",
+        "metadata": {
+          "toStage": "technical",
+          "fromStage": "ignored",
+          "toStatus": "interview"
+        },
+        "occurredAt": "2026-02-02T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_invited",
+        "metadata": {
+          "interviewType": "video",
+          "scheduledAt": "2026-02-03T09:00:00.000Z",
+          "durationMinutes": 45,
+          "followUpAt": "2026-02-03T09:00:00.000Z"
+        },
+        "occurredAt": "2026-02-02T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_scheduled",
+        "metadata": {
+          "interviewType": "video",
+          "scheduledAt": "2026-02-03T09:00:00.000Z",
+          "durationMinutes": 60,
+          "toStage": "panel"
+        },
+        "occurredAt": "2026-02-02T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_completed",
+        "metadata": {
+          "interviewType": "video",
+          "outcome": "good",
+          "followUpAt": "2026-02-04T09:00:00.000Z"
+        },
+        "occurredAt": "2026-02-03T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "feedback_received",
+        "metadata": {
+          "outcome": "positive",
+          "toStage": "final",
+          "followUpAt": "2026-02-04T09:00:00.000Z"
+        },
+        "occurredAt": "2026-02-03T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "follow_up_scheduled",
+        "metadata": {
+          "followUpAt": "2026-02-04T09:00:00.000Z",
+          "nextAction": "chase"
+        },
+        "occurredAt": "2026-02-03T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "document_attached",
+        "metadata": {
+          "documentId": "$doc.id",
+          "documentType": "cv"
+        },
+        "occurredAt": "2026-02-03T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "  a note  "
+        },
+        "occurredAt": "2026-02-03T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "offer_received",
+        "metadata": {
+          "outcome": "offer",
+          "followUpAt": "2026-02-04T09:00:00.000Z"
+        },
+        "occurredAt": "2026-02-04T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "application_rejected",
+        "metadata": {
+          "outcome": "withdrew",
+          "reason": "synthetic",
+          "fromStage": "x"
+        },
+        "occurredAt": "2026-02-04T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "status": "rejected",
+          "followUpAt": null
+        }
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 100,
+        "order": "oldest"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 3
+      },
+      "save": {
+        "page": "."
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 3,
+        "cursor": "$page.nextCursor"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "company": "Parity Events Labs",
+        "limit": 100
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "contactId": "$contact.id"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "outcome": "positive",
+        "company": "Parity Events Labs"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "actor": "$seed.actor",
+        "company": "Parity Events Labs",
+        "limit": 2
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "server clock"
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        },
+        "idempotencyKey": "parity-idem-no-time"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "occurred_at_required_for_idempotency"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "first"
+        },
+        "idempotencyKey": "parity-idem-1",
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      },
+      "save": {
+        "first": "."
+      },
+      "expect": {
+        "paths": {
+          "replayed": false
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "first"
+        },
+        "idempotencyKey": "parity-idem-1",
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "paths": {
+          "replayed": true,
+          "event.id": "$first.event.id"
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "different"
+        },
+        "idempotencyKey": "parity-idem-1",
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "first"
+        },
+        "idempotencyKey": "parity-idem-1",
+        "occurredAt": "2026-02-02T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "reply_received",
+        "metadata": {
+          "responseKind": "human"
+        },
+        "idempotencyKey": "parity-idem-1",
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "parallel": [
+        {
+          "tool": "record_application_event",
+          "args": {
+            "applicationId": "$app.id",
+            "type": "note_added",
+            "metadata": {
+              "note": "race"
+            },
+            "idempotencyKey": "parity-idem-race",
+            "occurredAt": "2026-02-01T09:00:00.000Z"
+          },
+          "expect": {
+            "isError": false
+          }
+        },
+        {
+          "tool": "record_application_event",
+          "args": {
+            "applicationId": "$app.id",
+            "type": "note_added",
+            "metadata": {
+              "note": "race"
+            },
+            "idempotencyKey": "parity-idem-race",
+            "occurredAt": "2026-02-01T09:00:00.000Z"
+          },
+          "expect": {
+            "isError": false
+          }
+        },
+        {
+          "tool": "record_application_event",
+          "args": {
+            "applicationId": "$app.id",
+            "type": "note_added",
+            "metadata": {
+              "note": "race"
+            },
+            "idempotencyKey": "parity-idem-race",
+            "occurredAt": "2026-02-01T09:00:00.000Z"
+          },
+          "expect": {
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "padded key"
+        },
+        "idempotencyKey": "  parity-idem-pad  ",
+        "occurredAt": "2026-02-01T09:00:00.000Z"
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "$app.id",
+        "note": "  appended  ",
+        "occurredAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-note-1"
+      },
+      "save": {
+        "note": "."
+      },
+      "expect": {
+        "paths": {
+          "replayed": false
+        }
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "$app.id",
+        "note": "  appended  ",
+        "occurredAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-note-1"
+      },
+      "expect": {
+        "paths": {
+          "replayed": true,
+          "event.id": "$note.event.id"
+        }
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "$app.id",
+        "note": "changed",
+        "occurredAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-note-1"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "999999",
+        "note": "n",
+        "occurredAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-note-2"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        },
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "append_application_note",
+      "args": {
+        "applicationId": "$app.id",
+        "note": "n",
+        "occurredAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-note-3",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "save": {
+        "cur": "."
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "fresh"
+        },
+        "expectedUpdatedAt": "$cur.updatedAt"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "n",
+          "extra": 1
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {}
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "stage_changed",
+        "metadata": {
+          "fromStage": "x"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "stage_changed",
+        "metadata": {
+          "toStage": "x",
+          "toStatus": "archived"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "reply_received",
+        "metadata": {}
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "reply_received",
+        "metadata": {
+          "responseKind": "robot"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "recruiter_contacted",
+        "metadata": {
+          "direction": "sideways"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_scheduled",
+        "metadata": {
+          "interviewType": "video"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_scheduled",
+        "metadata": {
+          "interviewType": "video",
+          "scheduledAt": "whenever"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "interview_scheduled",
+        "metadata": {
+          "interviewType": "video",
+          "scheduledAt": "2026-02-01T09:00:00.000Z",
+          "durationMinutes": 1441
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "follow_up_scheduled",
+        "metadata": {}
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "document_attached",
+        "metadata": {}
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "feedback_received",
+        "metadata": {
+          "outcome": {
+            "$repeat": [
+              "o",
+              255
+            ]
+          }
+        }
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "feedback_received",
+        "metadata": {
+          "outcome": {
+            "$repeat": [
+              "o",
+              256
+            ]
+          }
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": {
+            "$repeat": [
+              "n",
+              5001
+            ]
+          }
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "application_rejected",
+        "metadata": {
+          "reason": {
+            "$repeat": [
+              "r",
+              2001
+            ]
+          }
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "event_metadata_invalid"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "follow_up_scheduled",
+        "metadata": {
+          "followUpAt": "2026-02-05T10:00:00+01:00"
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "recruiter_contacted",
+        "metadata": {
+          "contactId": "999999"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "contact_not_found"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "recruiter_contacted",
+        "metadata": {
+          "contactId": "not-a-number"
+        }
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "document_attached",
+        "metadata": {
+          "documentId": "999999"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "document_not_found"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "application_submitted"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "submission_event_requires_submission_workflow"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "999999",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "not-a-number",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        }
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Events Second",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "second": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$second.id"
+        ]
+      },
+      "save": {
+        "otherDoc": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "document_attached",
+        "metadata": {
+          "documentId": "$otherDoc.id"
+        }
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$second.id",
+        "name": "Other Parity"
+      },
+      "save": {
+        "otherContact": "."
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "recruiter_contacted",
+        "metadata": {
+          "contactId": "$otherContact.id"
+        }
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "$app.id",
+        "pageSize": 200
+      }
+    }
+  ]
+}

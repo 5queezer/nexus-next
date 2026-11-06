@@ -1,0 +1,281 @@
+{
+  "name": "32-application-archive",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Archive Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "save": {
+        "before": "."
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "changed": true
+        }
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "archivedAt": null,
+          "updatedAt": "$before.updatedAt"
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "archivedAt": "2026-02-01T09:00:00.000Z",
+        "expectedUpdatedAt": "$before.updatedAt"
+      },
+      "save": {
+        "archived": "."
+      },
+      "expect": {
+        "paths": {
+          "changed": true,
+          "application.archivedAt": "2026-02-01T09:00:00.000Z",
+          "application.status": "inbound"
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "changed": false,
+          "application.archivedAt": "2026-02-01T09:00:00.000Z"
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "archivedAt": "2026-02-02T09:00:00.000Z"
+      },
+      "expect": {
+        "paths": {
+          "changed": false,
+          "application.archivedAt": "2026-02-01T09:00:00.000Z"
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "archivedAt": "2026-02-01T09:00:00.000Z",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "paths": {
+          "changed": false
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "archivedAt": "2026-02-02T09:00:00.000Z",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "changed": false
+        }
+      }
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "Parity Archive Labs",
+        "limit": 200
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "search": "Parity Archive Labs"
+      }
+    },
+    {
+      "tool": "pipeline_healthcheck",
+      "args": {}
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "changed": true,
+          "application.archivedAt": null
+        }
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "changed": true,
+          "application.archivedAt": null
+        }
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "changed": false
+        }
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id",
+        "archivedAt": "2026-02-01T10:00:00+01:00"
+      },
+      "expect": {
+        "paths": {
+          "changed": true,
+          "application.archivedAt": "2026-02-01T09:00:00.000Z"
+        }
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "changed": true
+        }
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "unarchive_application",
+      "args": {
+        "id": "999999"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "archive_application",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    }
+  ]
+}

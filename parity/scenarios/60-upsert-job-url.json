@@ -1,0 +1,351 @@
+{
+  "name": "60-upsert-job-url",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/role/1"
+      },
+      "expect": {
+        "paths": {
+          "application": null
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "operation": "create",
+          "existingId": null
+        }
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/role/1"
+      },
+      "expect": {
+        "paths": {
+          "application": null
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "notes": "first",
+        "source": {
+          "$repeat": [
+            "s",
+            100
+          ]
+        },
+        "rating": 2,
+        "salaryMin": 10,
+        "salaryMax": 20
+      },
+      "save": {
+        "created": "."
+      },
+      "expect": {
+        "paths": {
+          "operation": "created",
+          "application.remote": false,
+          "application.appliedAt": null
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert 2",
+        "role": "R2",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "operation": "update",
+          "existingId": "$created.application.id"
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert 2",
+        "role": "R2",
+        "jobUrl": "HTTPS://JOBS.parity.invalid/role/1/?utm_source=x&ref=y&gclid=1#frag"
+      },
+      "expect": {
+        "paths": {
+          "operation": "updated",
+          "application.id": "$created.application.id",
+          "application.company": "Parity Upsert 2",
+          "application.notes": "first"
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert 2",
+        "role": "R2",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "notes": null,
+        "source": null,
+        "rating": null,
+        "salaryMin": null,
+        "salaryMax": null
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/role/1/"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/role/1?b=2&a=1&UTM_Medium=x&source=y"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "http://jobs.parity.invalid:80/x"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://jobs.parity.invalid/%C3%A9/?q=a%20b"
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "ftp://jobs.parity.invalid/x"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "find_application_by_job_url",
+      "args": {
+        "jobUrl": "https://user:pw@jobs.parity.invalid/x"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "ftp://jobs.parity.invalid/x"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://user:pw@jobs.parity.invalid/x"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "status": "applied"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "status": "applied",
+        "dryRun": true
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert 3",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "status": "inbound"
+      },
+      "expect": {
+        "paths": {
+          "operation": "updated"
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "currentStage": "x"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Upsert Interview",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/2",
+        "status": "interview",
+        "currentStage": "panel"
+      },
+      "expect": {
+        "paths": {
+          "operation": "created"
+        }
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "salaryMin": 20,
+        "salaryMax": 10
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "salary_range_invalid"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/3",
+        "jobContentHash": "abc123"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "jobContentHash_invalid"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "P",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/1",
+        "jobContentHash": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "jobContentHash_invalid"
+      }
+    },
+    {
+      "tool": "upsert_application_by_job_url",
+      "args": {
+        "company": "Parity Hash OK",
+        "role": "R",
+        "jobUrl": "https://jobs.parity.invalid/role/4",
+        "jobContentHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      },
+      "expect": {
+        "paths": {
+          "application.jobContentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    },
+    {
+      "parallel": [
+        {
+          "tool": "upsert_application_by_job_url",
+          "args": {
+            "company": "Parity Race",
+            "role": "R",
+            "jobUrl": "https://jobs.parity.invalid/race"
+          },
+          "expect": {
+            "isError": false
+          }
+        },
+        {
+          "tool": "upsert_application_by_job_url",
+          "args": {
+            "company": "Parity Race",
+            "role": "R",
+            "jobUrl": "https://jobs.parity.invalid/race"
+          },
+          "expect": {
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "tool": "list_applications",
+      "args": {
+        "q": "Parity Race",
+        "limit": 200,
+        "fields": [
+          "canonicalJobUrl"
+        ]
+      }
+    }
+  ]
+}

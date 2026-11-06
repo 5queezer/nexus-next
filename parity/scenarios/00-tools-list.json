@@ -1,0 +1,10 @@
+{
+  "name": "00-tools-list",
+  "resetDb": true,
+  "calls": [
+    { "tool": "$tools/list" },
+    { "tool": "$tools/list", "auth": "tools-only" },
+    { "tool": "$tools/list", "auth": "invalid", "expect": { "httpStatus": 401 } },
+    { "tool": "$tools/list", "auth": "none", "expect": { "httpStatus": 401 } }
+  ]
+}

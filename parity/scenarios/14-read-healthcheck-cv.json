@@ -1,0 +1,44 @@
+{
+  "name": "14-read-healthcheck-cv",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "pipeline_healthcheck",
+      "args": {},
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_cv_profile",
+      "args": {},
+      "expect": {
+        "text": "No CV profile found. Use upsert_cv_profile to create one."
+      }
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "190",
+        "experienceIds": [],
+        "skillCategories": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "No CV profile found. Use upsert_cv_profile first."
+      }
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "999999",
+        "experienceIds": [],
+        "skillCategories": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    }
+  ]
+}

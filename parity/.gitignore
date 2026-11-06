@@ -1,0 +1,4 @@
+# Traces hold personal data. They belong outside the repo (see README.md).
+traces/
+golden/
+*.trace.json

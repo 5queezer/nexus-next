@@ -1,0 +1,319 @@
+{
+  "name": "20-scopes-tools-only",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 3
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "98"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "98",
+        "limit": 100
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "types": [
+          "application_submitted"
+        ]
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "pageSize": 200
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "submitted",
+        "pageSize": 200
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_cv_profile",
+      "args": {},
+      "auth": "tools-only"
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "98"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "1"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "98"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "pipeline_healthcheck",
+      "args": {},
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "98",
+        "submittedAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-scope-1"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {
+        "id": "98"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "batch_delete_applications",
+      "args": {
+        "ids": [
+          "98"
+        ]
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "60"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "60"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "update_document_links",
+      "args": {
+        "id": "60",
+        "applicationIds": []
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "60",
+        "documentType": "cv"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "state": "historical"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "state": "submitted"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true,
+        "errorCode": "insufficient_scope"
+      }
+    },
+    {
+      "tool": "delete_document",
+      "args": {
+        "id": "60"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "38"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "38"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_document_metadata",
+      "args": {
+        "id": "38",
+        "documentType": "cv"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Scope Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "toolsApp": "."
+      },
+      "expect": {
+        "isError": false
+      },
+      "auth": "tools-only"
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$toolsApp.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "tools-only note"
+        }
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$toolsApp.id",
+        "notes": "tools-only update"
+      },
+      "auth": "tools-only",
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$toolsApp.id"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "60"
+      },
+      "expect": {
+        "isError": false
+      }
+    }
+  ]
+}

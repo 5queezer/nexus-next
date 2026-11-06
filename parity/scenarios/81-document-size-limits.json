@@ -1,0 +1,106 @@
+{
+  "name": "81-document-size-limits",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-1mb.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": {
+          "prefix": "JVBERi0x",
+          "$repeat": [
+            "AAAA",
+            349524
+          ]
+        }
+      },
+      "save": {
+        "big": "."
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "size": 1048578
+        }
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$big.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-10mb.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": {
+          "prefix": "JVBERi0x",
+          "$repeat": [
+            "AAAA",
+            3495251
+          ]
+        }
+      },
+      "save": {
+        "max": "."
+      },
+      "expect": {
+        "isError": false,
+        "paths": {
+          "size": 10485759
+        }
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$max.id"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-over.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": {
+          "prefix": "JVBERi0x",
+          "$repeat": [
+            "AAAA",
+            3495252
+          ]
+        }
+      },
+      "expect": {
+        "isError": true,
+        "text": "File too large (max 10 MB)"
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-schema.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": {
+          "prefix": "JVBERi0x",
+          "$repeat": [
+            "AAAA",
+            3495254
+          ]
+        }
+      },
+      "compare": "isError",
+      "expect": {
+        "isError": true
+      }
+    }
+  ]
+}

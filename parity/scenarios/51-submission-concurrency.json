@@ -1,0 +1,348 @@
+{
+  "name": "51-submission-concurrency",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Race Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "doc": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "parallel": [
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$app.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-race-1",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$doc.id"
+            ]
+          },
+          "expect": {
+            "isError": false
+          }
+        },
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$app.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-race-1",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$doc.id"
+            ]
+          },
+          "expect": {
+            "isError": false
+          }
+        },
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$app.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-race-1",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$doc.id"
+            ]
+          },
+          "expect": {
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "length": 1
+        }
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Claim A",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "a": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Claim B",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "b": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "shared": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "parallel": [
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$a.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-claim-a",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$shared.id"
+            ]
+          },
+          "compare": "isError-set"
+        },
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$b.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-claim-b",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$shared.id"
+            ]
+          },
+          "compare": "isError-set"
+        }
+      ]
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "state": "submitted",
+        "pageSize": 200,
+        "fields": [
+          "state"
+        ]
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Same Race",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "c1": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Same Race",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "c2": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "d1": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK"
+      },
+      "save": {
+        "d2": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "parallel": [
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$c1.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-same-1",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$d1.id"
+            ]
+          },
+          "compare": "isError-set"
+        },
+        {
+          "tool": "record_application_submission",
+          "args": {
+            "applicationId": "$c2.id",
+            "submittedAt": "2026-02-02T09:00:00.000Z",
+            "idempotencyKey": "parity-same-2",
+            "answers": [
+              {
+                "key": "why",
+                "question": "Why this role?",
+                "answer": "Synthetic answer.",
+                "kind": "text"
+              }
+            ],
+            "policy": {
+              "humanReviewed": true,
+              "identityConsistent": true,
+              "factsVerified": true,
+              "profileConsistencyStatus": "verified"
+            },
+            "documentIds": [
+              "$d2.id"
+            ]
+          },
+          "compare": "isError-set"
+        }
+      ]
+    }
+  ]
+}

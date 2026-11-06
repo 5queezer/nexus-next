@@ -1,0 +1,72 @@
+{
+  "name": "10-read-sweep-applications",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "list_applications",
+      "args": {
+        "limit": 200,
+        "fields": [
+          "id"
+        ]
+      },
+      "save": {
+        "apps": "."
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "forEach": "$apps",
+      "bind": "app"
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id",
+        "limit": 100,
+        "order": "oldest"
+      },
+      "forEach": "$apps",
+      "bind": "app"
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "$app.id"
+      },
+      "forEach": "$apps",
+      "bind": "app"
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "$app.id",
+        "pageSize": 200
+      },
+      "forEach": "$apps",
+      "bind": "app"
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "$app.id"
+      },
+      "forEach": "$apps",
+      "bind": "app"
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {
+        "include_contacts": true,
+        "limit": 200
+      }
+    },
+    {
+      "tool": "list_applications_filtered",
+      "args": {}
+    }
+  ]
+}

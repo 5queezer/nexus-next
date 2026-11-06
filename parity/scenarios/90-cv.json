@@ -1,0 +1,301 @@
+{
+  "name": "90-cv",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity Person",
+        "contact": {
+          "email": "person@parity.invalid",
+          "location": "Nowhere"
+        },
+        "profile": "Synthetic summary.",
+        "skills": [
+          {
+            "category": "Rust",
+            "items": [
+              "axum"
+            ]
+          },
+          {
+            "category": "Go",
+            "items": [
+              "net/http"
+            ]
+          }
+        ],
+        "experience": [
+          {
+            "id": "exp-1",
+            "company": "Parity Co",
+            "title": "Engineer",
+            "date": "2020 -- 2026",
+            "location": "Remote",
+            "tier": 1,
+            "bullets": [
+              "Did things."
+            ]
+          }
+        ],
+        "projects": [
+          {
+            "name": "parity",
+            "url": "parity.invalid",
+            "stack": "Rust",
+            "description": "Synthetic."
+          }
+        ],
+        "education": [
+          {
+            "institution": "Parity U",
+            "degree": "BSc",
+            "date": "2019",
+            "location": "Nowhere"
+          }
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_cv_profile",
+      "args": {},
+      "expect": {
+        "paths": {
+          "name": "Parity Person"
+        }
+      }
+    },
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity Person Two",
+        "contact": {
+          "email": "person@parity.invalid",
+          "location": "Nowhere"
+        },
+        "profile": "Synthetic summary.",
+        "skills": [
+          {
+            "category": "Rust",
+            "items": [
+              "axum"
+            ]
+          },
+          {
+            "category": "Go",
+            "items": [
+              "net/http"
+            ]
+          }
+        ],
+        "experience": [
+          {
+            "id": "exp-1",
+            "company": "Parity Co",
+            "title": "Engineer",
+            "date": "2020 -- 2026",
+            "location": "Remote",
+            "tier": 1,
+            "bullets": [
+              "Did things."
+            ]
+          }
+        ],
+        "projects": null,
+        "education": [
+          {
+            "institution": "Parity U",
+            "degree": "BSc",
+            "date": "2019",
+            "location": "Nowhere"
+          }
+        ]
+      },
+      "compare": "isError"
+    },
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity Person",
+        "contact": {
+          "email": "person@parity.invalid",
+          "location": "Nowhere"
+        },
+        "profile": "Synthetic summary.",
+        "skills": [
+          {
+            "category": "Rust",
+            "items": [
+              "axum"
+            ]
+          },
+          {
+            "category": "Go",
+            "items": [
+              "net/http"
+            ]
+          }
+        ],
+        "experience": [
+          {
+            "id": "exp-1",
+            "company": "Parity Co",
+            "title": "Engineer",
+            "date": "2020 -- 2026",
+            "location": "Remote",
+            "tier": 1,
+            "bullets": [
+              "Did things."
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "get_cv_profile",
+      "args": {}
+    },
+    {
+      "tool": "upsert_cv_profile",
+      "args": {
+        "name": "Parity Person",
+        "contact": {
+          "email": "person@parity.invalid",
+          "location": "Nowhere"
+        },
+        "profile": "Synthetic summary.",
+        "skills": [
+          {
+            "category": "Rust",
+            "items": [
+              "axum"
+            ]
+          },
+          {
+            "category": "Go",
+            "items": [
+              "net/http"
+            ]
+          }
+        ],
+        "experience": [
+          {
+            "id": "exp-1",
+            "company": "Parity Co",
+            "title": "Engineer",
+            "date": "2020 -- 2026",
+            "location": "Remote",
+            "tier": 1,
+            "bullets": [
+              "Did things."
+            ]
+          }
+        ],
+        "projects": [
+          {
+            "name": "parity",
+            "url": "parity.invalid",
+            "stack": "Rust",
+            "description": "Synthetic."
+          }
+        ],
+        "education": [
+          {
+            "institution": "Parity U",
+            "degree": "BSc",
+            "date": "2019",
+            "location": "Nowhere"
+          }
+        ]
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity CV Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "$app.id",
+        "experienceIds": [
+          "exp-1",
+          "exp-missing"
+        ],
+        "skillCategories": [
+          "Rust",
+          "Missing"
+        ],
+        "profileOverride": "Override.",
+        "includeProjects": true
+      },
+      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "$app.id",
+        "experienceIds": [
+          "exp-1"
+        ],
+        "skillCategories": []
+      },
+      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "applicationId": "$app.id",
+        "fields": [
+          "originalName",
+          "mimeType",
+          "documentType",
+          "state",
+          "version",
+          "source"
+        ]
+      },
+      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "999999",
+        "experienceIds": [],
+        "skillCategories": []
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "generate_tailored_cv",
+      "args": {
+        "applicationId": "not-a-number",
+        "experienceIds": [],
+        "skillCategories": []
+      },
+      "expect": {
+        "isError": true
+      }
+    }
+  ]
+}

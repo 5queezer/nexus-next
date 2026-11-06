@@ -1,0 +1,168 @@
+{
+  "name": "52-submission-hash-real-ids",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-hash-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "sameCompanyOverrideReason": "synthetic"
+        },
+        "documentIds": [
+          "38"
+        ],
+        "language": "en",
+        "candidateSalaryMin": 1,
+        "candidateSalaryMax": 2,
+        "candidateSalaryCurrency": "eur",
+        "followUpAt": null
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "190",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-hash-1",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified",
+          "sameCompanyOverrideReason": "synthetic"
+        },
+        "documentIds": [
+          "38"
+        ],
+        "language": "en",
+        "candidateSalaryMin": 1,
+        "candidateSalaryMax": 2,
+        "candidateSalaryCurrency": "eur",
+        "followUpAt": null
+      },
+      "expect": {
+        "paths": {
+          "replayed": true
+        }
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "190",
+        "type": "note_added",
+        "occurredAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-hash-ev",
+        "metadata": {
+          "note": "synthetic"
+        }
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "190"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "1"
+      },
+      "save": {
+        "real": "."
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$real.applicationId",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "$real.idempotencyKey",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "38"
+        ]
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "idempotency_conflict"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$real.applicationId",
+        "submittedAt": "$real.submittedAt",
+        "idempotencyKey": "$real.idempotencyKey",
+        "answers": "$real.answers",
+        "policy": "$real.policy",
+        "documentIds": "$real.documentIds",
+        "applicationUrl": "$real.applicationUrl",
+        "atsName": "$real.atsName",
+        "requisitionId": "$real.requisitionId",
+        "language": "$real.language"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "types": [
+          "note_added"
+        ],
+        "limit": 100
+      },
+      "save": {
+        "notes": "items.?idempotencyKey"
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$note.applicationId",
+        "type": "note_added",
+        "occurredAt": "$note.occurredAt",
+        "idempotencyKey": "$note.idempotencyKey",
+        "metadata": "$note.metadata"
+      },
+      "forEach": "$notes",
+      "bind": "note"
+    }
+  ]
+}

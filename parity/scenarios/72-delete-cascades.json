@@ -1,0 +1,292 @@
+{
+  "name": "72-delete-cascades",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Cascade Labs",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_contact",
+      "args": {
+        "applicationId": "$app.id",
+        "name": "Cascade Contact"
+      },
+      "save": {
+        "contact": "."
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-synthetic.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$app.id"
+        ]
+      },
+      "save": {
+        "linked": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "upload_document_content",
+      "args": {
+        "filename": "parity-submitted.pdf",
+        "mimeType": "application/pdf",
+        "contentBase64": "JVBERi0xLjQKJSVFT0YK",
+        "applicationIds": [
+          "$app.id"
+        ]
+      },
+      "save": {
+        "submitted": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$app.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        },
+        "occurredAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-cascade-ev"
+      },
+      "save": {
+        "event": "event"
+      }
+    },
+    {
+      "tool": "record_application_submission",
+      "args": {
+        "applicationId": "$app.id",
+        "submittedAt": "2026-02-02T09:00:00.000Z",
+        "idempotencyKey": "parity-cascade-sub",
+        "answers": [
+          {
+            "key": "why",
+            "question": "Why this role?",
+            "answer": "Synthetic answer.",
+            "kind": "text"
+          }
+        ],
+        "policy": {
+          "humanReviewed": true,
+          "identityConsistent": true,
+          "factsVerified": true,
+          "profileConsistencyStatus": "verified"
+        },
+        "documentIds": [
+          "$submitted.id"
+        ]
+      },
+      "save": {
+        "sub": "submission"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "text": "Application deleted"
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {
+        "id": "not-a-number"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found"
+      }
+    },
+    {
+      "tool": "list_application_events",
+      "args": {
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "list_application_activity",
+      "args": {
+        "company": "Parity Cascade Labs"
+      }
+    },
+    {
+      "tool": "list_application_submissions",
+      "args": {
+        "applicationId": "$app.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Application not found or access denied"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "$sub.id"
+      },
+      "expect": {
+        "isError": true,
+        "text": "Submission not found"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$linked.id"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$linked.id"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "$submitted.id"
+      }
+    },
+    {
+      "tool": "download_document_content",
+      "args": {
+        "id": "$submitted.id"
+      }
+    },
+    {
+      "tool": "list_documents",
+      "args": {
+        "orphaned": true,
+        "pageSize": 200,
+        "fields": [
+          "originalName",
+          "state",
+          "submissionId"
+        ]
+      }
+    },
+    {
+      "tool": "update_contact",
+      "args": {
+        "contactId": "$contact.id",
+        "applicationId": "$app.id",
+        "name": "ghost"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Cascade Again",
+        "role": "Parity Engineer"
+      },
+      "save": {
+        "again": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "record_application_event",
+      "args": {
+        "applicationId": "$again.id",
+        "type": "note_added",
+        "metadata": {
+          "note": "n"
+        },
+        "occurredAt": "2026-02-01T09:00:00.000Z",
+        "idempotencyKey": "parity-cascade-ev"
+      },
+      "expect": {
+        "paths": {
+          "replayed": false
+        }
+      }
+    },
+    {
+      "tool": "get_interview_recall_package",
+      "args": {
+        "applicationId": "98"
+      }
+    },
+    {
+      "tool": "delete_application",
+      "args": {
+        "id": "98"
+      },
+      "expect": {
+        "text": "Application deleted"
+      }
+    },
+    {
+      "tool": "get_document",
+      "args": {
+        "id": "60"
+      }
+    },
+    {
+      "tool": "get_application_submission",
+      "args": {
+        "id": "1"
+      }
+    },
+    {
+      "tool": "pipeline_healthcheck",
+      "args": {}
+    }
+  ]
+}

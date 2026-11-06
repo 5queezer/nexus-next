@@ -1,0 +1,471 @@
+{
+  "name": "31-application-update",
+  "resetDb": true,
+  "calls": [
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Update Labs",
+        "role": "Parity Engineer",
+        "notes": "original",
+        "rating": 3,
+        "source": "seed"
+      },
+      "save": {
+        "app": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "create_application",
+      "args": {
+        "company": "Parity Other Labs",
+        "role": "Parity Engineer",
+        "jobUrl": "https://jobs.parity.invalid/other"
+      },
+      "save": {
+        "other": "."
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "status": "applied"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required",
+        "paths": {
+          "error.fields": [
+            "status"
+          ]
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "appliedAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "appliedAt": null
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "lastContact": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "followUpAt": "2026-02-01T09:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "currentStage": "x"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "999999",
+        "status": "applied"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "must not persist",
+        "rating": 1,
+        "status": "offer",
+        "currentStage": "x"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "lifecycle_event_required",
+        "paths": {
+          "error.fields": [
+            "status",
+            "currentStage"
+          ]
+        }
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "save": {
+        "unchanged": "."
+      },
+      "expect": {
+        "paths": {
+          "notes": "original",
+          "rating": 3,
+          "status": "inbound"
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "dry",
+        "dryRun": true
+      },
+      "expect": {
+        "paths": {
+          "dryRun": true,
+          "application.notes": "dry",
+          "application.updatedAt": "$unchanged.updatedAt"
+        }
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      },
+      "expect": {
+        "paths": {
+          "notes": "original",
+          "updatedAt": "$unchanged.updatedAt"
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "dry",
+        "dryRun": true,
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "dry",
+        "dryRun": true,
+        "expectedUpdatedAt": "$unchanged.updatedAt"
+      },
+      "expect": {
+        "isError": false
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "stale",
+        "expectedUpdatedAt": "2020-01-01T00:00:00.000Z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "fresh",
+        "expectedUpdatedAt": "$unchanged.updatedAt"
+      },
+      "save": {
+        "fresh": "."
+      },
+      "expect": {
+        "paths": {
+          "notes": "fresh"
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "notes": "again",
+        "expectedUpdatedAt": "$unchanged.updatedAt"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "rating": 3.5
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "rating": null,
+        "notes": null,
+        "source": null,
+        "jobDescription": null,
+        "salaryMin": null,
+        "salaryMax": null,
+        "resumeId": null
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "source": {
+          "$repeat": [
+            "s",
+            150
+          ]
+        },
+        "company": {
+          "$repeat": [
+            "c",
+            300
+          ]
+        },
+        "role": {
+          "$repeat": [
+            "r",
+            300
+          ]
+        },
+        "jobDescription": {
+          "$repeat": [
+            "j",
+            50001
+          ]
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "remote": true,
+        "salaryMin": 1000.5,
+        "salaryMax": 500
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "workMode": "remote",
+        "eligibleCountries": [
+          "fr"
+        ],
+        "primaryLocations": [
+          "Paris"
+        ],
+        "salaryCurrency": "usd",
+        "nextAction": "  next  ",
+        "companySize": "small",
+        "salaryBandMentioned": false,
+        "triageQuality": 5,
+        "triageReason": "r",
+        "incomingSource": "email"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "companySize": null,
+        "triageQuality": null,
+        "triageReason": null,
+        "incomingSource": null,
+        "nextAction": null,
+        "workMode": null
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobUrl": "https://jobs.parity.invalid/self#x"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobContentHash": "abc123"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobContentHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobUrl": "not a url"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobUrl": "https://jobs.parity.invalid/other?utm_source=z"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "canonical_job_url_conflict"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobUrl": null
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "$app.id",
+        "jobUrl": ""
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "999999",
+        "notes": "x"
+      },
+      "expect": {
+        "isError": true,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "not-a-number",
+        "notes": "x"
+      },
+      "expect": {
+        "isError": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "$app.id"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "190"
+      },
+      "save": {
+        "real": "."
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "190",
+        "notes": "parity dry",
+        "dryRun": true
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "190"
+      },
+      "expect": {
+        "paths": {
+          "updatedAt": "$real.updatedAt",
+          "notes": "$real.notes"
+        }
+      }
+    },
+    {
+      "tool": "update_application",
+      "args": {
+        "id": "190",
+        "nextAction": "parity write"
+      }
+    },
+    {
+      "tool": "get_application",
+      "args": {
+        "id": "190"
+      }
+    }
+  ]
+}
