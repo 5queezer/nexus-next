@@ -1854,6 +1854,7 @@ async fn ordinary_lines_fills_and_borders_near_text_stay_allowed() {
         format!("#text(size: 18pt, weight: \"bold\")[#strike[{all}]]"),
         format!("#underline(stroke: 0.5pt + luma(80%))[{all}]"),
         format!("#overline(stroke: 0.5pt + luma(80%))[{all}]"),
+        "Words the shape would cover.#box(width: 4pt, height: 4pt, clip: true, place(dx: -80pt, dy: -5pt, rect(width: 200pt, height: 14pt, fill: white)))".to_owned(),
         format!("#highlight[{all}]"),
         format!("#highlight(fill: rgb(\"#ffe066\"))[{all}]"),
         format!("#highlight(fill: rgb(255, 224, 102, 50%))[{all}]"),
