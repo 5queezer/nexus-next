@@ -1232,27 +1232,38 @@ async fn previews_of(source: &str, stamp: bool) -> Vec<Vec<u8>> {
         .previews
 }
 
-/// The stamp's red, in each of the four quarters of an image, as counts of pixels.
-fn red_by_quarter(png_bytes: &[u8]) -> [usize; 4] {
+fn pixels(png_bytes: &[u8]) -> (usize, usize, usize, Vec<u8>) {
     let mut reader = png::Decoder::new(std::io::Cursor::new(png_bytes))
         .read_info()
         .unwrap();
     let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
     let info = reader.next_frame(&mut buffer).unwrap();
-    let stride = info.line_size;
-    let channels = info.color_type.samples();
+    (
+        info.width as usize,
+        info.height as usize,
+        info.color_type.samples(),
+        buffer,
+    )
+}
+
+/// How many pixels of each quarter of the page the stamp visibly changes. Compared with the same page
+/// unstamped, and not by the stamp's colour, since a source chooses what lies under it.
+fn seen_by_quarter(plain: &[u8], stamped: &[u8]) -> [usize; 4] {
+    /// Levels of 255 a person can tell apart at a glance.
+    const VISIBLE: i32 = 40;
+    let (width, height, channels, before) = pixels(plain);
+    let (_, _, _, after) = pixels(stamped);
     let mut quarters = [0; 4];
-    for y in 0..info.height as usize {
-        for x in 0..info.width as usize {
-            let pixel = &buffer[y * stride + x * channels..];
-            let (r, g, b) = (
-                i32::from(pixel[0]),
-                i32::from(pixel[1]),
-                i32::from(pixel[2]),
-            );
-            if r - g > 60 && r - b > 60 {
-                let right = usize::from(x * 2 >= info.width as usize);
-                let lower = usize::from(y * 2 >= info.height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let at = (y * width + x) * channels;
+            let moved = (0..3)
+                .map(|i| (i32::from(before[at + i]) - i32::from(after[at + i])).abs())
+                .max()
+                .unwrap();
+            if moved > VISIBLE {
+                let right = usize::from(x * 2 >= width);
+                let lower = usize::from(y * 2 >= height);
                 quarters[right + 2 * lower] += 1;
             }
         }
@@ -1274,6 +1285,12 @@ async fn nothing_in_a_source_removes_or_covers_the_stamp() {
         format!("Work.\n{cover}"),
         "#set page(fill: white)\nWork.".to_owned(),
         "#set page(fill: red)\nWork.".to_owned(),
+        // The stamp's own colour, and what lies either side of it. One colour alone would vanish here.
+        "#set page(fill: rgb(200, 16, 16))\nWork.".to_owned(),
+        "#set page(fill: rgb(180, 30, 30))\nWork.".to_owned(),
+        "#set page(fill: rgb(226, 120, 120))\nWork.".to_owned(),
+        "#set page(fill: rgb(120, 120, 120))\nWork.".to_owned(),
+        "#set page(fill: black)\nWork.".to_owned(),
         "#show \"DRAFT\": none\n#show \"DRAFT, NOT APPROVED\": none\nWork.".to_owned(),
         "#show regex(\".+\"): none\nWork.".to_owned(),
         "#show text: none\nWork.".to_owned(),
@@ -1288,12 +1305,11 @@ async fn nothing_in_a_source_removes_or_covers_the_stamp() {
         let stamped = previews_of(&source, true).await;
         assert_eq!(plain.len(), stamped.len(), "{body}");
         for (plain, stamped) in plain.iter().zip(&stamped) {
-            assert_ne!(plain, stamped, "{body}");
-            let quarters = red_by_quarter(stamped);
-            if !body.contains("fill: red") {
-                assert_eq!(red_by_quarter(plain), [0; 4], "{body}");
-                assert!(quarters.iter().all(|red| *red > 5), "{body}: {quarters:?}");
-            }
+            let quarters = seen_by_quarter(plain, stamped);
+            assert!(
+                quarters.iter().all(|seen| *seen > 5),
+                "{body}: {quarters:?}"
+            );
         }
     }
 }

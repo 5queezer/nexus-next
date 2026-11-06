@@ -313,10 +313,9 @@ async fn each_false_fact_stays_a_draft_until_the_owner_approves_exactly_it() {
             .iter()
             .map(|item| item["token"].as_str().unwrap().to_lowercase())
             .collect();
-        let truncated = stored["truncated"].as_u64().unwrap();
         for token in *tokens {
             assert!(
-                listed.iter().any(|t| *t == token.to_lowercase()) || truncated > 0,
+                listed.iter().any(|t| *t == token.to_lowercase()),
                 "{name}: no {token} in {listed:?}"
             );
         }

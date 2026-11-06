@@ -215,9 +215,11 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
 }
 
 /// One stamp, translucent so that the CV stays readable beneath it. Its own document, so that nothing
-/// in a source can reach it: not a show rule, a `set`, or a font it can't name.
+/// in a source can reach it: not a show rule, a `set`, or a font it can't name. The outline is opaque
+/// and of another colour, because a page filled with the stamp's own red would hide a stamp of one
+/// colour, and no fill can match both.
 const STAMP_SOURCE: &str = r##"#set page(width: 320pt, height: 180pt, margin: 0pt, fill: none)
-#set text(font: "Libertinus Serif", size: 25pt, weight: "bold", fill: rgb(200, 16, 16, 120))
+#set text(font: "Libertinus Serif", size: 25pt, weight: "bold", fill: rgb(200, 16, 16, 120), stroke: 0.7pt + white)
 #align(center + horizon, rotate(-28deg, reflow: true)[DRAFT, NOT APPROVED])
 "##;
 const STAMP_WIDTH: f64 = 320.0;
