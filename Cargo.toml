@@ -11,6 +11,7 @@ publish = false
 nexus-core = { path = "crates/core" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+chrono-tz = "0.10.4"
 clap = { version = "4.6", features = ["derive"] }
 hex = "0.4"
 anyhow = "1"

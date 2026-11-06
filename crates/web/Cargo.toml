@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 axum.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 leptos.workspace = true
 nexus-core.workspace = true
 regex.workspace = true

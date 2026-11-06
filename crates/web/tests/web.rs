@@ -26,7 +26,7 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();
-    let app = nexus_web::dashboard_router(db.clone())
+    let app = nexus_web::dashboard_router(db.clone(), "Europe/Madrid".parse().unwrap())
         .merge(nexus_web::api_router(db.clone()))
         .merge(nexus_web::calendar_router(db.clone(), TOKEN.to_owned()));
     Fixture { _dir: dir, db, app }
@@ -282,7 +282,7 @@ async fn detail_shows_everything_and_marks_missing_files() {
     assert!(page.contains(&format!("#{id}")));
     assert!(
         page.contains("Interview scheduled")
-            && page.contains("Scheduled for: Mar 05, 2026, 14:30 UTC")
+            && page.contains("Scheduled for: Mar 05, 2026, 15:30 CET")
     );
     assert!(page.contains("Contact: Rita Recruiter"));
     assert!(page.contains("Why us?") && page.contains("90,000 to 100,000 EUR / year, flexible"));
