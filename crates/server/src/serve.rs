@@ -279,26 +279,29 @@ fn is_local_name(name: &str, bind: IpAddr) -> bool {
 }
 
 /// A browser sends `Host` with a rebound name, and `Origin` on the cross-site POST a `text/plain;
-/// application/json` content type lets through without a preflight.
-fn is_local_request(headers: &HeaderMap, bind: IpAddr) -> bool {
+/// application/json` content type lets through without a preflight. The dashboard's own forms send
+/// `Origin: null` because pages say `Referrer-Policy: no-referrer`; their CSRF token is the check,
+/// so only that route family may carry it.
+fn is_local_request(headers: &HeaderMap, path: &str, bind: IpAddr) -> bool {
     let value = |name| headers.get(name).map(|v| v.to_str().unwrap_or_default());
     let host_ok = value(HOST).is_none_or(|host| {
         host.parse::<Authority>()
             .is_ok_and(|authority| is_local_name(authority.host(), bind))
     });
     let origin_ok = value(ORIGIN).is_none_or(|origin| {
-        origin
-            .parse::<Uri>()
-            .ok()
-            .and_then(|uri| uri.host().map(|host| is_local_name(host, bind)))
-            .unwrap_or(false)
+        (origin == "null" && path.starts_with("/applications/"))
+            || origin
+                .parse::<Uri>()
+                .ok()
+                .and_then(|uri| uri.host().map(|host| is_local_name(host, bind)))
+                .unwrap_or(false)
     });
     host_ok && origin_ok
 }
 
 /// Without login, any web page could otherwise reach local data through DNS rebinding.
 async fn local_only(State(bind): State<IpAddr>, request: Request, next: Next) -> Response {
-    if is_local_request(request.headers(), bind) {
+    if is_local_request(request.headers(), request.uri().path(), bind) {
         next.run(request).await
     } else {
         (
