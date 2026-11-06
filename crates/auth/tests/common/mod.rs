@@ -29,6 +29,7 @@ pub const PASSPHRASE: &str = "correct horse battery staple";
 pub const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 pub const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 pub const REDIRECT: &str = "https://client.example.test/callback";
+pub const ALLOWED_HOSTS: [&str; 3] = ["client.example.test", "ok.example.test", "a.example.test"];
 pub const DEFAULT_IP: &str = "198.51.100.1";
 
 pub fn encode(value: &str) -> String {
@@ -165,6 +166,7 @@ impl Harness {
                 public_base_url: BASE.to_owned(),
                 owner_passphrase_hash: weak_hash(),
                 trusted_proxy,
+                redirect_hosts: ALLOWED_HOSTS.map(str::to_owned).to_vec(),
             },
         )
         .unwrap();

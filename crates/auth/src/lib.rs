@@ -18,7 +18,10 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 
-pub use admin::{PassphraseError, hash_passphrase, issue_api_token, set_owner_passphrase};
+pub use admin::{
+    GrantLine, PassphraseError, RevokeError, hash_passphrase, issue_api_token, list_grants,
+    revoke_grant, set_owner_passphrase,
+};
 pub use config::{
     AuthConfig, ConfigError, TrustedProxy, normalize_base_url, owner_passphrase_file,
 };

@@ -1,5 +1,6 @@
-//! Security events reach the log, and nothing secret or client-supplied comes with them. A single
-//! test, because it installs the process-wide tracing subscriber.
+//! Security events reach the log, and nothing secret comes with them. The only client-supplied text
+//! is a consent's sanitised name and redirect origin, and a refused host. A single test, because it
+//! installs the process-wide tracing subscriber.
 
 mod common;
 
@@ -32,11 +33,11 @@ impl<'a> MakeWriter<'a> for Capture {
     }
 }
 
-const HOSTILE_NAME: &str = "HOSTILE-CLIENT-NAME\nevent=forged";
+const HOSTILE_NAME: &str = "NAME\u{202e}\nevent=forged";
 const WRONG_GUESS: &str = "WRONG-GUESS-PASSPHRASE";
 
 #[tokio::test]
-async fn security_events_are_logged_without_secrets_or_client_text() {
+async fn security_events_are_logged_without_secrets() {
     let capture = Capture::default();
     tracing_subscriber::fmt()
         .with_ansi(false)
@@ -47,13 +48,28 @@ async fn security_events_are_logged_without_secrets_or_client_text() {
     let h = Harness::new().await;
     let client = h
         .register_with(json!({
-            "client_name": HOSTILE_NAME,
+            "client_name": "Synthetic",
             "redirect_uris": [REDIRECT],
             "token_endpoint_auth_method": "HOSTILE-METHOD",
         }))
         .await;
     let id = client["client_id"].as_str().unwrap();
     let secret = client["client_secret"].as_str().unwrap();
+    // A name registration would refuse now, as a row from before could hold it.
+    sqlx::query("UPDATE oauth_clients SET client_name = ? WHERE client_id = ?")
+        .bind(HOSTILE_NAME)
+        .bind(id)
+        .execute(h.db.pool())
+        .await
+        .unwrap();
+
+    let refused = h
+        .send(json_req(
+            "/api/mcp/register",
+            &json!({"client_name": "x", "redirect_uris": ["https://claude.ai.evil.test/cb"]}),
+        ))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
 
     let mut browser = Browser::default();
     let wrong = browser.attempt_login(&h, WRONG_GUESS, "203.0.113.5").await;
@@ -91,6 +107,7 @@ async fn security_events_are_logged_without_secrets_or_client_text() {
         "grant_type=refresh_token&client_id={id}&client_secret={secret}&refresh_token={refresh2}"
     );
     h.token(&refresh_body).await;
+    assert_eq!(h.token(&refresh_body).await.status, StatusCode::OK);
     h.end_refresh_grace().await;
     h.token(&refresh_body)
         .await
@@ -116,6 +133,9 @@ async fn security_events_are_logged_without_secrets_or_client_text() {
         "login_lockout",
         "login_success",
         "consent_granted",
+        "redirect_host_rejected",
+        r#"host="claude.ai.evil.test""#,
+        "refresh_grace_used",
         "token_replay_detected",
         "grants_revoked",
         "rate_limited",
@@ -127,13 +147,21 @@ async fn security_events_are_logged_without_secrets_or_client_text() {
     assert!(logs.contains("authorization_code") && logs.contains("refresh_token"));
     assert!(logs.contains("source=203.0.113.5"), "{logs}");
     assert!(logs.contains(id), "events name the registered client");
+    assert!(
+        logs.contains(r#"client_name="NAMEevent=forged""#),
+        "the name is stripped of control and format characters:\n{logs}"
+    );
+    assert!(logs.contains("redirect_origin=https://client.example.test"));
+    assert!(
+        logs.lines()
+            .all(|line| !line.trim_start().starts_with("event=forged"))
+    );
 
     for secret in [
         PASSPHRASE,
         WRONG_GUESS,
         "HOSTILE",
-        "forged",
-        "client.example.test",
+        "\u{202e}",
         "jt_guessed",
         "st-1",
         secret,

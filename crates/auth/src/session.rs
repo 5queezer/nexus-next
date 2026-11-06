@@ -471,6 +471,7 @@ mod tests {
             owner_passphrase_hash: "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA"
                 .to_owned(),
             trusted_proxy: None,
+            redirect_hosts: Vec::new(),
         };
         (AuthState::new(db, config).unwrap(), dir)
     }
@@ -492,6 +493,7 @@ mod tests {
             public_base_url: BASE.to_owned(),
             owner_passphrase_hash: hash.to_owned(),
             trusted_proxy: None,
+            redirect_hosts: Vec::new(),
         };
         let restarted = AuthState::new(db.clone(), config(&first.0.passphrase_hash)).unwrap();
         assert_ne!(first.0.key, restarted.0.key);
