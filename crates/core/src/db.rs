@@ -106,6 +106,11 @@ impl Db {
             .pragma("journal_size_limit", JOURNAL_SIZE_LIMIT.to_string())
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(10));
+        // On one connection, before the pool can open a second. With the pool's connections alongside,
+        // a cold start sometimes failed at once with "database is locked", whatever the busy timeout says.
+        let mut first = options.connect().await?;
+        MIGRATOR.run(&mut first).await?;
+        first.close().await?;
         // Never closing idle connections keeps the WAL in place, which `in_use_reason` relies on.
         // `min_connections` alone is not enough: sqlx's reaper closes the last idle connection
         // before opening its replacement, and that close removes the WAL.
@@ -116,7 +121,6 @@ impl Db {
             .max_lifetime(None)
             .connect_with(options)
             .await?;
-        MIGRATOR.run(&pool).await?;
         make_db_files_private(data_dir)?;
         Ok(Self {
             pool,
