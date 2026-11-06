@@ -156,7 +156,7 @@ fn read_token(path: &std::path::Path) -> Result<String, String> {
             "must hold one token of at least {MIN_TOKEN_LEN} characters without whitespace"
         ));
     }
-    if token.chars().all(|c| Some(c) == token.chars().next()) {
+    if token.chars().all(|c| token.starts_with(c)) {
         return Err("is one repeated character: use `openssl rand -hex 32`".to_owned());
     }
     Ok(token.to_owned())
