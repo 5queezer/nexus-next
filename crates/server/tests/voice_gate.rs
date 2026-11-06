@@ -25,12 +25,13 @@ use nexus_core::repo::applications::{self, ApplicationFields};
 use nexus_core::repo::cv_facts;
 use nexus_mcp::{McpState, Renderer, all_tools};
 use nexus_server::config::{Access, ServeConfig};
-use nexus_server::serve;
+use nexus_server::serve::{self, OWNER};
 use nexus_web::{MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, VOICE_TOOLS, VoiceConfig, VoiceKey};
 use reqwest::redirect::Policy;
 use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, Row};
 use support::{PASSPHRASE, nexus};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -829,6 +830,189 @@ async fn only_a_live_session_of_this_login_with_its_token_gets_through() {
     assert_eq!(revision_count(&h.db).await, 1);
     assert_eq!(outside_cv(&h.db, h.dir.path()).await, baseline);
     let _ = id;
+}
+
+impl Login {
+    async fn status(&self, id: &str) -> (u16, String, Value) {
+        let mut request = self
+            .http
+            .get(format!("{}/api/voice/status", self.base))
+            .header("cookie", &self.cookies);
+        if !id.is_empty() {
+            request = request.header("x-nexus-voice-session", id);
+        }
+        let response = request.send().await.unwrap();
+        let status = response.status().as_u16();
+        let store = response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let text = response.text().await.unwrap();
+        (
+            status,
+            store,
+            serde_json::from_str(&text).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn log_out(&self) {
+        let page = self
+            .http
+            .get(format!("{}/logout", self.base))
+            .header("cookie", &self.cookies)
+            .send()
+            .await
+            .unwrap();
+        let body = format!("csrf={}", field(&page.text().await.unwrap(), "csrf"));
+        let done = self
+            .http
+            .post(format!("{}/logout", self.base))
+            .header("cookie", &self.cookies)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(done.status(), 303);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_route_tells_a_live_session_from_every_way_of_ending() {
+    let h = start(Duration::from_secs(900), true).await;
+    h.seed().await;
+    let login = h.login().await;
+    let id = login.voice_id().await;
+
+    let (status, store, body) = login.status(&id).await;
+    assert_eq!((status, store.as_str()), (200, "no-store"), "{body}");
+    assert_eq!(body, json!({"live": true}));
+
+    for wrong in ["", "not-a-session"] {
+        let (status, _, body) = login.status(wrong).await;
+        assert_eq!(status, 403, "{wrong}");
+        assert_eq!(body["error"]["code"], "voice_session_invalid", "{wrong}");
+    }
+    let other = h.login().await;
+    let (status, _, body) = other.status(&id).await;
+    assert_eq!(status, 403, "another login's session");
+    assert_eq!(body["error"]["code"], "voice_session_invalid");
+
+    login.voice_id().await;
+    login.voice_id().await;
+    let (status, _, body) = login.status(&id).await;
+    assert_eq!(status, 403, "evicted");
+    assert_eq!(body["error"]["code"], "voice_session_invalid");
+
+    let live = login.voice_id().await;
+    assert_eq!(login.status(&live).await.0, 200);
+    login.log_out().await;
+    let (status, _, body) = login.status(&live).await;
+    assert_eq!(status, 401, "logged out: {body}");
+    assert_eq!(other.status(&live).await.0, 403, "still not theirs");
+
+    let expired = start(Duration::from_millis(200), true).await;
+    expired.seed().await;
+    let login = expired.login().await;
+    let id = login.voice_id().await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(login.status(&id).await.0, 403, "past its lifetime");
+}
+
+/// A busy dashboard isn't a lost server: the page ends a session after two failed checks.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_route_answers_while_the_owner_pool_is_full() {
+    let h = start(Duration::from_secs(900), true).await;
+    h.seed().await;
+    let login = h.login().await;
+    let id = login.voice_id().await;
+    let mut held = Vec::new();
+    for _ in 0..OWNER.in_flight {
+        let mut socket = tokio::net::TcpStream::connect(h.addr).await.unwrap();
+        let head = format!(
+            "POST /api/voice/tool HTTP/1.1\r\nHost: localhost:{}\r\nCookie: {}\r\nContent-Length: 100\r\n\r\n",
+            h.addr.port(),
+            login.cookies
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        held.push(socket);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let page = {
+        let (http, url, cookies) = (
+            login.http.clone(),
+            format!("{}/cv", login.base),
+            login.cookies.clone(),
+        );
+        tokio::spawn(async move {
+            let response = http
+                .get(url)
+                .header("cookie", cookies)
+                .send()
+                .await
+                .unwrap();
+            response.status().as_u16()
+        })
+    };
+    let started = std::time::Instant::now();
+    assert_eq!(login.status(&id).await.0, 200);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(page.await.unwrap(), 503, "the pool really was full");
+    drop(held);
+}
+
+/// Reads a stream until the server ends it.
+async fn read_to_end_within(socket: &mut tokio::net::TcpStream, limit: Duration) -> String {
+    let mut seen = Vec::new();
+    tokio::time::timeout(limit, socket.read_to_end(&mut seen))
+        .await
+        .expect("the stream ended in time")
+        .unwrap();
+    String::from_utf8_lossy(&seen).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn logging_out_ends_the_streams_at_once_and_only_the_logged_out_browser_stays_out() {
+    let h = start(Duration::from_secs(900), true).await;
+    h.seed().await;
+    let (leaving, staying) = (h.login().await, h.login().await);
+    let open = |cookies: String| async move {
+        let mut socket = tokio::net::TcpStream::connect(h.addr).await.unwrap();
+        let head = format!(
+            "GET /api/cv/default/events HTTP/1.1\r\nHost: localhost:{}\r\nCookie: {cookies}\r\nConnection: close\r\n\r\n",
+            h.addr.port()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        let mut first = [0u8; 12];
+        socket.read_exact(&mut first).await.unwrap();
+        (socket, String::from_utf8_lossy(&first).into_owned())
+    };
+    let (mut gone, first) = open(leaving.cookies.clone()).await;
+    assert_eq!(first, "HTTP/1.1 200");
+    let (mut other, _) = open(staying.cookies.clone()).await;
+
+    leaving.log_out().await;
+    let limit = Duration::from_secs(2);
+    assert!(
+        read_to_end_within(&mut gone, limit)
+            .await
+            .ends_with("0\r\n\r\n")
+    );
+    assert!(
+        read_to_end_within(&mut other, limit)
+            .await
+            .ends_with("0\r\n\r\n")
+    );
+
+    let (mut refused, first) = open(leaving.cookies.clone()).await;
+    assert_eq!(first, "HTTP/1.1 401");
+    drop(refused.shutdown().await);
+    let (_back, first) = open(staying.cookies.clone()).await;
+    assert_eq!(first, "HTTP/1.1 200", "the other login just reconnects");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -11,7 +11,7 @@ use nexus_core::repo::cv_facts;
 use nexus_mcp::{McpState, Renderer};
 use nexus_server::config::{Access, ServeConfig};
 use nexus_server::serve::{self, OWNER};
-use nexus_web::{HEARTBEAT, MAX_STREAMS};
+use nexus_web::{HEARTBEAT, MAX_STREAMS, STREAM_LIFE, StreamLife};
 use serde_json::{Value, json};
 use support::Node;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -65,14 +65,26 @@ async fn local() -> Local {
         std::future::pending(),
         Duration::from_secs(1),
     ));
-    let state = std::sync::Arc::new(McpState::new(
+    seed(&db).await;
+    Local {
+        addr,
+        db,
+        _dir: dir,
+    }
+}
+
+fn mcp_state(db: &Db) -> McpState {
+    McpState::new(
         db.clone(),
         "owner-1".to_owned(),
         "owner@example.test".to_owned(),
         Renderer::InProcess,
-    ));
+    )
+}
+
+async fn seed(db: &Db) {
     let result = nexus_mcp::call_tool(
-        state,
+        std::sync::Arc::new(mcp_state(db)),
         &[nexus_core::auth::SCOPE_TOOLS],
         "test",
         "upsert_cv_profile",
@@ -83,11 +95,39 @@ async fn local() -> Local {
     let mut tx = db.begin_write().await.unwrap();
     cv_facts::lock(&mut tx, "test").await.unwrap();
     tx.commit().await.unwrap();
-    Local {
-        addr,
-        db,
-        _dir: dir,
-    }
+}
+
+/// Only the streams, with their life set by the test, served the way `serve` serves everything.
+async fn streams_with(life: StreamLife) -> (SocketAddr, McpState, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    seed(&db).await;
+    let state = mcp_state(&db);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = nexus_web::cv_events_router(
+        state.clone(),
+        watch::Sender::new(false).subscribe(),
+        watch::Sender::new(0),
+        life,
+    );
+    tokio::spawn(serve::serve(
+        listener,
+        app,
+        std::future::pending(),
+        Duration::from_secs(1),
+    ));
+    (addr, state, dir)
+}
+
+/// A client that asks for a stream and never reads, with as small a receive buffer as it can get.
+async fn stalled_client(addr: SocketAddr) -> TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut stream = socket.connect(addr).await.unwrap();
+    let request = format!("GET {EVENTS} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream
 }
 
 /// A browser's view of a stream: raw bytes as they arrive.
@@ -311,6 +351,121 @@ async fn a_quiet_stream_gets_heartbeats_and_outlives_the_owner_deadline() {
         .unwrap()
         .unwrap();
     assert_ne!(read, 0, "still open past the deadline");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_ends_cleanly_at_the_end_of_its_life_and_gives_its_slot_back() {
+    assert_eq!(STREAM_LIFE.life, Duration::from_secs(600));
+    let life = Duration::from_secs(2);
+    let (addr, _state, _dir) = streams_with(StreamLife {
+        life,
+        stall_grace: Duration::from_secs(3600),
+    })
+    .await;
+    let started = Instant::now();
+    let mut streams = Vec::new();
+    for _ in 0..MAX_STREAMS {
+        let mut stream = Stream::open(addr, EVENTS, "Connection: close\r\n").await;
+        stream.wait_for("event: head", SOON).await;
+        streams.push(stream);
+    }
+    let refused = status_of(addr, EVENTS).await;
+    assert!(refused.starts_with("HTTP/1.1 503"), "{refused}");
+    for stream in &mut streams {
+        stream.wait_for_end(life + SOON).await;
+        assert!(stream.seen.ends_with("0\r\n\r\n"), "{}", stream.seen);
+    }
+    assert!(started.elapsed() >= life, "{:?}", started.elapsed());
+    let mut next = Stream::open(addr, EVENTS, "").await;
+    next.wait_for("event: head", SOON).await;
+    assert!(next.seen.starts_with("HTTP/1.1 200"), "{}", next.seen);
+}
+
+/// Hyper stops polling a body while the socket is full, so the stream's own timer can't run: this is
+/// what the connection's cut is for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_stopped_reading_with_a_full_socket_loses_its_slot_to_the_cut() {
+    let life = Duration::from_secs(4);
+    let stall_grace = Duration::from_secs(4);
+    let (addr, state, _dir) = streams_with(StreamLife { life, stall_grace }).await;
+    let started = Instant::now();
+    let mut clients = Vec::new();
+    for _ in 0..MAX_STREAMS {
+        clients.push(stalled_client(addr).await);
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Well past what the kernel buffers on both sides of each socket can take.
+    let event = nexus_mcp::CvRevisionEvent {
+        variant: "default".to_owned(),
+        revision: 1,
+        origin: "test".to_owned(),
+        summary: "x".repeat(1024 * 1024),
+        state: "draft".to_owned(),
+        review_items: 0,
+        approval: false,
+    };
+    for _ in 0..24 {
+        state.cv_events.send(event.clone()).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(started.elapsed() < life, "{:?}", started.elapsed());
+    let full = status_of(addr, EVENTS).await;
+    assert!(full.starts_with("HTTP/1.1 503"), "{full}");
+
+    tokio::time::sleep_until((started + life + Duration::from_secs(2)).into()).await;
+    let past_life = status_of(addr, EVENTS).await;
+    assert!(
+        past_life.starts_with("HTTP/1.1 503"),
+        "the stream's timer didn't run: {past_life}"
+    );
+
+    tokio::time::sleep_until((started + life + stall_grace + Duration::from_secs(1)).into()).await;
+    let mut next = Stream::open(addr, EVENTS, "").await;
+    next.wait_for("event: head", SOON).await;
+    assert!(next.seen.starts_with("HTTP/1.1 200"), "{}", next.seen);
+    println!("slots back after {:?}", started.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_head_event_says_whether_the_head_is_approved() {
+    let l = local().await;
+    let mut stream = Stream::open(l.addr, EVENTS, "").await;
+    stream.wait_for("event: head", SOON).await;
+    stream.wait_for("\"revision\":0,\"state\":\"", SOON).await;
+    let result = mcp_call(
+        l.addr,
+        "patch_cv",
+        json!({
+            "expectedRevision": 0,
+            "edits": [{"oldText": "Built the routing service.", "newText": "Built the routing engine."}],
+            "summary": "From an agent",
+        }),
+    )
+    .await;
+    assert_ne!(result["isError"], true, "{result}");
+    let mut draft = Stream::open(l.addr, EVENTS, "").await;
+    draft
+        .wait_for("{\"revision\":1,\"state\":\"draft\"}", SOON)
+        .await;
+
+    let state = std::sync::Arc::new(mcp_state(&l.db));
+    let review = nexus_mcp::owner::review(state.clone(), "default")
+        .await
+        .unwrap();
+    let approved = nexus_mcp::owner::approve(
+        state,
+        "default",
+        review.revision,
+        &review.source_sha256,
+        &review.facts_sha256,
+        "dashboard",
+    )
+    .await;
+    assert_ne!(approved.is_error, Some(true), "{approved:?}");
+    let mut after = Stream::open(l.addr, EVENTS, "").await;
+    after
+        .wait_for("{\"revision\":1,\"state\":\"approved\"}", SOON)
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

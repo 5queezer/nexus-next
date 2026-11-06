@@ -55,7 +55,7 @@ fn build(state: &McpState, dir: &TempDir, voice: Option<VoiceConfig>) -> Router 
     nexus_web::cv_router(
         state.clone(),
         "Europe/Madrid".parse().unwrap(),
-        voice,
+        nexus_web::Voice::new(voice),
         dir.path(),
     )
     .layer(Extension(FormToken(TOKEN.to_owned())))

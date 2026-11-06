@@ -7,11 +7,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Extension, Router};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
@@ -126,9 +128,10 @@ struct Live {
     mints: VecDeque<Instant>,
 }
 
-/// In memory only: a restart ends every session, and the page then says so.
+/// In memory only: a restart ends every session. The page's status check finds that out within
+/// about a minute, closes the connection and says so.
 #[derive(Clone)]
-pub(crate) struct Voice {
+pub struct Voice {
     config: Option<VoiceConfig>,
     client: Option<Upstream>,
     live: Arc<Mutex<Live>>,
@@ -145,7 +148,7 @@ impl Voice {
         }
     }
 
-    pub fn config(&self) -> Option<&VoiceConfig> {
+    pub(crate) fn config(&self) -> Option<&VoiceConfig> {
         self.config.as_ref()
     }
 
@@ -201,12 +204,13 @@ impl Voice {
         id
     }
 
-    /// The variant of a live session this login opened.
-    fn session_variant(&self, id: &str, form_token: &str) -> Option<String> {
+    /// The variant of a live session this login opened. Without a token (no login in local mode)
+    /// any live session counts.
+    fn session_variant(&self, id: &str, form_token: Option<&str>) -> Option<String> {
         let live = self.live();
         let session = live.sessions.get(id)?;
-        (session.expires_at > Instant::now() && csrf_ok(Some(&session.form_token), form_token))
-            .then(|| session.variant.clone())
+        let ours = form_token.is_none_or(|token| csrf_ok(Some(&session.form_token), token));
+        (session.expires_at > Instant::now() && ours).then(|| session.variant.clone())
     }
 }
 
@@ -320,6 +324,14 @@ fn refused_csrf() -> Response {
         StatusCode::FORBIDDEN,
         "csrf_invalid",
         "This page has expired. Reload it and try again.",
+    )
+}
+
+fn session_ended() -> Response {
+    failure(
+        StatusCode::FORBIDDEN,
+        "voice_session_invalid",
+        "This voice session has ended.",
     )
 }
 
@@ -459,6 +471,38 @@ async fn mint(client: &Upstream, config: &VoiceConfig, variant: &str) -> Option<
     body["value"].as_str().map(str::to_owned)
 }
 
+/// `GET /api/voice/status`, which the page asks every so often: only it can close the connection to
+/// OpenAI, and hands-free can send sound for up to an hour with no tool call to bring this up. Outside
+/// the owner pool, because a busy dashboard must not read as a lost server. A logged-out browser gets
+/// the session check's 401 before this, and after a restart the session is simply gone. It tells the
+/// page nothing else, so it needs no CSRF token.
+async fn status(
+    State(voice): State<Voice>,
+    token: Option<Extension<FormToken>>,
+    headers: HeaderMap,
+) -> Response {
+    let token = token
+        .as_ref()
+        .map(|Extension(FormToken(token))| token.as_str());
+    let live = headers
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|id| voice.session_variant(id, token));
+    if live.is_some() {
+        axum::Json(json!({"live": true})).into_response()
+    } else {
+        session_ended()
+    }
+}
+
+/// Mounts `/api/voice/status`. Auth is the caller's.
+pub fn voice_status_router(voice: Voice) -> Router {
+    Router::new()
+        .route("/api/voice/status", get(status))
+        .layer(middleware::map_response(crate::secure))
+        .with_state(voice)
+}
+
 #[derive(Deserialize)]
 struct ToolRequest {
     name: String,
@@ -534,13 +578,9 @@ pub(crate) async fn tool(
     let Some(variant) = headers
         .get(SESSION_HEADER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|id| cv.voice.session_variant(id, &token))
+        .and_then(|id| cv.voice.session_variant(id, Some(&token)))
     else {
-        return failure(
-            StatusCode::FORBIDDEN,
-            "voice_session_invalid",
-            "This voice session has ended.",
-        );
+        return session_ended();
     };
     let Ok(request) = serde_json::from_slice::<ToolRequest>(&body) else {
         return failure(

@@ -10,7 +10,7 @@ use axum::http::request::Parts;
 use nexus_core::db::Db;
 use nexus_core::repo::oauth as repo;
 use nexus_core::time::Timestamp;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
 
 use crate::config::{
     AuthConfig, ConfigError, TrustedProxy, normalize_base_url, validate_passphrase_hash,
@@ -38,6 +38,8 @@ pub(crate) struct Inner {
     /// SHA-256 of each session id, with its expiry. In memory because a restart costing the owner
     /// one login is cheaper than another stored credential; logout really does revoke.
     pub(crate) sessions: Mutex<HashMap<String, Instant>>,
+    /// Counts logouts, so that what stays open past its session check can end with it.
+    pub(crate) logouts: watch::Sender<u64>,
     pub(crate) login_limit: Backoff,
     pub(crate) register_ip_limit: FixedWindow,
     pub(crate) register_global_limit: FixedWindow,
@@ -50,6 +52,11 @@ pub(crate) struct Inner {
 }
 
 impl AuthState {
+    /// Changes at every logout.
+    pub fn logouts(&self) -> watch::Sender<u64> {
+        self.0.logouts.clone()
+    }
+
     pub fn new(db: Db, config: AuthConfig) -> Result<Self, ConfigError> {
         validate_passphrase_hash(&config.owner_passphrase_hash)?;
         let base_url = normalize_base_url(&config.public_base_url)?;
@@ -62,6 +69,7 @@ impl AuthState {
             redirect_hosts: config.redirect_hosts,
             key: random_bytes(),
             sessions: Mutex::default(),
+            logouts: watch::Sender::new(0),
             login_limit: Backoff::new(
                 BackoffPolicy {
                     free: 5,
