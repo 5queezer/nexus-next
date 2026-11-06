@@ -104,11 +104,17 @@
   }
 
   // The owner approved what is on screen, here or on another device: the stamp goes, in place. Only
-  // counted once the page shows it, so that a failed fetch is tried again at the next word of it.
+  // counted once the page shows it. If the fetch failed the stream may stay open and never say this
+  // again, so the slow poll asks until it has been shown.
   async function approved(revision) {
     if (revision !== shown || shownState === "approved") return;
     const followed = await followHead(revision, `Revision ${revision} is approved.`);
-    if (!followed || revision !== shown) return;
+    if (!followed) {
+      startPolling();
+      return;
+    }
+    if (stream.readyState === EventSource.OPEN) stopPolling();
+    if (revision !== shown) return;
     shownState = "approved";
     root.dataset.state = shownState;
     loadPreview(revision);
