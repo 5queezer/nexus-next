@@ -551,3 +551,114 @@ async fn registration_response_has_old_nexus_shape() {
     assert_eq!(public["client_name"], Value::Null);
     assert_eq!(public["grant_types"], json!(["authorization_code"]));
 }
+
+#[tokio::test]
+async fn logged_out_api_calls_get_401_json_but_pages_still_redirect() {
+    let h = Harness::new().await;
+    for request in [
+        get_req("/api/applications"),
+        form_req("/api/applications", "x=1"),
+    ] {
+        let reply = h.send(request).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+        assert!(reply.header("content-type").starts_with("application/json"));
+        assert_eq!(reply.header("cache-control"), "no-store");
+        assert!(reply.headers.get("location").is_none());
+        assert_eq!(reply.json()["error"], "Not logged in");
+    }
+    let page = h.send(get_req("/dashboard")).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER);
+    assert_eq!(page.location(), "/login?next=%2Fdashboard");
+
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let api = browser.send(&h, get_req("/api/applications")).await;
+    assert_eq!(api.status, StatusCode::OK);
+}
+
+/// A same-origin path whose first two characters are not a scheme-relative `//` or `/\`.
+fn assert_local(location: &str) {
+    assert!(location.starts_with('/'), "{location:?}");
+    assert!(!location.starts_with("//"), "{location:?}");
+    assert!(
+        location.bytes().all(|b| b.is_ascii_graphic()),
+        "{location:?}"
+    );
+    assert!(!location.contains('\\'), "{location:?}");
+    let joined = Url::parse(BASE).unwrap().join(location).unwrap();
+    assert_eq!(joined.origin(), Url::parse(BASE).unwrap().origin());
+}
+
+#[tokio::test]
+async fn a_foreign_next_never_leaves_the_site_after_a_successful_login() {
+    let h = Harness::new().await;
+    let long = format!("/{}", "a".repeat(20_000));
+    let hostile = [
+        "//evil.example",
+        "/\\evil.example",
+        "\\\\evil.example",
+        "https://evil.example",
+        "http://evil.example/",
+        "javascript:alert(1)",
+        "/%2F%2Fevil.example",
+        "/\t/evil.example",
+        "/\n/evil.example",
+        "/\r/evil.example",
+        "/\u{0}/evil.example",
+        "/\u{7f}x",
+        "/\u{202e}x",
+        "///evil.example",
+        "/ /evil.example",
+        long.as_str(),
+    ];
+    for (index, next) in hostile.iter().enumerate() {
+        let ip = format!("203.0.113.{}", index + 1);
+        // Through the form the page rendered, as a browser would do it.
+        let mut browser = Browser::default();
+        let form = browser
+            .send(
+                &h,
+                with_ip(get_req(&format!("/login?next={}", encode(next))), &ip),
+            )
+            .await;
+        let body = format!(
+            "csrf={}&passphrase={}&next={}",
+            form.field("csrf"),
+            encode(PASSPHRASE),
+            encode(next)
+        );
+        let reply = browser
+            .send(&h, with_ip(form_req("/login", &body), &ip))
+            .await;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{next:?}");
+        assert_local(reply.location());
+        if reply.location() != "/" {
+            assert_eq!(reply.location(), *next, "{next:?}");
+        }
+
+        // An already logged-in browser opening the hostile link.
+        let again = browser
+            .send(&h, get_req(&format!("/login?next={}", encode(next))))
+            .await;
+        if again.status == StatusCode::SEE_OTHER {
+            assert_local(again.location());
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_stylesheet_needs_no_session_and_pages_need_no_inline_styles() {
+    let h = Harness::new().await;
+    let css = h.send(get_req("/auth.css")).await;
+    assert_eq!(css.status, StatusCode::OK);
+    assert!(css.header("content-type").starts_with("text/css"));
+    assert!(css.body.contains("prefers-color-scheme: dark"));
+
+    let login = h.send(get_req("/login")).await;
+    let csp = login.header("content-security-policy");
+    assert!(csp.contains("style-src 'self'"));
+    assert!(!csp.contains("unsafe-inline"));
+    assert!(csp.contains("default-src 'none'"));
+    assert!(login.body.contains(r#"href="/auth.css""#));
+    assert!(!login.body.contains("style="));
+}
