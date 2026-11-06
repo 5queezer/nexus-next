@@ -181,11 +181,18 @@ async fn every_acknowledged_write_survives_kill_9() {
         let present = match write.kind {
             "event" | "note" => keys.contains(&write.key),
             "upsert" => urls.contains(write.args["jobUrl"].as_str().unwrap()),
-            "batch" => result["results"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|item| item.get("error").is_none()),
+            "batch" => {
+                result["results"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|item| item.get("error").is_none())
+                    && write.args["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|item| urls.contains(item["jobUrl"].as_str().unwrap()))
+            }
             _ => documents.contains(&result["id"].as_str().unwrap().parse().unwrap()),
         };
         assert!(present, "acknowledged {} {} is gone", write.kind, write.key);

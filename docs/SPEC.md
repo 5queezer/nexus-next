@@ -171,7 +171,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 **Storage.** SQLite and blobs live on the root filesystem under `/var/lib/nexus`, never in `/home`, so the service survives an unattended reboot.
 
-**RAM.** Target 30-60 MB at idle **[handoff]**. Measured on the board on 2026-11-06 at `0d5b5d8` with synthetic fixtures: 6.8 MB after start, 12.7 MB after 500 requests including 200 MCP calls, tool calls about 10 ms, binary 12.8 MB. With the real data set on x86-64, an earlier measurement before MCP was merged: 7.5 MiB after start, 29 MiB peak under 16 parallel clients. The real data set hasn't been measured on the board. Typst's compile peak and font loading are the main unknowns for M2.
+**RAM.** Target 30-60 MB at idle **[handoff]**. Measured on the board on 2026-11-06 at `0d5b5d8` with synthetic fixtures: 6.8 MB after start, 12.7 MB after 500 requests including 200 MCP calls, tool calls about 10 ms, binary 12.8 MB. With the real data set on x86-64, an earlier measurement before MCP was merged: 7.5 MiB after start, 29 MiB peak under 16 parallel clients. At `ab910ed` with `synchronous=FULL`, also on the board with synthetic fixtures: 13.2 MB peak, and 100 sequential `create_application` calls took 46.6 ms each including `curl` start-up. The real data set hasn't been measured on the board. Typst's compile peak and font loading are the main unknowns for M2.
 
 **Backup.** `nexus backup` writes one age-encrypted file from a `VACUUM INTO` snapshot and the blobs it references, on a systemd timer (`deploy/README.md` section 6). The off-site destination is undecided.
 
