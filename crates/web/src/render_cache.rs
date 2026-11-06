@@ -108,7 +108,7 @@ fn decode(mut bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
         pages.push(page.to_vec());
         bytes = rest;
     }
-    Some(pages)
+    Some(pages).filter(|pages| !pages.is_empty())
 }
 
 #[cfg(test)]
@@ -150,6 +150,8 @@ mod tests {
         cache.put("abc", 1, &[vec![1, 2, 3]]);
         fs::write(cache.path("bad", 1), [200, 0, 0, 0, 1]).unwrap();
         assert!(cache.get("bad", 1).is_none());
+        fs::write(cache.path("empty", 1), []).unwrap();
+        assert!(cache.get("empty", 1).is_none(), "no pages is no preview");
         let reopened = RenderCache::open(dir.path());
         assert!(reopened.get("abc", 1).is_none());
     }
