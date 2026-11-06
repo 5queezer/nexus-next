@@ -98,6 +98,8 @@ Registration is open, because Claude.ai registers itself. Without a limit, anyon
 
 - **Hermes:** nothing to set in its usual setup. Its MCP OAuth registers `http://127.0.0.1:<port>/callback`, which is loopback, including when you paste the callback by hand on a headless host. It needs the list only if its `oauth.redirect_uri` is set to an https proxy, or if a stored registration from before holds an https callback: then add that host. `oauth.redirect_host` must stay `127.0.0.1` or `localhost`. `http://[::1]` is refused, as it always has been.
 
+Anyone can still register with an allowed host, such as loopback, and 30 of those in an hour use up the global registration allowance. That gains them no access, but real clients then get a 429 until the hour is up. `sudo systemctl restart nexus` clears it, which matters at cutover when clients must register again.
+
 The path isn't limited, only the host, so an open redirect on a listed host could still leak a code. The attacker would also need the owner's click, and Claude's hosts are the only ones listed by default.
 
 ### Owner passphrase

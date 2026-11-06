@@ -2,9 +2,8 @@
 //!
 //! `router` serves discovery, registration, authorize, token, `/login` and `/logout`.
 //! `require_mcp_auth` and `require_owner_session` are middleware for the routes they protect, used
-//! with `axum::middleware::from_fn_with_state`. Serve with
-//! `into_make_service_with_connect_info::<SocketAddr>()`: without a peer address, every client
-//! shares one rate-limit bucket.
+//! with `axum::middleware::from_fn_with_state`. Requests must carry `ConnectInfo<SocketAddr>`:
+//! without a peer address, every client shares one rate-limit bucket.
 
 mod admin;
 mod config;
