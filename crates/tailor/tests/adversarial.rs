@@ -472,6 +472,10 @@ async fn flagged_sources() {
             "Verhandlungssicher in Französisch.",
         ),
     ];
+    assert_flagged(&cases).await;
+}
+
+async fn assert_flagged(cases: &[(&str, Rule, &str)]) {
     let facts = facts_en();
     let mut missed = Vec::new();
     for (name, rule, body) in cases {
@@ -479,10 +483,10 @@ async fn flagged_sources() {
         match render(&source, &facts).await {
             Ok(rendered) => {
                 let report = nexus_tailor::check(&rendered.text, &facts, None);
-                if !report.violations.iter().any(|v| v.rule == rule) {
+                if !report.violations.iter().any(|v| v.rule == *rule) {
                     missed.push(format!(
-                        "{name}: wanted {rule:?}, got {:?}\n  lines: {:?}\n  meta: {:?}",
-                        report.violations, rendered.text.lines, rendered.text.metadata
+                        "{name}: wanted {rule:?}, got {:?}\n  lines: {:?}",
+                        report.violations, rendered.text.lines
                     ));
                 }
             }
@@ -490,6 +494,140 @@ async fn flagged_sources() {
         }
     }
     assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+#[tokio::test]
+async fn dates_swapped_across_lines() {
+    assert_flagged(&[
+        ("swapped between two companies", Rule::EntityBinding, "Brightpath Logistics · Software Engineer\n\nJan 2016 – Feb 2019\n\nQuillon Systems · Backend Developer\n\n03/2019 – 12/2022"),
+        ("another entry's date after its own", Rule::EntityBinding, "Brightpath Logistics · Software Engineer\n\n03/2019 – 12/2022\n\nJan 2016 – Feb 2019"),
+        ("another entry's date several lines on", Rule::EntityBinding, "Brightpath Logistics · Software Engineer 03/2019 – 12/2022\n\nOne.\n\nTwo.\n\nThree.\n\nFour.\n\nJan 2016 – Feb 2019"),
+        ("own date too far away", Rule::EntityBinding, "Brightpath Logistics · Software Engineer\n\nOne.\n\nTwo.\n\nThree.\n\n03/2019 – 12/2022"),
+        ("own date only after the next company", Rule::EntityBinding, "Brightpath Logistics · Software Engineer\n\nQuillon Systems · Backend Developer Jan 2016 – Feb 2019\n\n03/2019 – 12/2022"),
+        ("swapped with an institution", Rule::EntityBinding, "Hochschule Nordkap\n\nBachelor of Science, Computer Science\n\n2014 – 2015\n\nOne.\n\nTwo.\n\n2012 – 2015"),
+        ("in lower case", Rule::EntityBinding, "#lower[Brightpath Logistics]\n\nJan 2016 – Feb 2019"),
+    ])
+    .await;
+}
+
+#[tokio::test]
+async fn homoglyphs() {
+    assert_flagged(&[
+        (
+            "Latin with a Cyrillic e",
+            Rule::MixedScript,
+            "Long exреrience here.",
+        ),
+        (
+            "Latin with a Greek alpha",
+            Rule::MixedScript,
+            "A pαssion for it.",
+        ),
+        (
+            "Latin with a Greek capital",
+            Rule::MixedScript,
+            "Εxpert work.",
+        ),
+        (
+            "mixed part of a hyphenated word",
+            Rule::MixedScript,
+            "Well-rоunded work.",
+        ),
+        (
+            "mixed claim, as a claim",
+            Rule::ClaimWords,
+            "As Sеnior Engineer.",
+        ),
+        ("mixed capitalized claim", Rule::ClaimWords, "Team Lеad."),
+        ("wholly Cyrillic claim", Rule::ClaimWords, "Acting СЕО."),
+        ("wholly Cyrillic degree", Rule::ClaimWords, "An МВА."),
+        ("wholly Greek degree", Rule::ClaimWords, "An ΜΒΑ."),
+        (
+            "banned, mixed",
+            Rule::BannedPhrases,
+            "A раssionate team player.",
+        ),
+        ("banned word, mixed", Rule::BannedPhrases, "Rосkstar."),
+    ])
+    .await;
+}
+
+#[tokio::test]
+async fn spaced_letters() {
+    assert_flagged(&[
+        ("claim", Rule::ClaimWords, "As S e n i o r Engineer."),
+        (
+            "upper case claim",
+            Rule::ClaimWords,
+            "As S E N I O R Engineer.",
+        ),
+        ("three letters", Rule::ClaimWords, "With a P h D."),
+        ("an acronym", Rule::ClaimWords, "An M B A."),
+        (
+            "starting with a letter that is also a word",
+            Rule::ClaimWords,
+            "A b i t u r in Kiel.",
+        ),
+        (
+            "spaced by layout",
+            Rule::ClaimWords,
+            "S#h(0.5em)e#h(0.5em)n#h(0.5em)i#h(0.5em)o#h(0.5em)r",
+        ),
+        ("banned word", Rule::BannedPhrases, "R o c k s t a r."),
+        (
+            "banned phrase, one word spaced",
+            Rule::BannedPhrases,
+            "A p a s s i o n a t e team player.",
+        ),
+        (
+            "Cyrillic and spaced",
+            Rule::ClaimWords,
+            "As S е n i o r Engineer.",
+        ),
+    ])
+    .await;
+}
+
+#[tokio::test]
+async fn other_numerals() {
+    assert_flagged(&[
+        ("CJK positional year", Rule::Numbers, "Since 二〇一八."),
+        ("CJK with a unit", Rule::Numbers, "十年 of work."),
+        ("CJK unit alone", Rule::Numbers, "百 customers."),
+        ("Roman numeral sign", Rule::Numbers, "Ⅷ Jahre Erfahrung."),
+        (
+            "small Roman numeral sign",
+            Rule::Numbers,
+            "ⅷ years of work.",
+        ),
+        (
+            "two Roman numeral signs",
+            Rule::Numbers,
+            "ⅩⅧ years of work.",
+        ),
+        ("Suzhou numerals", Rule::Numbers, "〡〢 customers."),
+        (
+            "ASCII Roman with a time unit",
+            Rule::NumberWords,
+            "VIII years of work.",
+        ),
+        (
+            "German, ASCII Roman with a time unit",
+            Rule::NumberWords,
+            "X Jahre Erfahrung.",
+        ),
+        (
+            "hyphenated ASCII Roman",
+            Rule::NumberWords,
+            "A VIII-year career.",
+        ),
+        (
+            "ASCII Roman with a filler",
+            Rule::NumberWords,
+            "XII long years.",
+        ),
+    ])
+    .await;
 }
 
 /// Things a compile refuses by itself, each with a diagnostic naming the problem.
