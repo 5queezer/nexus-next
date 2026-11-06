@@ -1172,14 +1172,18 @@ fn check_binding(lines: &[String], changed: &[bool], anchors: &[Anchor], items: 
                 items.add(Rule::EntityBinding, named, line, Some(i));
             }
         }
-        for at in i..window_end {
-            for token in tokens(&lines[at]) {
+        for (at, near) in lines.iter().enumerate().take(window_end).skip(i) {
+            for token in tokens(near) {
                 let own = anchors
                     .iter()
                     .any(|a| is_on_line(a) && a.date_tokens.contains(&token.canon));
                 if token_year(&token.canon).is_some() && !own {
-                    let raw = &lines[at][token.start..token.end];
-                    items.add(Rule::EntityBinding, raw, &lines[at], Some(at));
+                    items.add(
+                        Rule::EntityBinding,
+                        &near[token.start..token.end],
+                        near,
+                        Some(at),
+                    );
                 }
             }
         }
@@ -1526,16 +1530,14 @@ pub fn review_text(text: &RenderedText) -> String {
     review_lines(text).join("\n")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineChange {
     Same,
     Added,
     Removed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffLine {
     pub change: LineChange,
     pub text: String,

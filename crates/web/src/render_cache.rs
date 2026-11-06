@@ -2,7 +2,8 @@
 //! they skip this, and anything may delete it: every failure here means one compile more.
 //!
 //! An entry is only ever written after the integrity check passed, and its key holds the source's
-//! hash and the facts version it passed against, so a facts change can't show an old result.
+//! hash with its state and the facts version it passed against, so a facts change can't show an old
+//! result, and a stamp can't fall off a draft or stay on what the owner approved.
 
 use std::fs;
 use std::io::Write;

@@ -404,61 +404,7 @@ fn most_serious_items_come_first() {
     assert!(rules.contains(&Rule::ClaimWords) && rules.contains(&Rule::NewWords));
 }
 
-/// Finding 14, with what it said was refused. They store as drafts now, and the owner reads them.
-const ENGLISH_BULLETS: [&str; 30] = [
-    "Presented the roadmap to senior management.",
-    "Mentored junior developers.",
-    "Reported directly to the CTO.",
-    "Worked closely with the Product Manager on planning.",
-    "Proficient in Python and Rust.",
-    "Built native iOS and Android apps in React Native.",
-    "Applied principal component analysis to shipment data.",
-    "Deployed services on AWS EC2 and S3 behind a load balancer.",
-    "Migrated to Python 3.12 and PostgreSQL 16.",
-    "Ran 24/7 on-call for B2B customers.",
-    "Achieved ISO 27001 certification.",
-    "Scaled Kubernetes (K8s) clusters across regions.",
-    "Introduced 2FA for every internal tool.",
-    "Built a Lead Generation pipeline for sales.",
-    "Improved reliability to a large degree.",
-    "Reduced p99 latency with Redis.",
-    "Ran a Fluent Bit log pipeline for all services.",
-    "Led a team of 6 engineers.",
-    "Saved 200k EUR a year in hosting.",
-    "Introduced OAuth2 and OIDC login.",
-    "Wrote ES6 modules and TypeScript types.",
-    "Gave 3 talks at internal conferences.",
-    "Ported the app to .NET 8.",
-    "Supervised 2 master's theses with the university.",
-    "Onboarded 40 new customers in Q3.",
-    "Worked in a team of 12 with a chief architect.",
-    "Coordinated with the head of sales.",
-    "Trained staff on the new tools.",
-    "Cut build times from 20 minutes to 4.",
-    "Served 1.2 million requests per day.",
-];
-const GERMAN_BULLETS: [&str; 20] = [
-    "Präsentation der Roadmap vor dem Vorstand.",
-    "Berichtete direkt an die Geschäftsführung.",
-    "Betreuung von Junior-Entwicklern.",
-    "Abstimmung mit der Projektleiterin und dem Abteilungsleiter.",
-    "Betreuung der Ausbildung von Werkstudenten.",
-    "Lehre und Forschung an der Hochschule begleitet.",
-    "Aufbau einer Promotion-Kampagne für den Vertrieb.",
-    "Einführung von ISO 9001 im Betrieb.",
-    "Migration auf Java 21 und Spring Boot 3.",
-    "Native Apps für iOS entwickelt.",
-    "Leitung von 4 Workshops mit Kunden.",
-    "Senkung der Kosten um 15 Prozent.",
-    "Einführung von 2FA für alle Konten.",
-    "Betrieb von über 300 Servern.",
-    "Zusammenarbeit mit dem Teamleiter Vertrieb.",
-    "Studium der Anforderungen mit den Fachbereichen.",
-    "Betreuung von Masterarbeiten im Unternehmen.",
-    "Schulung von 25 Mitarbeitenden pro Quartal.",
-    "Fließend in der Abstimmung mit Lieferanten.",
-    "Automatisierung der Rechnungsprüfung in SAP S/4HANA.",
-];
+include!("common/normal_bullets.rs");
 
 #[tokio::test]
 async fn normal_bullets_are_never_refused_in_either_language() {

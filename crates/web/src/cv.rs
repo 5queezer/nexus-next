@@ -455,7 +455,7 @@ async fn render_variant(
     }
     let review = owner::review(cv.mcp.clone(), variant)
         .await
-        .map_err(|error| told(error));
+        .map_err(|error| told(*error));
     let revisions = call(
         cv,
         "list_cv_revisions",

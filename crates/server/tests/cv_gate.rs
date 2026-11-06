@@ -12,6 +12,8 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use support::{Agent, Node, lock_confirmed, nexus, oauth_token};
 
+include!("../../tailor/tests/common/normal_bullets.rs");
+
 const H: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
 
 fn profile() -> Value {
@@ -470,6 +472,41 @@ async fn generate_stores_no_document_for_wording_the_owner_has_not_seen() {
     let stored = agent.ok("generate_tailored_cv", args).await;
     assert_eq!(stored["message"], "CV generated successfully");
     assert_ne!(gate.documents().await, documents);
+}
+
+/// Finding 14: what the word rules refused nearly every time stores, in both languages.
+#[tokio::test(flavor = "multi_thread")]
+async fn fifty_normal_bullets_all_store_as_drafts() {
+    let gate = gate().await;
+    let agent = &gate.agent;
+    let marker = "- Built the routing service.";
+    let source = format!("{H}#employment(\"brightpath\")[\n{marker}\n]\n");
+    gate.variant("bullets", &source).await;
+    let bullets = ENGLISH_BULLETS.iter().chain(&GERMAN_BULLETS);
+    for (at, bullet) in bullets.enumerate() {
+        let reply = agent
+            .ok(
+                "patch_cv",
+                json!({
+                    "variant": "bullets",
+                    "expectedRevision": at + 1,
+                    "summary": "A normal bullet",
+                    "edits": [{"oldText": marker, "newText": format!("- {bullet}\n{marker}")}],
+                }),
+            )
+            .await;
+        assert_eq!(reply["state"], "draft", "{bullet}");
+    }
+    assert_eq!(gate.approvals().await, 0);
+    assert_eq!(
+        agent
+            .ok(
+                "list_cv_revisions",
+                json!({"variant": "bullets", "pageSize": 1})
+            )
+            .await["total"],
+        51
+    );
 }
 
 /// Three small patches can't hide what changed: the owner reads them against what was last approved.

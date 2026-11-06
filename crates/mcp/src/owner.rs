@@ -48,10 +48,10 @@ fn outcome(result: tools::ToolResult) -> CallToolResult {
 }
 
 /// Reads the variant's head for review. `Err` carries the tool error saying why it can't be read.
-pub async fn review(state: Arc<McpState>, variant: &str) -> Result<Review, CallToolResult> {
+pub async fn review(state: Arc<McpState>, variant: &str) -> Result<Review, Box<CallToolResult>> {
     match tools::review(&ctx(state), variant).await {
-        Ok(review) => review,
-        Err(Thrown(message)) => Err(text_error(&message)),
+        Ok(review) => review.map_err(Box::new),
+        Err(Thrown(message)) => Err(Box::new(text_error(&message))),
     }
 }
 

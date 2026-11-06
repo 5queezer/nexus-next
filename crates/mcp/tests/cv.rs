@@ -332,9 +332,8 @@ async fn hard_rules_refuse_and_store_nothing() {
 #[tokio::test]
 async fn a_false_claim_stores_as_a_draft_and_is_listed() {
     let server = locked_server().await;
-    let mut expected = 0;
     let mut old = "Backend engineer".to_owned();
-    for (new, rule, token) in [
+    for (expected, (new, rule, token)) in [
         ("Backend engineer with 12 years", "numbers", "12"),
         ("Eight years as a backend engineer", "numberWords", "Eight"),
         ("Senior backend engineer", "claimWords", "Senior"),
@@ -343,9 +342,11 @@ async fn a_false_claim_stores_as_a_draft_and_is_listed() {
             "entityBinding",
             "2010",
         ),
-    ] {
-        let reply = patch(&server, expected, &old, new).await.ok();
-        expected += 1;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let reply = patch(&server, expected as i64, &old, new).await.ok();
         old = new.to_owned();
         assert_eq!(reply["state"], "draft", "{new}");
         assert!(
@@ -1202,8 +1203,13 @@ async fn items_and_the_diff_compare_with_the_last_approved_text_not_the_parent()
         .ok();
     let tokens = item_tokens(&next);
     assert!(tokens.iter().any(|t| t == "44"), "{tokens:?}");
-    assert!(!tokens.iter().any(|t| t == "owls"), "approved already: {tokens:?}");
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    assert!(
+        !tokens.iter().any(|t| t == "owls"),
+        "approved already: {tokens:?}"
+    );
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
     assert_eq!(review.baseline_revision, Some(4));
 }
 
@@ -1310,32 +1316,44 @@ async fn a_patch_landing_during_approval_is_never_approved_by_accident() {
 }
 
 /// The window a look at the head can't close: an approval that read the head while a patch was still
-/// compiling, and whose own compile, one at a time, ends after that patch has stored.
+/// compiling, and whose own compile, one at a time, ends after that patch has stored. On a busy machine
+/// the approval can reach the compile first, which is fine, so this tries until it has seen the window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_approval_refuses_a_revision_that_stopped_being_the_head_during_its_compile() {
-    let server = locked_server().await;
-    patch(&server, 0, "Backend engineer", "Freight engineer")
-        .await
-        .ok();
-    let review = owner::review(server.state.clone(), "default").await.unwrap();
     let slow = "Freight engineer #for a in range(3000) { for b in range(3000) { } }";
-    let (patched, approved) = tokio::join!(patch(&server, 1, "Freight engineer", slow), async {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        owner::approve(
-            server.state.clone(),
-            "default",
-            review.revision,
-            &review.source_sha256,
-            &review.facts_sha256,
-            "dashboard",
-        )
-        .await
-    });
-    assert_eq!(patched.ok()["revision"], 2);
-    let error = approved.structured_content.unwrap();
-    assert_eq!(error["error"]["code"], "cv_approval_stale", "{error}");
-    assert_eq!(error["error"]["currentRevision"], 2);
-    assert_eq!(approvals(&server).await, 0);
+    for _ in 0..8 {
+        let server = locked_server().await;
+        patch(&server, 0, "Backend engineer", "Freight engineer")
+            .await
+            .ok();
+        let review = owner::review(server.state.clone(), "default")
+            .await
+            .unwrap();
+        let (patched, approved) =
+            tokio::join!(patch(&server, 1, "Freight engineer", slow), async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                owner::approve(
+                    server.state.clone(),
+                    "default",
+                    review.revision,
+                    &review.source_sha256,
+                    &review.facts_sha256,
+                    "dashboard",
+                )
+                .await
+            });
+        assert_eq!(patched.ok()["state"], "draft");
+        if approved.is_error != Some(true) {
+            assert_eq!(approvals(&server).await, 1, "it reached the compile first");
+            continue;
+        }
+        let error = approved.structured_content.unwrap();
+        assert_eq!(error["error"]["code"], "cv_approval_stale", "{error}");
+        assert_eq!(error["error"]["currentRevision"], 2);
+        assert_eq!(approvals(&server).await, 0);
+        return;
+    }
+    panic!("the approval never met a patch in its compile");
 }
 
 /// Any changed fact invalidates what was built on it. An unlock and relock with no change doesn't.
