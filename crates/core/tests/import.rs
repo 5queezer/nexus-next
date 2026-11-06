@@ -641,13 +641,34 @@ async fn document_and_blob_mismatches_fail() {
     assert_invalid(env.import().await, "size for document 5 is wrong");
 
     let env = Env::new();
+    env.edit_json("MANIFEST.json", |manifest| {
+        manifest["missing_documents"] = json!(3)
+    });
+    assert_invalid(env.import().await, "counts 3 missing documents");
+
+    let env = Env::new();
+    env.edit_json("MISSING_DOCUMENTS.json", |list| {
+        list["documents"][0]["id"] = json!(4242);
+    });
+    assert_invalid(env.import().await, "unknown document 4242");
+}
+
+#[tokio::test]
+async fn the_blob_index_decides_blob_state_over_the_missing_list() {
+    let env = Env::new();
     env.edit_json("blob-index.json", |index| {
         index.as_object_mut().unwrap().shift_remove("file-5.pdf");
     });
-    assert_invalid(
-        env.import().await,
-        "document 5 has no blob and is not listed as missing",
-    );
+    let summary = env.import().await.unwrap();
+    assert_eq!(summary.missing_list_disagreements, 1);
+    assert_eq!(summary.documents_missing_blob, 5);
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    let absent = documents::get(&mut conn, 5).await.unwrap().unwrap();
+    assert_eq!(absent.blob_state, documents::BlobState::Missing);
+    assert_eq!(absent.blob_sha256, None);
+    drop(conn);
+    db.close().await;
 
     let env = Env::new();
     env.edit_json("MISSING_DOCUMENTS.json", |list| {
@@ -659,22 +680,17 @@ async fn document_and_blob_mismatches_fail() {
     env.edit_json("MANIFEST.json", |manifest| {
         manifest["missing_documents"] = json!(5)
     });
-    assert_invalid(
-        env.import().await,
-        "document 5 has a blob but is listed as missing",
-    );
+    let summary = env.import().await.unwrap();
+    assert_eq!(summary.missing_list_disagreements, 1);
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    let indexed = documents::get(&mut conn, 5).await.unwrap().unwrap();
+    assert_eq!(indexed.blob_state, documents::BlobState::Present);
+    drop(conn);
+    db.close().await;
 
     let env = Env::new();
-    env.edit_json("MANIFEST.json", |manifest| {
-        manifest["missing_documents"] = json!(3)
-    });
-    assert_invalid(env.import().await, "counts 3 missing documents");
-
-    let env = Env::new();
-    env.edit_json("MISSING_DOCUMENTS.json", |list| {
-        list["documents"][0]["id"] = json!(4242);
-    });
-    assert_invalid(env.import().await, "unknown document 4242");
+    assert_eq!(env.import().await.unwrap().missing_list_disagreements, 0);
 }
 
 #[tokio::test]

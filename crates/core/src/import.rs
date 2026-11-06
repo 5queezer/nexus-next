@@ -70,6 +70,8 @@ pub struct ImportSummary {
     pub documents_missing_blob: usize,
     pub recovered_documents: usize,
     pub hashes_computed: usize,
+    /// Documents where `MISSING_DOCUMENTS.json` contradicts `blob-index.json`, which wins.
+    pub missing_list_disagreements: usize,
     pub blob_files: usize,
     pub orphan_blobs_removed: usize,
 }
@@ -99,6 +101,11 @@ impl fmt::Display for ImportSummary {
             self.documents_missing_blob
         )?;
         writeln!(f, "content hashes computed     {:>5}", self.hashes_computed)?;
+        writeln!(
+            f,
+            "missing list disagreements  {:>5}",
+            self.missing_list_disagreements
+        )?;
         writeln!(f, "distinct blob files         {:>5}", self.blob_files)?;
         write!(
             f,
@@ -582,14 +589,15 @@ fn read_approvals(path: &Path) -> Result<BTreeSet<i64>> {
     Ok(ids)
 }
 
-/// Verifies every document's file and decides its blob state. Returns the plans for documents that
-/// have a file.
+/// Verifies every document's file and decides its blob state: `blob-index.json` is the source of
+/// truth, so a filename absent from it means the file is missing. Returns the plans for documents
+/// that have a file, and how many documents `MISSING_DOCUMENTS.json` contradicts.
 fn plan_blobs(
     export: &Export,
     documents: &[Row],
     all_document_ids: &HashSet<i64>,
     approvals: &BTreeSet<i64>,
-) -> Result<Vec<BlobPlan>> {
+) -> Result<(Vec<BlobPlan>, usize)> {
     let index: HashMap<String, BlobEntry> = export.read_json("blob-index.json")?;
     let missing: MissingList = export.read_json("MISSING_DOCUMENTS.json")?;
     let missing: HashSet<i64> = missing.documents.iter().map(|entry| entry.id).collect();
@@ -608,13 +616,17 @@ fn plan_blobs(
 
     let mut plans = Vec::new();
     let mut awaiting_recovery = HashMap::new();
+    let mut disagreements = 0;
     for document in documents {
         let id = document
             .int("id")
             .ok_or_else(|| invalid!("Document without integer id"))?;
         let entry = document.string("filename").and_then(|name| index.get(name));
-        match (entry, missing.contains(&id)) {
-            (Some(entry), false) => {
+        if entry.is_some() == missing.contains(&id) {
+            disagreements += 1;
+        }
+        match entry {
+            Some(entry) => {
                 let relative = format!("blobs/{}", entry.sha256);
                 let bytes = export.read(&relative)?;
                 if sha256_hex(&bytes) != entry.sha256 {
@@ -632,18 +644,8 @@ fn plan_blobs(
                     "gcs",
                 )?);
             }
-            (None, true) => {
+            None => {
                 awaiting_recovery.insert(id, document);
-            }
-            (Some(_), true) => {
-                return Err(invalid!(
-                    "document {id} has a blob but is listed as missing"
-                ));
-            }
-            (None, false) => {
-                return Err(invalid!(
-                    "document {id} has no blob and is not listed as missing"
-                ));
             }
         }
     }
@@ -677,7 +679,7 @@ fn plan_blobs(
             )?);
         }
     }
-    Ok(plans)
+    Ok((plans, disagreements))
 }
 
 /// Hash of every data table's rows, so re-imports can be compared and later writes detected.
@@ -978,7 +980,8 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
     let (cv_profiles, _) = partition(cv_profiles, foreign);
     let (cv_patches, _) = partition(cv_patches, of_skipped_app);
 
-    let blobs = plan_blobs(&export, &documents, &all_document_ids, &approvals)?;
+    let (blobs, missing_list_disagreements) =
+        plan_blobs(&export, &documents, &all_document_ids, &approvals)?;
     let document_count = documents.len();
 
     let tables = [
@@ -1007,6 +1010,7 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
     summary.documents_missing_blob = document_count - blobs.len();
     summary.recovered_documents = blobs.iter().filter(|b| b.source != "gcs").count();
     summary.hashes_computed = blobs.iter().filter(|b| b.computed_hash).count();
+    summary.missing_list_disagreements = missing_list_disagreements;
 
     let temp = side_file(&target, ".importing");
     remove_if_present(&temp)?;

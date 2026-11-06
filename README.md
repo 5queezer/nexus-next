@@ -27,6 +27,6 @@ nexus import --export <export dir> --data-dir <data dir> [--approve-recovered <f
 - Run it with the server stopped. It writes `nexus.db` and `blobs/<sha256>` in the data directory, and prints counts only.
 - Every file it uses is checked against `MANIFEST.json`. Row counts, foreign keys, blob sizes and stored content hashes are verified as well. Any mismatch fails the run and leaves the previous database in place.
 - Re-running gives the same rows: the database is built in a temp file and renamed into place. An existing database is replaced only if it is empty or unchanged since its own import; anything else needs `--force`, which keeps the old database's blobs.
-- Documents whose file was lost import with `blob_state = 'missing'`. A recovered candidate is used only if its document ID is listed in the approval file (one per line, `#` for comments). Without that file, none are. An approved ID whose candidate is ambiguous fails the run.
+- `blob-index.json` decides which file belongs to a document. A filename absent from it imports with `blob_state = 'missing'`, and the summary counts any document `MISSING_DOCUMENTS.json` contradicts. A recovered candidate is used only if its document ID is listed in the approval file (one per line, `#` for comments). Without that file, none are. An approved ID whose candidate is ambiguous fails the run.
 
 Keep exports and data directories out of this repository: they hold private data, and test fixtures must stay synthetic.
