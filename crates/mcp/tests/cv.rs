@@ -1316,12 +1316,12 @@ async fn a_patch_landing_during_approval_is_never_approved_by_accident() {
 }
 
 /// The window a look at the head can't close: an approval that read the head while a patch was still
-/// compiling, and whose own compile, one at a time, ends after that patch has stored. On a busy machine
-/// the approval can reach the compile first, which is fine, so this tries until it has seen the window.
+/// compiling, and whose own compile, one at a time, ends after that patch has stored. The approval can
+/// also win the commit, which is fine, so this tries until it has seen the window.
 /// Each try has its own text, or Typst's memoizing would make the patch finish before the approval.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_approval_refuses_a_revision_that_stopped_being_the_head_during_its_compile() {
-    for round in 0..4 {
+    for round in 0..12 {
         let slow = format!(
             "Freight engineer {round} #for a in range(4000) {{ for b in range(4000) {{ }} }}"
         );
