@@ -95,6 +95,15 @@ enum Command {
         #[arg(long)]
         keep_credentials: bool,
     },
+    /// Record that documents' files are truly gone, so backups work again. Refuses a document whose
+    /// file exists, and refuses while the server runs.
+    MarkBlobMissing {
+        #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
+        data_dir: PathBuf,
+        /// The document IDs a failed backup named.
+        #[arg(required = true)]
+        ids: Vec<i64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -244,6 +253,10 @@ async fn main() -> anyhow::Result<()> {
             let summary =
                 backup::restore(&from, &identity, &data_dir, force, keep_credentials).await?;
             println!("restored: {summary}");
+        }
+        Command::MarkBlobMissing { data_dir, ids } => {
+            let changed = backup::mark_blob_missing(&data_dir, &ids).await?;
+            println!("marked missing: documents {changed:?}");
         }
     }
     Ok(())
