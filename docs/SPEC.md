@@ -11,7 +11,9 @@ Replace the Next.js Nexus with one Rust binary on a ROCK 4 SE: an MCP tool serve
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| CV rendering in M1 | Minimal Typst renderer behind `generate_tailored_cv` | Replaces `@react-pdf/renderer` (the tool's current renderer, not Reactive Resume). New PDFs will look different. |
+| CV rendering | No renderer in M1. Typst arrives in M2 | `CvProfile` and `CvPatch` are empty in production and no stored CV came from `generate_tailored_cv`. See section 4 for its M1 behaviour. |
+| Data storage on the board | Root filesystem, outside `/home`, with encrypted off-site backups | Nexus restarts unattended after a reboot. Data sits unencrypted on the NVMe if the board is taken. |
+| Host | ROCK 4 SE, subject to the Ethernet check in section 10 | |
 | Auth | Keep OAuth 2.1 in v1, alongside API tokens | Port the authorization server, consent flow and a login page to Rust. Needs a public endpoint. |
 | Scope | Single user. Drop email scanning, assistant tables, share links, demo workspace | `ScannedEmail` has no rows in production, so there is nothing to archive or import. |
 | Hosting of this repo | Private, on Forgejo | Spec and integrity rules stay off public hosts. |
@@ -30,7 +32,7 @@ One axum process serves all of these:
 | `/calendar.ics` | Interviews and follow-ups |
 | `/` | Leptos SSR dashboard, read-only in M1 |
 
-Workspace: `core` (domain, SQLite), `mcp`, `web`, `tailor` (Typst), and `tui` (M4), plus the binary.
+Workspace: `core` (domain, SQLite), `mcp`, `web`, `tailor` (Typst, M2), and `tui` (M4), plus the binary.
 
 | Crate | Latest stable on 2026-11-06 | Minimum Rust |
 |---|---|---|
@@ -38,7 +40,7 @@ Workspace: `core` (domain, SQLite), `mcp`, `web`, `tailor` (Typst), and `tui` (M
 | sqlx | 0.9.0 | 1.94 |
 | rmcp | 3.9.0 | 1.88 |
 | leptos / leptos_axum | 0.8.23 / 0.8.10 | 1.88 |
-| typst, typst-pdf, typst-render, typst-kit | 0.15.1 | 1.92 |
+| typst, typst-pdf, typst-render, typst-kit (M2) | 0.15.1 | 1.92 |
 | ratatui (M4) | 0.30.2 | 1.88 |
 
 The local toolchain (1.99.1) covers all of these. Versions come from crates.io; API details have not been checked, because Context7 was down.
@@ -57,6 +59,7 @@ Build: cross-compile to `aarch64-unknown-linux-musl` so the binary doesn't depen
    - `update_application` advertises lifecycle fields, then rejects them.
 4. **Lifecycle rule.** `update_application` with any of `status`, `appliedAt`, `lastContact`, `followUpAt` or `currentStage` returns `{"error":{"code":"lifecycle_event_required","fields":[...]}}` as a tool error, and nothing is written.
 5. **Confirm against production.** The snapshot was generated from the deployed commit, not read from the running server. Compare it with a live `tools/list` once before freezing.
+6. **`generate_tailored_cv` in M1.** The tool stays listed with its frozen schema. With no profile it returns old Nexus's exact tool error, `No CV profile found. Use upsert_cv_profile first.`. `get_cv_profile` and `upsert_cv_profile` work normally. If a profile exists, the tool returns a clear tool error saying rendering arrives in M2, and writes nothing. This is the one documented gap in the frozen behaviour, and it can't affect current data.
 
 Runtime behaviour the schemas don't show must become parity tests. The `nexus-job-intake-interview-pipeline` skill documents these from real use; confirm each against the live server or `app/api/mcp/__tests__/`:
 
@@ -157,9 +160,11 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 **Board, read on 2026-11-06.** ROCK 4 SE, 6 cores, aarch64, Armbian 26.11.0-trunk (Debian 13), kernel 6.18. Armbian trunk is a development image, so expect kernel changes. RAM is 3.8 GiB with about 1.8 GiB available, alongside Coolify, Forgejo, CLIProxy and Joplin. NVMe root has 66 GiB free. `/home` is on a LUKS partition that stays locked after reboot, and was locked when read.
 
-**RAM.** Target 30-60 MB at idle **[handoff]**, unmeasured. Typst's compile peak and font loading are the main unknowns. Measure both on the board.
+**Storage.** SQLite and blobs live on the root filesystem under `/var/lib/nexus`, never in `/home`, so the service survives an unattended reboot.
 
-**Backup.** Litestream or rsync **[handoff]**. Backups leave the board encrypted. The destination is undecided.
+**RAM.** Target 30-60 MB at idle **[handoff]**, unmeasured. Measure it on the board for M1. Typst's compile peak and font loading are the main unknowns for M2.
+
+**Backup.** Litestream or rsync **[handoff]**. Backups must be encrypted before leaving the board, since the data on it isn't. The destination is undecided.
 
 **Ingress: must be tested, not assumed.** Claude.ai needs a public URL.
 - A Cloudflare tunnel keeps a stable custom domain, but local notes say the Cloudflare proxy breaks MCP streaming unless buffering is disabled.
@@ -174,8 +179,8 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 
 | Milestone | Scope | Gate |
 |---|---|---|
-| M1 | Core, 35 tools, OAuth and tokens, REST, calendar, importer, read-only dashboard, minimal Typst behind `generate_tailored_cv` | Golden contract test, parity on real data, Claude.ai through real ingress, RAM measured on board |
-| M2 | Typst source and revisions: `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions`, `revert_cv`; Telegram dictation | Voice edits can't change hard facts |
+| M1 | Core, 35 tools (`generate_tailored_cv` per section 4), OAuth and tokens, REST, calendar, importer, read-only dashboard | Golden contract test, parity on real data, Claude.ai through real ingress, RAM measured on board |
+| M2 | Typst renderer behind `generate_tailored_cv`; source and revisions: `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions`, `revert_cv`; Telegram dictation | Voice edits can't change hard facts |
 | M3 | Interactive PWA, push-to-talk, realtime session with a narrow toolset | Session can't mark anything `applied` |
 | M4 | ratatui TUI | |
 | M5 | Native wrap, only if the PWA proves painful | |
@@ -186,9 +191,8 @@ M2 note: `CvProfile.experience` mixes hard facts (dates, company) with wording (
 
 | Item | Blocks | Owner |
 |---|---|---|
-| Should Nexus data sit on unencrypted root, or on LUKS with manual unlock after reboot? | Deployment | Christian |
+| Encrypted backup destination | Deployment | Christian |
 | Review the 26 recovered document candidates and decide what to do about the 6 with none | Importer | Christian |
-| Keep Typst in M1? `CvProfile` and `CvPatch` are empty and no stored CV came from `generate_tailored_cv`, so the tool currently only returns "No CV profile found" | M1 scope | Christian |
 | Is the Neon project still used for anything? Live Nexus doesn't point at it | Local notes, cleanup | Christian |
 | Live `tools/list`, to confirm the snapshot | Freezing the contract | Agent, with connector access |
 | Does the board's Ethernet drop recur? Why did it drop on 2026-11-06? The board stays the chosen host; check `journalctl -b \| grep 'end0'` before cutover | Cutover | Christian, watch logs |
