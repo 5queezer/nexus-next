@@ -15,7 +15,7 @@ use nexus_auth::{AuthConfig, AuthState, issue_api_token, require_mcp_auth};
 use nexus_core::Db;
 use nexus_core::auth::AuthContext;
 use nexus_server::config::{Access, ServeConfig};
-use nexus_server::serve::{self, HANDLER_TIMEOUT, MAX_BODY_BYTES, MAX_IN_FLIGHT};
+use nexus_server::serve::{self, HANDLER_TIMEOUT, MAX_BODY_BYTES, OWNER};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
@@ -188,7 +188,7 @@ async fn mcp_auth_headers_and_limits_pass_through_the_stack() {
                 }),
             )
             .layer(from_fn_with_state(auth.clone(), require_mcp_auth));
-    let app = serve::harden(mcp.merge(nexus_auth::router(auth)));
+    let app = serve::harden(mcp.merge(nexus_auth::router(auth)), OWNER);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -253,9 +253,10 @@ async fn the_concurrency_limit_counts_across_routes() {
         Router::new()
             .route("/hold", get(hold))
             .route("/other", get(|| async { "other" })),
+        OWNER,
     );
     let mut held = Vec::new();
-    for _ in 0..MAX_IN_FLIGHT {
+    for _ in 0..OWNER.in_flight {
         let app = app.clone();
         held.push(tokio::spawn(async move {
             app.oneshot(Request::get("/hold").body(Body::empty()).unwrap())
@@ -282,10 +283,13 @@ async fn the_concurrency_limit_counts_across_routes() {
 }
 
 fn echo_len() -> Router {
-    serve::harden(Router::new().route(
-        "/echo",
-        post(|body: Bytes| async move { body.len().to_string() }),
-    ))
+    serve::harden(
+        Router::new().route(
+            "/echo",
+            post(|body: Bytes| async move { body.len().to_string() }),
+        ),
+        OWNER,
+    )
 }
 
 #[tokio::test]
@@ -339,6 +343,7 @@ async fn slow_handlers_time_out_but_streams_may_outlive_the_timeout() {
                     Body::from_stream(chunks)
                 }),
             ),
+        OWNER,
     );
     assert_eq!(status(&app, "/slow").await, StatusCode::REQUEST_TIMEOUT);
 

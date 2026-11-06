@@ -776,8 +776,14 @@ async fn poisoned_rows_cost_at_most_themselves_on_every_page() {
                 .unwrap()
         })
         .collect();
-    assert!(summaries.iter().any(|s| s.contains("good")), "{summaries:?}");
-    assert!(summaries.iter().any(|s| s.contains("huge")), "{summaries:?}");
+    assert!(
+        summaries.iter().any(|s| s.contains("good")),
+        "{summaries:?}"
+    );
+    assert!(
+        summaries.iter().any(|s| s.contains("huge")),
+        "{summaries:?}"
+    );
     for line in body.lines().filter(|l| l.starts_with("DTEND")) {
         assert_eq!(line.trim().len(), "DTEND:20300301T110000Z".len(), "{line}");
     }
@@ -821,5 +827,8 @@ async fn the_feed_leaves_out_free_text_next_action() {
     .await;
     let body = calendar(&f.app).await;
     assert!(body.contains("Follow up: Quiet Co"), "{body}");
-    assert!(!body.contains("PRIVATE-NOTE") && !body.contains("Next action"), "{body}");
+    assert!(
+        !body.contains("PRIVATE-NOTE") && !body.contains("Next action"),
+        "{body}"
+    );
 }

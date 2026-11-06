@@ -49,7 +49,12 @@ enum Command {
     },
     /// See or revoke what the owner has authorized, without touching other clients.
     Grants {
-        #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus", global = true)]
+        #[arg(
+            long,
+            env = "NEXUS_DATA_DIR",
+            default_value = "/var/lib/nexus",
+            global = true
+        )]
         data_dir: PathBuf,
         #[command(subcommand)]
         action: GrantAction,

@@ -156,6 +156,9 @@ fn read_token(path: &std::path::Path) -> Result<String, String> {
             "must hold one token of at least {MIN_TOKEN_LEN} characters without whitespace"
         ));
     }
+    if token.chars().all(|c| Some(c) == token.chars().next()) {
+        return Err("is one repeated character: use `openssl rand -hex 32`".to_owned());
+    }
     Ok(token.to_owned())
 }
 
@@ -221,11 +224,13 @@ mod tests {
             fs::Permissions::from_mode(0o600),
         )
         .unwrap();
-        let config = owner_args(dir.path()).validate().unwrap();
+        let mut a = owner_args(dir.path());
+        a.base_url = Some("http://localhost:3000/".into());
+        let config = a.validate().unwrap();
         let Access::Owner(auth) = config.access else {
             panic!("expected owner access");
         };
-        assert_eq!(auth.public_base_url, "https://nexus.example.net");
+        assert_eq!(auth.public_base_url, "http://localhost:3000");
     }
 
     #[test]
@@ -261,7 +266,7 @@ mod tests {
 
     #[test]
     fn token_file_is_read_and_trimmed() {
-        let secret = "a".repeat(40);
+        let secret = "0123456789abcdef".repeat(3);
         let (_dir, path) = token_file(0o400, &format!("{secret}\n"));
         let mut a = args();
         a.calendar_token_file = Some(path);
@@ -280,6 +285,7 @@ mod tests {
                 "whitespace",
             ),
             (0o644, loose.as_str(), "other users"),
+            (0o400, loose.as_str(), "repeated"),
         ] {
             let (_dir, path) = token_file(mode, content);
             let mut a = args();

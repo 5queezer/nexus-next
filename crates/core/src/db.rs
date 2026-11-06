@@ -123,7 +123,10 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
         let db = Db::open(dir.path()).await.unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         db.close().await;
     }
 }

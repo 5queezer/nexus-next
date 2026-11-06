@@ -438,7 +438,9 @@ async fn a_killed_backup_leaves_no_plaintext_where_backups_go_and_the_next_one_c
         let staged = names_in(data.path())
             .into_iter()
             .find(|n| n.starts_with(".backup-"));
-        let encrypting = names_in(store.path()).iter().any(|n| n.ends_with(".partial"));
+        let encrypting = names_in(store.path())
+            .iter()
+            .any(|n| n.ends_with(".partial"));
         if let (Some(stage), true) = (staged, encrypting) {
             break data.path().join(stage);
         }
@@ -449,7 +451,10 @@ async fn a_killed_backup_leaves_no_plaintext_where_backups_go_and_the_next_one_c
         fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    assert!(stage.join("nexus.db").exists(), "the snapshot is staged here");
+    assert!(
+        stage.join("nexus.db").exists(),
+        "the snapshot is staged here"
+    );
 
     // A second run must not delete the first one's files from under it.
     let second = nexus_backup(data.path(), &store.path().join("nexus-b.tar.age"), &keys)
@@ -476,10 +481,16 @@ async fn a_killed_backup_leaves_no_plaintext_where_backups_go_and_the_next_one_c
     let next = nexus_backup(data.path(), &store.path().join("nexus-c.tar.age"), &keys)
         .output()
         .unwrap();
-    assert!(next.status.success(), "{}", String::from_utf8_lossy(&next.stderr));
+    assert!(
+        next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
     assert_eq!(names_in(store.path()), ["nexus-c.tar.age"]);
     assert!(
-        names_in(data.path()).iter().all(|n| !n.starts_with(".backup-")),
+        names_in(data.path())
+            .iter()
+            .all(|n| !n.starts_with(".backup-")),
         "{:?}",
         names_in(data.path())
     );

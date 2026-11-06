@@ -41,6 +41,8 @@ regex = "1"
 subtle = "2.6"
 ical = "0.11"
 tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1.12.0", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "server", "server-graceful", "tokio"] }
 http-body-util = "0.1"
 tracing = "0.1"
 unicode-properties = { version = "0.1.5", default-features = false, features = ["general-category"] }

@@ -104,7 +104,10 @@ pub async fn list_grants(db: &Db) -> nexus_core::error::Result<Vec<GrantLine>> {
             redirect_origin: grant
                 .redirect_uri
                 .and_then(|uri| Url::parse(&uri).ok())
-                .map_or_else(|| "unknown".to_owned(), |u| u.origin().ascii_serialization()),
+                .map_or_else(
+                    || "unknown".to_owned(),
+                    |u| u.origin().ascii_serialization(),
+                ),
             scopes: grant.scopes.0.join(" "),
             issued_at: grant.issued_at.to_string(),
             expires_at: grant.expires_at.to_string(),

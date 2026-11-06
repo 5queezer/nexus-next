@@ -116,7 +116,11 @@ fn lock_backups(data_dir: &Path) -> anyhow::Result<File> {
 fn remove_stale(dir: &Path) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        if !entry.file_name().to_string_lossy().starts_with(STAGE_PREFIX) {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(STAGE_PREFIX)
+        {
             continue;
         }
         if entry.file_type()?.is_dir() {

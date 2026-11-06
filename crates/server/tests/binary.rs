@@ -156,6 +156,7 @@ impl Server {
             .env("NEXUS_PUBLIC_BASE_URL", BASE)
             .env("NEXUS_OWNER_ID", "owner-1")
             .env("NEXUS_OWNER_EMAIL", "owner@example.net")
+            .env("NEXUS_TRUSTED_IP_HEADER", "none")
             .envs(envs.iter().copied())
             .args(["serve", "--bind", "127.0.0.1:0", "--data-dir"])
             .arg(dir)
@@ -560,4 +561,73 @@ async fn a_trusted_ip_header_separates_clients_behind_a_tunnel() {
     let logs = server.stop();
     assert!(logs.contains("source=192.0.2.1"), "{logs}");
     assert!(logs.contains("source=198.51.100.7"), "{logs}");
+}
+
+#[test]
+fn set_passphrase_refuses_weak_ones_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    for weak in [
+        "only fifteen ch",
+        "aaaaaaaaaaaaaaaaaaaaaaaa",
+        "abcabcabcabcabcabc",
+    ] {
+        let output = set_passphrase(dir.path(), weak);
+        assert!(!output.status.success(), "{weak}");
+        assert!(!dir.path().join("owner-passphrase.argon2").exists());
+    }
+}
+
+#[test]
+fn an_https_base_url_makes_the_operator_decide_about_the_trusted_header() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(set_passphrase(dir.path(), PASSPHRASE).status.success());
+    let output = serve_output(&["--base-url", BASE], dir.path());
+    assert!(!output.status.success());
+    assert!(text(&output.stderr).contains("NEXUS_TRUSTED_IP_HEADER"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn grants_are_listed_and_revoked_from_the_command_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = nexus_core::Db::open(dir.path()).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO oauth_clients (client_id, client_name, redirect_uris, grant_types, response_types)
+             VALUES ('mcp_one', 'Name\u{1b}[31m\u{202e}', '[]', '[]', '[]');
+         INSERT INTO oauth_auth_codes (code, client_id, redirect_uri, code_challenge, scopes, expires_at, used)
+             VALUES ('abcdef0123456789', 'mcp_one', 'https://claude.ai/cb?x=1', 'c', '[]', '2999-01-01T00:00:00.000Z', 1);
+         INSERT INTO oauth_access_tokens (token_hash, grant_id, client_id, scopes, expires_at)
+             VALUES ('a', 'abcdef0123456789', 'mcp_one', '[\"mcp:tools\"]', '2999-01-01T00:00:00.000Z');
+         INSERT INTO oauth_refresh_tokens (token_hash, grant_id, client_id, scopes, expires_at)
+             VALUES ('r', 'abcdef0123456789', 'mcp_one', '[\"mcp:tools\"]', '2999-01-01T00:00:00.000Z');",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+
+    let grants = |args: &[&str]| {
+        nexus()
+            .arg("grants")
+            .args(args)
+            .arg("--data-dir")
+            .arg(dir.path())
+            .output()
+            .unwrap()
+    };
+    let list = grants(&["list"]);
+    assert!(list.status.success(), "{}", text(&list.stderr));
+    let printed = text(&list.stdout);
+    assert!(printed.starts_with("abcdef012345\tmcp_one\t"), "{printed}");
+    assert!(printed.contains("https://claude.ai\t"), "{printed}");
+    assert!(printed.contains("mcp:tools"), "{printed}");
+    assert!(
+        !printed.contains('\u{1b}') && !printed.contains('\u{202e}'),
+        "a stored name must not reach the terminal as control characters: {printed:?}"
+    );
+
+    assert!(!grants(&["revoke", "ffffffffffff"]).status.success());
+    let revoke = grants(&["revoke", "abcdef012345"]);
+    assert!(revoke.status.success(), "{}", text(&revoke.stderr));
+    assert!(text(&revoke.stdout).contains("revoked 1 access and 1 refresh tokens"));
+    assert_eq!(text(&grants(&["list"]).stdout), "");
 }

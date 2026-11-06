@@ -348,7 +348,10 @@ mod tests {
             config(&[ENV_HASH], dir.path()).unwrap().redirect_hosts,
             ["claude.ai", "claude.com"]
         );
-        let set = ("NEXUS_OAUTH_REDIRECT_HOSTS", " Hermes.Example.net, ,a-b.example.net ");
+        let set = (
+            "NEXUS_OAUTH_REDIRECT_HOSTS",
+            " Hermes.Example.net, ,a-b.example.net ",
+        );
         assert_eq!(
             config(&[ENV_HASH, set], dir.path()).unwrap().redirect_hosts,
             ["hermes.example.net", "a-b.example.net"]
