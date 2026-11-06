@@ -41,7 +41,7 @@ enum Command {
         force: bool,
     },
     /// Run the server.
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     /// Set or change the owner passphrase, read from a prompt or stdin. Revokes all OAuth grants and
     /// API tokens. Restart the server afterwards.
     SetPassphrase {

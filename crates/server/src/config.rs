@@ -4,13 +4,17 @@
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::Args;
 use nexus_auth::{AuthConfig, ConfigError, normalize_base_url};
-use nexus_web::Tz;
+use nexus_mcp::Renderer;
+use nexus_web::{OPENAI_BASE_URL, Tz, VoiceConfig, VoiceKey};
+use tokio::sync::watch;
 use tracing::Level;
 
 const MIN_TOKEN_LEN: usize = 32;
+const MAX_VOICE_SESSION_SECONDS: u64 = 3600;
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
@@ -45,6 +49,27 @@ pub struct ServeArgs {
     /// Most verbose level logged: error, warn, info, debug or trace.
     #[arg(long, env = "NEXUS_LOG_LEVEL", default_value = "info")]
     pub log_level: Level,
+    /// File holding an OpenAI API key. Read once at start. Without it voice is off and Nexus makes
+    /// no outbound call. See deploy/voice.conf for what turning it on gives up.
+    #[arg(long, env = "NEXUS_OPENAI_API_KEY_FILE")]
+    pub openai_api_key_file: Option<PathBuf>,
+    /// The OpenAI Realtime model for voice sessions.
+    #[arg(
+        long,
+        env = "NEXUS_REALTIME_MODEL",
+        default_value = "gpt-realtime-2.1-mini"
+    )]
+    pub realtime_model: String,
+    /// The voice the model speaks with.
+    #[arg(long, env = "NEXUS_REALTIME_VOICE", default_value = "marin")]
+    pub realtime_voice: String,
+    /// How long a voice session may last, in seconds. Nexus enforces this itself.
+    #[arg(long, env = "NEXUS_VOICE_SESSION_SECONDS", default_value_t = 900)]
+    pub voice_session_seconds: u64,
+    /// For tests: where voice's OpenAI calls go. Refused unless --insecure-local-only is set, so a
+    /// real server can't be pointed elsewhere.
+    #[arg(long, hide = true)]
+    pub voice_test_base_url: Option<String>,
 }
 
 /// Who may reach the dashboard and JSON API.
@@ -66,6 +91,11 @@ pub struct ServeConfig {
     pub timezone: Tz,
     pub calendar_token: Option<String>,
     pub log_level: Level,
+    /// `None` is voice off: no key, no outbound call.
+    pub voice: Option<VoiceConfig>,
+    pub renderer: Renderer,
+    /// Set when shutdown starts, which ends the open live streams so that the drain can finish.
+    pub stream_shutdown: watch::Sender<bool>,
 }
 
 impl ServeArgs {
@@ -112,6 +142,7 @@ impl ServeArgs {
                 String::new()
             })
         });
+        let voice = self.voice_config(&mut problems);
 
         let (true, Some(access)) = (problems.is_empty(), access) else {
             return Err(problems.join("\n"));
@@ -125,8 +156,52 @@ impl ServeArgs {
             timezone,
             calendar_token,
             log_level: self.log_level,
+            voice,
+            renderer: Renderer::current_exe(),
+            stream_shutdown: watch::Sender::new(false),
         })
     }
+
+    fn voice_config(&self, problems: &mut Vec<String>) -> Option<VoiceConfig> {
+        let base_url = match &self.voice_test_base_url {
+            Some(url) if !self.insecure_local_only => {
+                problems.push(format!(
+                    "--voice-test-base-url {url} needs --insecure-local-only"
+                ));
+                return None;
+            }
+            Some(url) if !is_loopback_http(url) => {
+                problems.push(format!(
+                    "--voice-test-base-url must be http://127.0.0.1:<port>, got {url}"
+                ));
+                return None;
+            }
+            Some(url) => url.trim_end_matches('/').to_owned(),
+            None => OPENAI_BASE_URL.to_owned(),
+        };
+        if !(1..=MAX_VOICE_SESSION_SECONDS).contains(&self.voice_session_seconds) {
+            problems.push(format!(
+                "--voice-session-seconds must be from 1 to {MAX_VOICE_SESSION_SECONDS}"
+            ));
+        }
+        let path = self.openai_api_key_file.as_ref()?;
+        let key = read_token(path)
+            .map_err(|e| problems.push(format!("--openai-api-key-file {}: {e}", path.display())))
+            .ok()?;
+        Some(VoiceConfig {
+            key: VoiceKey::new(key),
+            model: self.realtime_model.clone(),
+            voice: self.realtime_voice.clone(),
+            base_url,
+            lifetime: Duration::from_secs(self.voice_session_seconds),
+        })
+    }
+}
+
+fn is_loopback_http(url: &str) -> bool {
+    url.strip_prefix("http://")
+        .and_then(|rest| rest.trim_end_matches('/').rsplit_once(':'))
+        .is_some_and(|(host, port)| host == "127.0.0.1" && port.parse::<u16>().is_ok())
 }
 
 fn auth_problem(error: &ConfigError) -> String {
@@ -180,6 +255,11 @@ mod tests {
             calendar_token_file: None,
             insecure_local_only: true,
             log_level: Level::INFO,
+            openai_api_key_file: None,
+            realtime_model: "gpt-realtime-2.1-mini".into(),
+            realtime_voice: "marin".into(),
+            voice_session_seconds: 900,
+            voice_test_base_url: None,
         }
     }
 
@@ -297,6 +377,82 @@ mod tests {
         let mut a = args();
         a.calendar_token_file = Some("/nonexistent/token".into());
         assert!(a.validate().unwrap_err().contains("cannot read"));
+    }
+
+    #[test]
+    fn voice_is_off_without_a_key_file_and_the_default_target_is_openai() {
+        assert!(args().validate().unwrap().voice.is_none());
+        let secret = "sk-synthetic-0123456789abcdefghijklmnop";
+        let (_dir, path) = token_file(0o400, secret);
+        let mut a = args();
+        a.openai_api_key_file = Some(path);
+        let voice = a.validate().unwrap().voice.unwrap();
+        assert_eq!(voice.base_url, OPENAI_BASE_URL);
+        assert_eq!(voice.lifetime, Duration::from_secs(900));
+        assert_eq!(voice.model, "gpt-realtime-2.1-mini");
+        assert_eq!(voice.voice, "marin");
+        assert!(
+            !format!("{voice:?}").contains(secret),
+            "Debug shows the key"
+        );
+    }
+
+    #[test]
+    fn a_loose_key_file_is_refused_without_echoing_it() {
+        let secret = "sk-synthetic-0123456789abcdefghijklmnop";
+        let (_dir, path) = token_file(0o644, secret);
+        let mut a = args();
+        a.openai_api_key_file = Some(path);
+        let error = a.validate().unwrap_err();
+        assert!(error.contains("other users"), "{error}");
+        assert!(!error.contains(secret), "{error}");
+    }
+
+    #[test]
+    fn only_a_local_run_may_point_voice_elsewhere_and_only_at_loopback() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("owner-passphrase.argon2"),
+            "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .unwrap();
+        fs::set_permissions(
+            dir.path().join("owner-passphrase.argon2"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let mut owner = owner_args(dir.path());
+        owner.voice_test_base_url = Some("http://127.0.0.1:9".into());
+        let error = owner.validate().unwrap_err();
+        assert!(error.contains("--insecure-local-only"), "{error}");
+
+        for bad in [
+            "https://evil.example",
+            "http://evil.example:80",
+            "http://127.0.0.1",
+        ] {
+            let mut a = args();
+            a.voice_test_base_url = Some(bad.into());
+            assert!(a.validate().is_err(), "{bad}");
+        }
+
+        let (_key_dir, path) = token_file(0o400, "sk-synthetic-0123456789abcdefghijklmnop");
+        let mut a = args();
+        a.openai_api_key_file = Some(path);
+        a.voice_test_base_url = Some("http://127.0.0.1:9/".into());
+        assert_eq!(
+            a.validate().unwrap().voice.unwrap().base_url,
+            "http://127.0.0.1:9"
+        );
+    }
+
+    #[test]
+    fn a_voice_session_lasts_at_most_an_hour() {
+        for bad in [0, 3601] {
+            let mut a = args();
+            a.voice_session_seconds = bad;
+            assert!(a.validate().unwrap_err().contains("voice-session-seconds"));
+        }
     }
 
     #[test]

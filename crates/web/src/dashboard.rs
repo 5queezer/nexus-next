@@ -41,34 +41,41 @@ pub(crate) struct Dashboard {
 /// check runs. Pages and the form routes are all that is mounted: the static files are
 /// `static_router`.
 pub fn dashboard_router(state: McpState, tz: Tz) -> Router {
+    with_form_token(
+        Router::new()
+            .route("/", get(pipeline))
+            .route("/queue", get(follow_ups))
+            .route("/applications/{id}", get(application))
+            .route(
+                "/applications/{id}/{form}",
+                post(forms::submit).layer(DefaultBodyLimit::max(FORM_BODY_LIMIT)),
+            ),
+    )
+    .layer(middleware::map_response(crate::secure))
+    .with_state(Dashboard {
+        db: state.db.clone(),
+        mcp: Arc::new(state),
+        tz,
+    })
+}
+
+/// Without a session's token (no login in local mode), this router's own random one, so that the
+/// same CSRF check runs.
+pub(crate) fn with_form_token<S: Clone + Send + Sync + 'static>(routes: Router<S>) -> Router<S> {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     let local = FormToken(hex::encode(bytes));
-    Router::new()
-        .route("/", get(pipeline))
-        .route("/queue", get(follow_ups))
-        .route("/applications/{id}", get(application))
-        .route(
-            "/applications/{id}/{form}",
-            post(forms::submit).layer(DefaultBodyLimit::max(FORM_BODY_LIMIT)),
-        )
-        .layer(middleware::from_fn(
-            move |mut request: Request, next: Next| {
-                let local = local.clone();
-                async move {
-                    if request.extensions().get::<FormToken>().is_none() {
-                        request.extensions_mut().insert(local);
-                    }
-                    next.run(request).await
+    routes.layer(middleware::from_fn(
+        move |mut request: Request, next: Next| {
+            let local = local.clone();
+            async move {
+                if request.extensions().get::<FormToken>().is_none() {
+                    request.extensions_mut().insert(local);
                 }
-            },
-        ))
-        .layer(middleware::map_response(crate::secure))
-        .with_state(Dashboard {
-            db: state.db.clone(),
-            mcp: Arc::new(state),
-            tz,
-        })
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 pub(crate) struct PageError(pub StatusCode);

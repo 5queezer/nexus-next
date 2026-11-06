@@ -4,11 +4,15 @@
 mod api;
 mod assets;
 mod calendar;
+mod cv;
+mod cv_events;
 mod dashboard;
 mod format;
 mod forms;
 mod queue;
+mod render_cache;
 mod views;
+mod voice;
 
 use axum::http::{HeaderName, HeaderValue, header};
 use axum::response::Response;
@@ -17,7 +21,13 @@ pub use api::api_router;
 pub use assets::static_router;
 pub use calendar::calendar_router;
 pub use chrono_tz::Tz;
+pub use cv::cv_router;
+pub use cv_events::{HEARTBEAT, MAX_STREAMS, cv_events_router};
 pub use dashboard::dashboard_router;
+pub use voice::{
+    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, VOICE_TOOLS,
+    VoiceConfig, VoiceKey, tool_definitions,
+};
 
 /// Default response headers: no inline script or foreign asset can load, nothing sniffs types, and
 /// nothing personal is cached by shared caches. A handler's own value wins, which is how a route
@@ -33,6 +43,10 @@ async fn secure(mut response: Response) -> Response {
         (header::REFERRER_POLICY, "no-referrer"),
         (header::CACHE_CONTROL, "no-store"),
         (HeaderName::from_static("x-frame-options"), "DENY"),
+        (
+            HeaderName::from_static("permissions-policy"),
+            "microphone=()",
+        ),
     ] {
         headers
             .entry(name)
