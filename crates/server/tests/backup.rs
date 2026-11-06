@@ -128,7 +128,7 @@ async fn backup_then_restore_reproduces_database_and_blobs() {
     );
 
     let target = tempfile::tempdir().unwrap();
-    let restored = backup::restore(&out, &keys.identity_file, target.path(), false)
+    let restored = backup::restore(&out, &keys.identity_file, target.path(), false, false)
         .await
         .unwrap();
     assert_eq!(restored.blobs, 5);
@@ -174,7 +174,7 @@ async fn restore_refuses_to_overwrite_without_force_and_keeps_the_old_database_w
     add_application_with_document(&other, 8).await;
     other.close().await;
 
-    let error = backup::restore(&out, &keys.identity_file, target.path(), false)
+    let error = backup::restore(&out, &keys.identity_file, target.path(), false, false)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("--force"), "{error}");
@@ -187,7 +187,7 @@ async fn restore_refuses_to_overwrite_without_force_and_keeps_the_old_database_w
         2
     );
 
-    backup::restore(&out, &keys.identity_file, target.path(), true)
+    backup::restore(&out, &keys.identity_file, target.path(), true, false)
         .await
         .unwrap();
     assert_eq!(
@@ -239,7 +239,7 @@ async fn wrong_key_truncation_and_tampering_install_nothing() {
         let file = source.path().join("case.age");
         fs::write(&file, bytes).unwrap();
         let target = tempfile::tempdir().unwrap();
-        let result = backup::restore(&file, &identity, target.path(), false).await;
+        let result = backup::restore(&file, &identity, target.path(), false, false).await;
         assert!(result.is_err(), "{label} must fail");
         assert!(!target.path().join("nexus.db").exists(), "{label}");
         assert!(
@@ -273,7 +273,7 @@ async fn archives_with_unexpected_entries_are_refused() {
         tar.into_inner().unwrap().finish().unwrap().flush().unwrap();
     }
     let target = tempfile::tempdir().unwrap();
-    let error = backup::restore(&file, &keys.identity_file, target.path(), false)
+    let error = backup::restore(&file, &keys.identity_file, target.path(), false, false)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("unexpected entry"), "{error}");
@@ -343,7 +343,7 @@ async fn backup_taken_during_concurrent_writes_is_consistent() {
 
     for (out, floor) in backups {
         let target = tempfile::tempdir().unwrap();
-        backup::restore(&out, &keys.identity_file, target.path(), false)
+        backup::restore(&out, &keys.identity_file, target.path(), false, false)
             .await
             .unwrap();
         let db_file = target.path().join("nexus.db");
@@ -381,4 +381,216 @@ fn recipient_files_are_validated() {
             .contains("invalid recipient")
     );
     assert!(read_recipients(&dir.path().join("missing")).is_err());
+}
+
+fn nexus_backup(data: &Path, out: &Path, keys: &Keys) -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_nexus"));
+    command
+        .args(["backup", "--data-dir"])
+        .arg(data)
+        .arg("--out")
+        .arg(out)
+        .arg("--recipient-file")
+        .arg(&keys.recipient_file);
+    command
+}
+
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_killed_backup_leaves_no_plaintext_where_backups_go_and_the_next_one_cleans_up() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let keys = new_keys();
+    let data = tempfile::tempdir().unwrap();
+    let store = tempfile::tempdir().unwrap();
+    let db = Db::open(data.path()).await.unwrap();
+    add_application_with_document(&db, 1).await;
+    // Big enough that encrypting it outlasts the checks below.
+    let sha = db.blobs().put(&vec![7u8; 96 * 1024 * 1024]).unwrap();
+    let mut tx = db.begin_write().await.unwrap();
+    documents::create(
+        &mut tx,
+        &NewDocument {
+            filename: "big.pdf".into(),
+            original_name: "Big.pdf".into(),
+            size: 96 * 1024 * 1024,
+            mime_type: "application/pdf".into(),
+            blob_sha256: sha,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    db.close().await;
+
+    let out = store.path().join("nexus-a.tar.age");
+    let mut child = nexus_backup(data.path(), &out, &keys).spawn().unwrap();
+    let stage = loop {
+        let staged = names_in(data.path())
+            .into_iter()
+            .find(|n| n.starts_with(".backup-"));
+        let encrypting = names_in(store.path()).iter().any(|n| n.ends_with(".partial"));
+        if let (Some(stage), true) = (staged, encrypting) {
+            break data.path().join(stage);
+        }
+        assert!(child.try_wait().unwrap().is_none(), "backup ended early");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    };
+    assert_eq!(
+        fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert!(stage.join("nexus.db").exists(), "the snapshot is staged here");
+
+    // A second run must not delete the first one's files from under it.
+    let second = nexus_backup(data.path(), &store.path().join("nexus-b.tar.age"), &keys)
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&second.stderr).contains("another backup"));
+    assert!(stage.exists());
+
+    // SIGKILL, which no handler could ever catch.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let left = names_in(store.path());
+    assert!(
+        left.iter().all(|n| n.ends_with(".partial")),
+        "only ciphertext may be left beside the backups: {left:?}"
+    );
+    assert!(stage.exists());
+
+    // What older builds left beside the backups goes too.
+    let old_stage = store.path().join(".backup-old");
+    fs::create_dir(&old_stage).unwrap();
+    fs::write(old_stage.join("nexus.db"), "plaintext").unwrap();
+    let next = nexus_backup(data.path(), &store.path().join("nexus-c.tar.age"), &keys)
+        .output()
+        .unwrap();
+    assert!(next.status.success(), "{}", String::from_utf8_lossy(&next.stderr));
+    assert_eq!(names_in(store.path()), ["nexus-c.tar.age"]);
+    assert!(
+        names_in(data.path()).iter().all(|n| !n.starts_with(".backup-")),
+        "{:?}",
+        names_in(data.path())
+    );
+}
+
+/// A backup as someone holding only the public key could build it.
+fn forged_backup(path: &Path, recipient_file: &Path, staged: &Path) {
+    let recipients = read_recipients(recipient_file).unwrap();
+    let encryptor =
+        age::Encryptor::with_recipients(recipients.iter().map(|r| r as &dyn age::Recipient))
+            .unwrap();
+    let mut writer = encryptor
+        .wrap_output(fs::File::create(path).unwrap())
+        .unwrap();
+    {
+        let mut tar = tar::Builder::new(&mut writer);
+        tar.append_path_with_name(staged.join("nexus.db"), "nexus.db")
+            .unwrap();
+        let junk = b"no document references this";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(junk.len() as u64);
+        header.set_mode(0o600);
+        let name = format!("blobs/{}", nexus_core::blob::sha256_hex(junk));
+        tar.append_data(&mut header, name, &junk[..]).unwrap();
+        tar.finish().unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+#[tokio::test]
+async fn restore_clears_credentials_and_skips_unreferenced_blobs_unless_told() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let keys = new_keys();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    nexus_auth::issue_api_token(&db, "forged").await.unwrap();
+    sqlx::raw_sql(
+        r#"INSERT INTO oauth_clients (client_id, redirect_uris, grant_types, response_types)
+               VALUES ('forged', '[]', '[]', '[]');
+           INSERT INTO oauth_access_tokens (token_hash, client_id, scopes, expires_at)
+               VALUES ('a', 'forged', '[]', '2999-01-01T00:00:00.000Z');
+           INSERT INTO oauth_refresh_tokens (token_hash, client_id, scopes, expires_at)
+               VALUES ('r', 'forged', '[]', '2999-01-01T00:00:00.000Z');
+           INSERT INTO oauth_auth_codes (code, client_id, redirect_uri, code_challenge, scopes, expires_at)
+               VALUES ('c', 'forged', 'x', 'y', '[]', '2999-01-01T00:00:00.000Z');"#,
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+    let file = source.path().join("forged.age");
+    forged_backup(&file, &keys.recipient_file, source.path());
+
+    for (keep, expected) in [(false, 0), (true, 1)] {
+        let target = tempfile::tempdir().unwrap();
+        let summary = backup::restore(&file, &keys.identity_file, target.path(), false, keep)
+            .await
+            .unwrap();
+        assert_eq!(summary.blobs, 0);
+        assert!(
+            blob_names(target.path()).is_empty(),
+            "unreferenced blob installed"
+        );
+        let restored = target.path().join("nexus.db");
+        assert_eq!(
+            fs::metadata(&restored).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        for sql in [
+            "SELECT count(*) FROM api_tokens",
+            "SELECT count(*) FROM oauth_clients",
+            "SELECT count(*) FROM oauth_access_tokens",
+            "SELECT count(*) FROM oauth_refresh_tokens",
+            "SELECT count(*) FROM oauth_auth_codes",
+        ] {
+            assert_eq!(scalar(&restored, sql).await, expected, "{sql}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_replaced_database_stays_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let keys = new_keys();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    db.close().await;
+    let out = source.path().join("b.age");
+    let recipients = read_recipients(&keys.recipient_file).unwrap();
+    backup::backup(source.path(), &out, &recipients)
+        .await
+        .unwrap();
+
+    let target = tempfile::tempdir().unwrap();
+    fs::write(target.path().join("nexus.db"), "old").unwrap();
+    fs::set_permissions(
+        target.path().join("nexus.db"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    backup::restore(&out, &keys.identity_file, target.path(), true, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::metadata(target.path().join("nexus.db.before-restore"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
 }

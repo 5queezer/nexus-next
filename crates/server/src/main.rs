@@ -47,6 +47,13 @@ enum Command {
         #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
         data_dir: PathBuf,
     },
+    /// See or revoke what the owner has authorized, without touching other clients.
+    Grants {
+        #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus", global = true)]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        action: GrantAction,
+    },
     /// Issue the API token and print it once. Revokes any earlier API token.
     IssueToken {
         #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
@@ -78,6 +85,21 @@ enum Command {
         /// Replace an existing database, keeping it as nexus.db.before-restore.
         #[arg(long)]
         force: bool,
+        /// Keep the backup's API token and OAuth clients and grants. Without this, every client
+        /// authorizes again. Use it only for a backup you know you wrote.
+        #[arg(long)]
+        keep_credentials: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GrantAction {
+    /// One line per authorization with a live token.
+    List,
+    /// Revoke one authorization's tokens at once. Its client must authorize again.
+    Revoke {
+        /// The ID from `grants list`, also logged as `grant=`.
+        id: String,
     },
 }
 
@@ -104,6 +126,33 @@ fn read_new_passphrase() -> anyhow::Result<String> {
     let mut line = String::new();
     stdin.lock().read_line(&mut line)?;
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+async fn run_grants(db: &Db, action: GrantAction) -> anyhow::Result<()> {
+    match action {
+        GrantAction::List => {
+            for grant in nexus_auth::list_grants(db).await? {
+                println!(
+                    "{}\t{}\t{:?}\t{}\t{}\tissued {}\texpires {}",
+                    grant.id,
+                    grant.client_id,
+                    grant.client_name,
+                    grant.redirect_origin,
+                    grant.scopes,
+                    grant.issued_at,
+                    grant.expires_at
+                );
+            }
+        }
+        GrantAction::Revoke { id } => {
+            let revoked = nexus_auth::revoke_grant(db, &id).await?;
+            println!(
+                "revoked {} access and {} refresh tokens",
+                revoked.access_tokens, revoked.refresh_tokens
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -153,6 +202,15 @@ async fn main() -> anyhow::Result<()> {
                 path.display()
             );
         }
+        Command::Grants { data_dir, action } => {
+            serve::init_logging(Level::INFO, std::io::stderr);
+            let db = Db::open(&data_dir)
+                .await
+                .context("cannot open the database")?;
+            let result = run_grants(&db, action).await;
+            db.close().await;
+            result?;
+        }
         Command::IssueToken { data_dir, name } => {
             serve::init_logging(Level::INFO, std::io::stderr);
             let db = Db::open(&data_dir)
@@ -176,8 +234,10 @@ async fn main() -> anyhow::Result<()> {
             identity,
             data_dir,
             force,
+            keep_credentials,
         } => {
-            let summary = backup::restore(&from, &identity, &data_dir, force).await?;
+            let summary =
+                backup::restore(&from, &identity, &data_dir, force, keep_credentials).await?;
             println!("restored: {summary}");
         }
     }
