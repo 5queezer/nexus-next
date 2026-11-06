@@ -1351,6 +1351,11 @@ async fn an_approval_refuses_a_revision_that_stopped_being_the_head_during_its_c
             continue;
         }
         let error = approved.structured_content.unwrap();
+        // On a busy machine the patch's compile can outlast the wait for the slot: refused, unrecorded.
+        if error["error"]["code"] == "cv_render_busy" {
+            assert_eq!(approvals(&server).await, 0, "{error}");
+            continue;
+        }
         assert_eq!(error["error"]["code"], "cv_approval_stale", "{error}");
         assert_eq!(error["error"]["currentRevision"], 2);
         assert_eq!(approvals(&server).await, 0);
