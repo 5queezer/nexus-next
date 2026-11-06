@@ -134,6 +134,8 @@ sudo rm -rf /var/tmp/nexus-export    # it is private data
 
 The import prints counts and fails on any count, hash or foreign-key mismatch. Re-running it is safe; `--force` replaces a database holding rows the import did not write.
 
+The passphrase hash is a separate file, so setting it first is fine and an import never touches it. OAuth grants and the API token do live in the database: once any exist, a re-import needs `--force` and empties them. So issue the API token after the final import, and expect clients to authorize again after one.
+
 ## 5. Start
 
 The passphrase and `nexus.env` from section 3 must be in place, or the service exits with an error saying which is missing.
