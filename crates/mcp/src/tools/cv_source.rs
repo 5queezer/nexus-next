@@ -16,14 +16,15 @@ use nexus_core::repo::cv_facts::{self, FactsState};
 use nexus_core::repo::cv_revisions::{self as repo, NewRevision, Revision, Variant};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
 use nexus_tailor::{
-    CvContent, CvEmployment, CvProject, CvSkills, Facts, RenderError, RenderRequest, Rendered,
-    Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source, review_text,
+    CvContent, CvEmployment, CvProject, CvSkills, Facts, MAX_PAGES, RenderError, RenderRequest,
+    Rendered, Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source, review_text,
     source_from_profile,
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Value, json};
 use similar::TextDiff;
 use sqlx::SqliteConnection;
+use tokio::sync::OwnedSemaphorePermit;
 
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, req_str, str_arg};
@@ -37,6 +38,10 @@ pub(crate) const MAX_RENDER_CALLS: usize = 3;
 const MAX_REPORTED_VIOLATIONS: usize = 50;
 const MAX_REPORTED_ITEMS: usize = 50;
 const MAX_VIOLATION_TEXT_CHARS: usize = 200;
+/// How long the owner's review or tap waits to be admitted. With the 20 s for its turn and a compile's
+/// 30 s, it stays inside the owner pool's 60 s deadline. And being under that pool's 10 s wait for a
+/// slot, those waiting can't keep any other page out.
+const OWNER_ADMISSION_WAIT: Duration = Duration::from_secs(5);
 /// What one page of `list_cv_revisions` carries in diffs. A source can reach 256 KiB, so 50 full
 /// diffs would be 50 MB in the reply, and several times that in the transport.
 const MAX_DIFF_BYTES_PER_PAGE: usize = 1024 * 1024;
@@ -178,9 +183,36 @@ pub(super) async fn compile(
     preview_pages: u32,
     stamp: bool,
 ) -> Result<Rendered, Box<CallToolResult>> {
-    let Ok(_admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
+    let Ok(admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
         return Err(render_busy());
     };
+    compile_admitted(ctx, admitted, source, facts, pdf, preview_pages, stamp).await
+}
+
+/// What the owner reads and approves: every page drawn with the stamp, as a preview draws it. So a
+/// source that can't be drawn has no picture, and no form and no approval either. It waits briefly to
+/// be admitted, since a tab re-rendering is no reason to tell the owner it can't be approved.
+async fn compile_for_owner(
+    ctx: &Ctx,
+    source: &str,
+    facts: &Facts,
+) -> Result<Rendered, Box<CallToolResult>> {
+    let admission = ctx.state.render_calls.clone().acquire_owned();
+    let Ok(Ok(admitted)) = tokio::time::timeout(OWNER_ADMISSION_WAIT, admission).await else {
+        return Err(render_busy());
+    };
+    compile_admitted(ctx, admitted, source, facts, false, MAX_PAGES, true).await
+}
+
+async fn compile_admitted(
+    ctx: &Ctx,
+    _admitted: OwnedSemaphorePermit,
+    source: &str,
+    facts: &Facts,
+    pdf: bool,
+    preview_pages: u32,
+    stamp: bool,
+) -> Result<Rendered, Box<CallToolResult>> {
     let work = async {
         let slot = ctx.state.render_slot.clone();
         let Ok(Ok(_slot)) = tokio::time::timeout(RENDER_QUEUE_WAIT, slot.acquire_owned()).await
@@ -509,7 +541,7 @@ pub(super) async fn known_to_owner(
     let approved = match variant {
         Some(variant) => approvals::last_approved(&mut *conn, variant, &facts_sha256(facts))
             .await?
-            .map(|(text, _)| text),
+            .map(|(text, _, _)| text),
         None => None,
     };
     let wording = cv_facts::locked_wording(conn).await?;
@@ -530,13 +562,19 @@ fn valid_new_variant_name(name: &str) -> bool {
 }
 
 pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
-    patch_as(ctx, args, None).await
+    patch_as(ctx, args, None, false).await
 }
 
 /// `approved_by` is for the owner's own edit. It approves only if the base was approved, because only
-/// then is the whole difference theirs: a save on an agent's draft stays a draft. Only the web handler
-/// passes it: no tool argument and no `origin` reaches it.
-pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) -> ToolResult {
+/// then is the whole difference theirs: a save on an agent's draft stays a draft. So does one with
+/// `draft_only`, whose form moved to a new base with its typed text, which says nothing of where that
+/// text came from. Only the web handler passes these: no tool argument and no `origin` reaches them.
+pub(crate) async fn patch_as(
+    ctx: &Ctx,
+    args: &Args,
+    approved_by: Option<&str>,
+    draft_only: bool,
+) -> ToolResult {
     let name = req_str(args, "variant");
     let expected = args["expectedRevision"].as_i64().unwrap_or_default();
     let create_from = str_arg(args, "createFrom");
@@ -627,7 +665,7 @@ pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) 
         },
     )
     .await?;
-    if let Some(approved_by) = approved_by.filter(|_| base_approved) {
+    if let Some(approved_by) = approved_by.filter(|_| base_approved && !draft_only) {
         approvals::record(
             &mut tx,
             &NewApproval {
@@ -999,8 +1037,9 @@ pub(crate) async fn review(
     let approved = is_approved(&mut conn, &state, Some(base.variant.id), &source_sha256).await?;
     let last =
         approvals::last_approved(&mut conn, &base.variant, &facts_sha256(&state.facts)).await?;
+    let baseline_is_own = last.as_ref().is_some_and(|(_, _, own)| *own);
     let (baseline, baseline_revision) =
-        last.map_or((None, None), |(text, at)| (Some(text), Some(at)));
+        last.map_or((None, None), |(text, at, _)| (Some(text), Some(at)));
     let baseline_source = match baseline_revision {
         Some(at) => repo::get_by_number(&mut conn, base.variant.id, at)
             .await?
@@ -1016,9 +1055,12 @@ pub(crate) async fn review(
         locked: state.is_locked(),
         source_sha256,
         facts_sha256: facts_sha256(&state.facts),
+        facts_version: state.version,
         rendered_text: String::new(),
+        previews: Vec::new(),
         baseline,
         baseline_revision,
+        baseline_is_own,
         items: Vec::new(),
         source_diff: unified_diff(
             baseline_source.as_deref().unwrap_or(""),
@@ -1034,7 +1076,7 @@ pub(crate) async fn review(
     if approved {
         return Ok(Ok(review));
     }
-    let rendered = match compile(ctx, &base.source, &state.facts, false, 0, false).await {
+    let rendered = match compile_for_owner(ctx, &base.source, &state.facts).await {
         Ok(rendered) => rendered,
         Err(error) => return Ok(Err(*error)),
     };
@@ -1048,6 +1090,7 @@ pub(crate) async fn review(
         return Ok(Err(violation_error(&report.violations)));
     }
     review.rendered_text = review_text(&rendered.text);
+    review.previews = rendered.previews;
     review.items = report.review_items;
     Ok(Ok(review))
 }
@@ -1088,7 +1131,7 @@ pub(crate) async fn approve(
     {
         return Ok(stale(head));
     }
-    let rendered = match compile(ctx, &revision.source, &state.facts, false, 0, false).await {
+    let rendered = match compile_for_owner(ctx, &revision.source, &state.facts).await {
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
@@ -1175,6 +1218,70 @@ mod tests {
         let text = serde_json::to_string(&error.structured_content).unwrap();
         assert!(text.contains("cv_render_busy"), "{text}");
         drop(held);
+    }
+
+    /// Two tabs re-rendering must not make the next page load say nothing can be approved.
+    #[tokio::test]
+    async fn the_owners_review_waits_its_turn_to_be_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let held = state
+            .render_calls
+            .clone()
+            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(held);
+        });
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+            client_gone: CancellationToken::new(),
+        };
+        let review = review(&ctx, "default").await.ok().unwrap();
+        assert!(review.is_ok(), "{:?}", review.err());
+    }
+
+    /// A page load holds an owner slot, so its wait has an end well inside that pool's limits.
+    #[tokio::test]
+    async fn the_owners_wait_to_be_admitted_ends_in_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let _held = state
+            .render_calls
+            .clone()
+            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .await
+            .unwrap();
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+            client_gone: CancellationToken::new(),
+        };
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let error = compile_for_owner(&ctx, "= CV", &Facts::default())
+            .await
+            .unwrap_err();
+        assert!((OWNER_ADMISSION_WAIT..OWNER_ADMISSION_WAIT * 2).contains(&started.elapsed()));
+        let text = serde_json::to_string(&error.structured_content).unwrap();
+        assert!(text.contains("cv_render_busy"), "{text}");
     }
 
     #[tokio::test]

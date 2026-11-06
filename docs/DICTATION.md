@@ -36,7 +36,7 @@ A changed fact makes everything built on it a draft again. An unlock and relock 
 2. **Read.** `get_cv_source` returns the source, its `revision`, its `state`, the facts and help on the template. Facts appear in the source by id, as in `#employment("acme")`, so there is nothing to retype. A variant with nothing stored yet reads as revision 0.
 3. **Edit.** `patch_cv` with `expectedRevision` set to that revision, `origin: "telegram"`, a one-sentence `summary`, and `edits`, each an exact `oldText` and its `newText`. The reply says `state: "draft"`, the `reviewItems` and an `approvalPath`.
 4. **Picture.** `render_cv_pdf` returns a PNG with `DRAFT, NOT APPROVED` across it, and no PDF. Hermes sends the PNG, then the most important review items in words, then the approval path on the owner's dashboard.
-5. **Approval is the owner's.** The owner opens that path and reads the rendered text against what they last approved, and taps Approve. Or, on the board, `nexus cv-facts approve --variant default --revision N` prints the same, and `--confirm` approves it.
+5. **Approval is the owner's.** The owner opens that path, reads the stamped picture and the rendered text against what they last approved, and taps Approve. Or, on the board, `nexus cv-facts approve --variant default --revision N` prints the same, and `--confirm` approves it.
 
 **Hermes may never call the CV final, ready or approved until `state` is `approved`.** Saying "I've updated your draft, please check it on your dashboard" is true. Saying "your CV is updated" isn't, until then.
 

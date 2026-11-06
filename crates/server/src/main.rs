@@ -169,6 +169,10 @@ enum CvFactsAction {
 
 /// Who a change by this command is recorded as.
 const CV_FACTS_ACTOR: &str = "cli";
+/// About five rows of a wide terminal for one value.
+const MAX_PRINTED_CHARS: usize = 1000;
+/// A path names a value, which it does long before this, and a job's id is part of each of its paths.
+const MAX_PRINTED_FIELD_CHARS: usize = 120;
 
 /// The error a tool result says, in its own words.
 fn tool_failure(result: &nexus_mcp::CallToolResult) -> anyhow::Error {
@@ -180,22 +184,49 @@ fn tool_failure(result: &nexus_mcp::CallToolResult) -> anyhow::Error {
     anyhow::anyhow!("{}", printable(text.unwrap_or("it failed")))
 }
 
-/// `text` for the owner's terminal. An agent can write nearly all of what these commands print, and a
-/// control character could rewrite what the owner reads before confirming it. Line breaks stay.
+/// `text` for the owner's terminal, on one line. An agent can write nearly all of what these commands
+/// print, and a control character or a line break could rewrite what the owner reads before confirming
+/// it, or scroll it off the screen. So can what a terminal draws as nothing, or as a new line.
 fn printable(text: &str) -> String {
     let unsafe_to_print = |c: char| {
-        (c.is_control() && c != '\n')
-            || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        c.is_control()
+            || matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
     };
     text.chars()
         .map(|c| {
             if unsafe_to_print(c) {
-                c.escape_debug().to_string()
+                c.escape_default().to_string()
             } else {
                 c.to_string()
             }
         })
         .collect()
+}
+
+/// [`printable`], up to `most` characters. A longer value says so, because one long enough can scroll
+/// the rest away. The dashboard shows every value whole.
+fn cut(text: &str, most: usize) -> String {
+    let total = text.chars().count();
+    if total <= most {
+        return printable(text);
+    }
+    let start: String = text.chars().take(most).collect();
+    format!(
+        "{}... [{} more characters, not printed here: read them on the dashboard]",
+        printable(&start),
+        total - most
+    )
+}
+
+fn shown(text: &str) -> String {
+    cut(text, MAX_PRINTED_CHARS)
+}
+
+/// A diff, the one thing printed with its line breaks.
+fn shown_by_line(text: &str) -> String {
+    let lines: Vec<String> = text.lines().map(shown).collect();
+    lines.join("\n")
 }
 
 async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> anyhow::Result<()> {
@@ -226,24 +257,37 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
         );
     }
     match review.baseline_revision {
-        Some(at) => println!("compared with revision {at}, the last you approved:"),
-        None => println!("nothing is approved yet, so this is the whole CV:"),
+        None => println!("there is no approved text to compare with, so this is the whole CV:"),
+        Some(at) if review.baseline_is_own => {
+            println!("compared with revision {at}, the last you approved in this variant:");
+        }
+        Some(at) => println!(
+            "compared with revision {at}, which holds text you approved in another variant:"
+        ),
     }
     let lines = review_diff(review.baseline.as_deref(), &review.rendered_text);
     for line in &lines {
         match line.change {
-            LineChange::Added => println!("+ {}", printable(&line.text)),
-            LineChange::Removed => println!("- {}", printable(&line.text)),
+            LineChange::Added => println!("+ {}", shown(&line.text)),
+            LineChange::Removed => println!("- {}", shown(&line.text)),
             LineChange::Same => {}
         }
     }
     if lines.iter().all(|line| line.change == LineChange::Same) {
         println!("The wording is unchanged, but the source isn't. Read how it changed:");
-        println!("{}", printable(&review.source_diff));
+        println!("{}", shown_by_line(&review.source_diff));
     }
     for item in &review.items {
-        println!("check {:?}: {}", item.rule, printable(&item.token));
+        println!("check {:?}: {}", item.rule, shown(&item.token));
     }
+    let changed = lines
+        .iter()
+        .filter(|line| line.change != LineChange::Same)
+        .count();
+    println!(
+        "That is {changed} changed lines and {} items, which your terminal may not hold. This is the text: a shape drawn over it shows only in the picture, so look at the stamped preview on the dashboard.",
+        review.items.len()
+    );
     if !confirm {
         bail!(
             "nothing was written. Approving says all of the above is true: if it is, run \
@@ -269,7 +313,11 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
 async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
     if let CvFactsAction::Show = action {
         let state = cv_facts::get(&mut *db.conn().await?).await?;
-        println!("{}", serde_json::to_string_pretty(&state)?);
+        let lines: Vec<String> = serde_json::to_string_pretty(&state)?
+            .lines()
+            .map(printable)
+            .collect();
+        println!("{}", lines.join("\n"));
         return Ok(());
     }
     if let CvFactsAction::Approve {
@@ -295,22 +343,28 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
             for change in &preview.changes {
                 println!(
                     "changed {}: {} -> {}",
-                    printable(&change.field),
-                    printable(&change.old),
-                    printable(&change.new)
+                    cut(&change.field, MAX_PRINTED_FIELD_CHARS),
+                    shown(&change.old),
+                    shown(&change.new)
                 );
             }
             for change in &preview.wording {
                 println!(
                     "wording changed {}: {} -> {}",
-                    printable(&change.field),
-                    printable(&change.old),
-                    printable(&change.new)
+                    cut(&change.field, MAX_PRINTED_FIELD_CHARS),
+                    shown(&change.old),
+                    shown(&change.new)
                 );
             }
             for token in &preview.added {
-                println!("added to allowed tokens: {}", printable(token));
+                println!("added to allowed tokens: {}", shown(token));
             }
+            println!(
+                "That is {} facts, {} pieces of wording and {} tokens, which your terminal may not hold: read them all, or read them on the dashboard's facts page.",
+                preview.changes.len(),
+                preview.wording.len(),
+                preview.added.len()
+            );
             let hash = preview.hash();
             if preview.needs_confirmation() && confirm.as_deref() != Some(hash.as_str()) {
                 let moved = if confirm.is_some() {

@@ -192,7 +192,7 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
             .await
             .unwrap();
     assert!(still_approved, "an approval survives a restore");
-    let (text, at) = cv_approvals::last_approved(&mut conn, &variant, &facts_hash)
+    let (text, at, _) = cv_approvals::last_approved(&mut conn, &variant, &facts_hash)
         .await
         .unwrap()
         .unwrap();

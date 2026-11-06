@@ -42,7 +42,6 @@ use crate::voice::{self, MAX_SESSION_BODY_BYTES, MAX_TOOL_BODY_BYTES, Voice, Voi
 /// A source of 256 KiB percent-encoded, with the small fields around it.
 const SAVE_BODY_LIMIT: usize = 1024 * 1024;
 const REVISIONS_PER_PAGE: i64 = 20;
-const PREVIEW_PAGES: u32 = 3;
 const FACTS_ACTOR: &str = "dashboard";
 /// How many review items a page lists. Past that the diff still marks them where they stand.
 const MAX_LISTED_ITEMS: usize = 200;
@@ -175,6 +174,25 @@ fn explain(code: &str) -> &'static str {
     }
 }
 
+/// Why a stored revision can't be read or drawn. Unlike [`explain`], which answers a save, this says
+/// nothing was stored about nothing: the revision is there, whatever else went wrong.
+fn why_unreadable(code: &str) -> &'static str {
+    match code {
+        "cv_compile_failed" => "This text doesn't compile. See the problems below.",
+        "cv_fact_violation" => "The integrity check refuses this text. See what it found below.",
+        "cv_facts_changed" => "The facts changed while this was drawing. Reload to read it again.",
+        "cv_render_busy" => "Other CVs are rendering, so this can't be drawn yet. Reload shortly.",
+        "cv_too_many_pages" => "This text is over the 10 page limit.",
+        "cv_pdf_too_large" | "cv_render_result_too_large" => {
+            "This text is too large to draw as a PDF and pictures."
+        }
+        "cv_render_timeout" => "This text took over 30 seconds to draw.",
+        "cv_render_memory_exceeded" => "This text uses too much memory to draw.",
+        "cv_render_failed" => "The renderer failed. Reload to try again.",
+        code => explain(code),
+    }
+}
+
 /// How a refusal or a review item reads to the person whose CV it is.
 fn rule_text(rule: &str) -> &'static str {
     match rule {
@@ -201,20 +219,6 @@ fn rule_text(rule: &str) -> &'static str {
     }
 }
 
-/// `context` with every `token` in it marked.
-fn marked(context: &str, token: &str) -> impl IntoView + use<> {
-    let mut parts = Vec::new();
-    let mut rest = context;
-    while !token.is_empty()
-        && let Some(at) = rest.find(token)
-    {
-        parts.push(view! { <span>{rest[..at].to_owned()}</span><mark>{token.to_owned()}</mark> });
-        rest = &rest[at + token.len()..];
-    }
-    let tail = rest.to_owned();
-    view! { {parts}<span>{tail}</span> }
-}
-
 fn violations_view(violations: &[Value]) -> impl IntoView + use<> {
     let items: Vec<_> = violations
         .iter()
@@ -226,7 +230,7 @@ fn violations_view(violations: &[Value]) -> impl IntoView + use<> {
                     <b>{rule_text(violation["rule"].as_str().unwrap_or_default())}</b>
                     ": " <mark>{token.to_owned()}</mark>
                     {(!context.is_empty()).then(|| view! {
-                        <small class="context">{marked(context, token)}</small>
+                        <small class="context">{highlighted(context, &[token])}</small>
                     })}
                 </li>
             }
@@ -402,6 +406,9 @@ struct Outcome {
     /// conflict leaves it empty on purpose: the page then names the new head, and saving again
     /// after reading it is a choice.
     kept_expected: Option<i64>,
+    /// The form's text came through a conflict, or from a form that doesn't say where it came from, so
+    /// its base says nothing of that text. It stores a draft from here on, and says so.
+    not_from_base: bool,
 }
 
 fn csp(config: Option<&VoiceConfig>) -> String {
@@ -439,11 +446,11 @@ fn done_notice(done: &str, approved: bool, origin: Option<&str>) -> Option<Flash
             "Saved and approved: you changed text you had approved, so the change is yours."
         }
         ("saved", false, Some("dashboard")) => {
-            "Saved as a draft: it started from text that isn't approved. Read it under Approval, and approve it there."
+            "Saved as a draft. Read it under Approval, and approve it there."
         }
         ("reverted", true, Some("revert")) => "Reverted: the old text is now a new revision.",
         ("reverted", false, Some("revert")) => {
-            "Reverted: the old text is now a new revision. It isn't the text you last approved, so read it under Approval and approve it to use it."
+            "Reverted: the old text is now a new revision. It isn't approved, so read it under Approval and approve it to use it."
         }
         ("approved", true, _) => "Approved. The PDF of this revision now has no stamp.",
         _ => return None,
@@ -469,6 +476,18 @@ async fn render_variant(
     let review = owner::review(cv.mcp.clone(), variant)
         .await
         .map_err(|error| told(*error));
+    // The picture on the approval screen is this very compile's: a source can't pass this and then
+    // fail to draw when the page asks for its image.
+    if let Ok(review) = &review
+        && !review.previews.is_empty()
+    {
+        let (cache, version) = (cv.cache.clone(), review.facts_version);
+        let (key, pages) = (
+            format!("{}-draft", review.source_sha256),
+            review.previews.clone(),
+        );
+        let _ = tokio::task::spawn_blocking(move || cache.put(&key, version, &pages)).await;
+    }
     let revisions = call(
         cv,
         "list_cv_revisions",
@@ -503,8 +522,9 @@ async fn render_variant(
         .done
         .as_deref()
         .and_then(|done| done_notice(done, approved, head_origin));
-    // A save approves only on an approved base, so the button can say which this one does.
-    let saves_approved = approved && expected == head;
+    // A save approves only on an approved base, and only if its text came from there, so the button can
+    // say which this one does.
+    let saves_approved = approved && expected == head && !outcome.not_from_base;
     let body = view! {
         <p><a class="crumb" href="/cv">"\u{2190} CV"</a></p>
         <div class="hero">
@@ -567,20 +587,29 @@ fn state_badge(approved: bool) -> impl IntoView + use<> {
     }
 }
 
-/// `line`'s text with these tokens marked, wherever they stand exactly as listed, in any case.
+/// Where `token` stands in `text` as whole words, in any case. `I` marks a word, not the letter in
+/// `logistics`.
+fn whole_words(lower: &str, token: &str) -> Vec<(usize, usize)> {
+    let token = token.to_ascii_lowercase();
+    let is_word = |c: char| c.is_alphanumeric();
+    lower
+        .match_indices(&token)
+        .map(|(at, found)| (at, at + found.len()))
+        .filter(|(start, end)| {
+            !lower[..*start].chars().next_back().is_some_and(is_word)
+                && !lower[*end..].chars().next().is_some_and(is_word)
+        })
+        .collect()
+}
+
+/// `line`'s text with these tokens marked, wherever they stand exactly as listed, in any case, as whole
+/// words.
 fn highlighted(line: &str, tokens: &[&str]) -> impl IntoView + use<> {
     let lower = line.to_ascii_lowercase();
     let mut spots: Vec<(usize, usize)> = tokens
         .iter()
         .filter(|token| !token.is_empty())
-        .flat_map(|token| {
-            let token = token.to_ascii_lowercase();
-            let found: Vec<(usize, usize)> = lower
-                .match_indices(&token)
-                .map(|(at, found)| (at, at + found.len()))
-                .collect();
-            found
-        })
+        .flat_map(|token| whole_words(&lower, token))
         .collect();
     spots.sort_unstable();
     let mut parts = Vec::new();
@@ -662,7 +691,7 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
                     <mark>{item.token.clone()}</mark>" "
                     <b>{rule_text(&rule_of(item))}</b>
                     {(!context.is_empty()).then(|| view! {
-                        <small class="context">{marked(&context, &item.token)}</small>
+                        <small class="context">{highlighted(&context, &[item.token.as_str()])}</small>
                     })}
                 </li>
             }
@@ -694,7 +723,7 @@ fn approval_view(
                 .cloned()
                 .unwrap_or_default();
             view! {
-                <p class="banner warn" role="status">{explain(refused.code())}" It can't be approved like this."</p>
+                <p class="banner warn" role="status">{why_unreadable(refused.code())}" It can't be approved like this."</p>
                 {(!violations.is_empty()).then(|| violations_view(&violations))}
                 {(!diagnostics.is_empty()).then(|| diagnostics_view(&diagnostics))}
             }
@@ -705,10 +734,11 @@ fn approval_view(
         }
         .into_any(),
         Ok(review) => {
-            let against = review.baseline_revision.map_or_else(
-                || "Nothing is approved yet, so this is the whole CV. Every number and date is marked.".to_owned(),
-                |at| format!("Compared with revision {at}, the last you approved, however many drafts came between."),
-            );
+            let against = match review.baseline_revision {
+                None => "There is no approved text to compare with, so this is the whole CV. Every number and date is marked.".to_owned(),
+                Some(at) if review.baseline_is_own => format!("Compared with revision {at}, the last you approved in this variant, however many drafts came between."),
+                Some(at) => format!("Compared with revision {at}, which holds text you approved in another variant and haven't replaced there."),
+            };
             let action = if review.revision == 0 {
                 view! { <p class="hint">"This is the starting text, not stored yet. Saving it below stores it as a draft, for you to read and approve here."</p> }.into_any()
             } else if !review.locked {
@@ -735,12 +765,13 @@ fn approval_view(
                     .iter()
                     .all(|line| line.change == LineChange::Same);
             view! {
-                <p>"This revision isn't the text you last approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
+                <p>"This revision isn't approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
+                {picture_view(variant, review)}
                 {(!review.items.is_empty()).then(|| view! {
-                    <h3>"Check these first"</h3>
+                    <h3>"Check these in the text"</h3>
                     {review_items_view(&review.items)}
                 })}
-                <h3>"What a reader sees"</h3>
+                <h3>"What the text says"</h3>
                 <p class="hint">{against}</p>
                 {if looks_only {
                     view! {
@@ -752,11 +783,11 @@ fn approval_view(
                 } else {
                     rendered_diff_view(review).into_any()
                 }}
-                {action}
-                <details open=looks_only>
+                <details open>
                     <summary>"Source changes"</summary>
                     {diff_view(&review.source_diff)}
                 </details>
+                {action}
             }
             .into_any()
         }
@@ -766,6 +797,32 @@ fn approval_view(
             <h2>"Approval"</h2>
             <div class="card approval">{inner}</div>
         </section>
+    }
+}
+
+/// What the owner approves, as a reader gets it, above the button: text can read as something the
+/// page doesn't show. Wide enough to read on a phone, and a tap opens a page at full size.
+fn picture_view(variant: &str, review: &Review) -> impl IntoView + use<> {
+    let base = variant_url(variant);
+    let revision = review.revision;
+    let pages: Vec<_> = (1..=review.previews.len())
+        .map(|page| {
+            let url = format!("{base}/preview.png?revision={revision}&page={page}&state=draft");
+            let url = url.as_str();
+            view! {
+                <a class="picture-page" href=url.to_owned() target="_blank" rel="noopener">
+                    <img
+                        src=url.to_owned()
+                        alt=format!("Revision {revision}, page {page}, as a reader gets it, stamped. If you can't see it, don't approve this: reload.")
+                    />
+                </a>
+            }
+        })
+        .collect();
+    view! {
+        <h3>"The picture"</h3>
+        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text below. The stamp is no part of the CV. Tap a page to open it at full size."</p>
+        <div class="picture-pages" id="cv-picture-pages">{pages}</div>
     }
 }
 
@@ -856,9 +913,13 @@ fn editor_view(
             {outcome.typed_source.is_some().then(|| flash_view(outcome.flash.as_ref()))}
             {(!outcome.violations.is_empty()).then(|| violations_view(&outcome.violations))}
             {(!outcome.diagnostics.is_empty()).then(|| diagnostics_view(&outcome.diagnostics))}
-            <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-editor-form">
+            // No browser may give a reloaded page the text typed before it, under the new page's base.
+            <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-editor-form" autocomplete="off">
                 <input type="hidden" name="csrf" value=token.to_owned() />
                 <input type="hidden" name="expected" id="cv-expected" value=expected.to_string() />
+                {(!outcome.not_from_base).then(|| view! {
+                    <input type="hidden" name="fromBase" id="cv-from-base" value="1" />
+                })}
                 <label>"Typst source"
                     <textarea
                         name="source"
@@ -1003,10 +1064,11 @@ fn refused(told: &Told, mut outcome: Outcome) -> (StatusCode, Outcome) {
     if code == "cv_revision_conflict" {
         let current = told.value["error"]["currentRevision"].as_i64().unwrap_or(0);
         outcome.kept_expected = None;
+        outcome.not_from_base = true;
         outcome.flash = Some(Flash {
             ok: false,
             text: format!(
-                "Revision {current} landed while you were working, so nothing was stored. Your text is still below. Check the new revision under Revisions: saving again makes your text the newest one, and history keeps both."
+                "Revision {current} landed while you were working, so nothing was stored. Your text is still below. Check the new revision under Revisions: saving again stores your text as a draft, for you to read and approve, and history keeps both."
             ),
         });
         return (StatusCode::CONFLICT, outcome);
@@ -1057,10 +1119,12 @@ async fn save(
         read["revision"] = expected.into();
     }
     let base = call(&cv, "get_cv_source", read).await;
+    let from_base = form.contains_key("fromBase");
     let kept = Outcome {
         typed_source: Some(source.clone()),
         typed_summary: Some(typed_summary),
         kept_expected: Some(expected),
+        not_from_base: !from_base,
         ..Outcome::default()
     };
     if base.is_error {
@@ -1075,14 +1139,14 @@ async fn save(
     }
     let base_source = base.value["source"].as_str().unwrap_or_default();
     // The caller is what grants this: the owner's session, in this handler. Not `origin`, which is
-    // text any caller can send. It approves only on an approved base, and otherwise stores a draft.
-    let told = told(
-        owner::save(
-            cv.mcp.clone(),
-            &whole_source_edit(&variant, expected, base_source, &source, &summary),
-        )
-        .await,
-    );
+    // text any caller can send. It approves only on an approved base, and only with the mark of a form
+    // whose text came from there. Anything else stores a draft, so a lost mark can approve nothing.
+    let args = whole_source_edit(&variant, expected, base_source, &source, &summary);
+    let told = told(if from_base {
+        owner::save(cv.mcp.clone(), &args).await
+    } else {
+        owner::save_draft(cv.mcp.clone(), &args).await
+    });
     if !told.is_error {
         return Ok(Redirect::to(&format!(
             "{}?done=saved#cv-workspace",
@@ -1144,6 +1208,10 @@ async fn approve(
             render_variant(&cv, &variant, 1, &token, outcome).await?,
         ));
     }
+    outcome.flash = Some(Flash {
+        ok: false,
+        text: format!("{} Nothing was approved.", why_unreadable(told.code())),
+    });
     Ok(with_status(
         status,
         render_variant(&cv, &variant, 1, &token, outcome).await?,
@@ -1249,9 +1317,14 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
             pages,
         };
     }
-    let mut args = revision_args(variant, revision);
-    args["previewPages"] = PREVIEW_PAGES.into();
-    let told = call(cv, "render_cv_pdf", args).await;
+    let told = told(
+        owner::preview(
+            cv.mcp.clone(),
+            variant,
+            revision.filter(|number| *number > 0),
+        )
+        .await,
+    );
     if told.is_error {
         return Preview::Refused(Box::new(told));
     }
@@ -1296,9 +1369,11 @@ async fn preview_png(
         )
             .into_response(),
         Preview::Ready { .. } => StatusCode::NOT_FOUND.into_response(),
-        Preview::Refused(told) => {
-            (StatusCode::UNPROCESSABLE_ENTITY, explain(told.code())).into_response()
-        }
+        Preview::Refused(told) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            why_unreadable(told.code()),
+        )
+            .into_response(),
     }
 }
 
@@ -1324,7 +1399,7 @@ async fn preview_json(
                 .collect();
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Json(json!({"message": explain(told.code()), "tokens": tokens})),
+                Json(json!({"message": why_unreadable(told.code()), "tokens": tokens})),
             )
                 .into_response()
         }
@@ -1346,7 +1421,7 @@ async fn pdf(
             code => Ok(notice_page(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "No PDF for this revision",
-                explain(code),
+                why_unreadable(code),
             )),
         };
     }

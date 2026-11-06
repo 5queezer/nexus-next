@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use nexus_tailor::ReviewItem;
+use nexus_tailor::{MAX_PAGES, ReviewItem};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -23,11 +23,18 @@ pub struct Review {
     pub locked: bool,
     pub source_sha256: String,
     pub facts_sha256: String,
-    /// What a reader sees, and what an approval stores. Empty when already approved.
+    pub facts_version: i64,
+    /// What the check reads, and what an approval stores. A shape drawn over text can make it differ
+    /// from the picture. Empty when already approved.
     pub rendered_text: String,
-    /// The text last approved of this variant, or none for a first approval.
+    /// Every page, stamped, as PNG, from the same compile as `rendered_text`. Empty when already
+    /// approved.
+    pub previews: Vec<Vec<u8>>,
+    /// The approved text this draft is read against, or none if no approved text stands for it.
     pub baseline: Option<String>,
     pub baseline_revision: Option<i64>,
+    /// Whether the baseline is this variant's own newest approval, or text approved in another.
+    pub baseline_is_own: bool,
     /// Against `baseline`, uncapped and most serious first.
     pub items: Vec<ReviewItem>,
     /// The source against the last approved revision's.
@@ -80,12 +87,24 @@ pub async fn approve(
 /// the whole difference is then theirs. On a draft it stores a draft, for the review like any other.
 /// `args` are `patch_cv`'s, and validated the same.
 pub async fn save(state: Arc<McpState>, args: &Value) -> CallToolResult {
+    save_as(state, args, false).await
+}
+
+/// The owner's edit from a form a conflict moved to a new base, or one that doesn't say its text came
+/// from its base: that base then says nothing of the text, so this stores a draft whatever it is.
+pub async fn save_draft(state: Arc<McpState>, args: &Value) -> CallToolResult {
+    save_as(state, args, true).await
+}
+
+async fn save_as(state: Arc<McpState>, args: &Value, draft_only: bool) -> CallToolResult {
     let schema = all_tools()
         .iter()
         .find(|tool| tool["name"] == "patch_cv")
         .map_or(&Value::Null, |tool| &tool["inputSchema"]);
     match zod::parse("patch_cv", schema, Some(args)) {
-        Ok(args) => outcome(tools::patch_as(&ctx(state), &args, Some("dashboard")).await),
+        Ok(args) => {
+            outcome(tools::patch_as(&ctx(state), &args, Some("dashboard"), draft_only).await)
+        }
         Err(issues) => text_error(&issues),
     }
 }
@@ -101,6 +120,17 @@ pub async fn mark_applied(state: Arc<McpState>, args: &Value) -> CallToolResult 
         Ok(args) => outcome(tools::mark_applied(&ctx(state), &args).await),
         Err(issues) => text_error(&format!("MCP error -32602: {issues}")),
     }
+}
+
+/// A revision's picture for the owner: every page, where an agent's call gets three. `render_cv_pdf`'s
+/// answer, with the same check and the same stamp on a draft.
+pub async fn preview(state: Arc<McpState>, variant: &str, revision: Option<i64>) -> CallToolResult {
+    let mut args = json!({"variant": variant, "previewPages": MAX_PAGES});
+    if let Some(revision) = revision {
+        args["revision"] = revision.into();
+    }
+    let args = args.as_object().cloned().unwrap_or_default();
+    outcome(tools::render_as(&ctx(state), &args, false).await)
 }
 
 /// A revision's PDF for the owner to download: the real one when approved, the stamped one otherwise.

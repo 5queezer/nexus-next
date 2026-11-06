@@ -435,6 +435,20 @@ button.hold.holding { background: var(--warn); color: var(--surface); }
 .lock-list del { color: var(--del-ink); background: var(--del-bg); }
 .lock-list ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; }
 .preview-caption { margin: 6px 0 0; }
+/* Over 1 px to a point, where a CV's body text can be read on a phone. A narrower card scrolls sideways. */
+.picture-pages { display: grid; gap: 10px; margin: 8px 0 0; overflow-x: auto; }
+.picture-page { display: block; width: max(100%, 38rem); max-width: 50rem; }
+.picture-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: auto 210 / 297;
+  background: #fff;
+  color: #1d1f23;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.approval .diff { max-height: 24rem; overflow: auto; }
 
 @media (min-width: 40rem) {
   .approve-form button { width: auto; }

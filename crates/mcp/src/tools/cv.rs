@@ -201,7 +201,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         let known = known_to_owner(&mut conn, variant.as_ref(), &state.facts).await?;
         let variant_id = variant.as_ref().map(|variant| variant.id);
         let owner_approved_here = match variant_id {
-            Some(id) => approvals::newest_approved_by(&mut conn, id, &facts_sha256(&state.facts))
+            Some(id) => approvals::newest_approved_by(&mut conn, id)
                 .await?
                 .is_some_and(|by| by != "lock"),
             None => false,

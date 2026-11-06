@@ -2338,3 +2338,155 @@ async fn origins_that_claim_the_owner_are_refused_from_a_tool_call() {
     let free = patch(&server, 0, "Backend engineer", "Backend developer").await;
     assert_eq!(free.ok()["state"], "draft");
 }
+
+async fn patch_in(server: &Server, variant: &str, expected: i64, old: &str, new: &str) -> Value {
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": variant, "expectedRevision": expected, "summary": "An edit",
+                "origin": "test", "edits": [{"oldText": old, "newText": new}]}),
+        )
+        .await
+        .ok()
+}
+
+/// A new variant brought text back: what it is read against must not be that same replaced text.
+#[tokio::test]
+async fn a_new_variant_reads_against_no_text_the_owner_has_replaced() {
+    let server = locked_server().await;
+    let old = "Built the routing service.";
+    let (twenty, twelve) = ("Led a team of 20 engineers.", "Led a team of 12 engineers.");
+    patch(&server, 0, old, twenty).await.ok();
+    owner_approve(&server, "default").await;
+    patch(&server, 1, twenty, twelve).await.ok();
+    owner_approve(&server, "default").await;
+
+    let brought_back = server
+        .call(
+            "patch_cv",
+            json!({"variant": "laundry", "createFrom": "default", "expectedRevision": 2,
+                "summary": "New", "origin": "test",
+                "edits": [{"oldText": twelve, "newText": twenty}]}),
+        )
+        .await
+        .ok();
+    assert_eq!(brought_back["state"], "draft");
+    let review = owner::review(server.state.clone(), "laundry")
+        .await
+        .unwrap();
+    assert_eq!(review.baseline, None, "the whole CV shows");
+    assert_eq!(review.baseline_revision, None);
+
+    // Text still standing where it was approved is a baseline, as long as it stands.
+    let kept = server
+        .call(
+            "patch_cv",
+            json!({"variant": "kept", "createFrom": "default", "expectedRevision": 2,
+                "summary": "New", "origin": "test", "edits": []}),
+        )
+        .await
+        .ok();
+    assert_eq!(kept["state"], "approved", "{kept}");
+    patch_in(&server, "kept", 1, twelve, twenty).await;
+    let review = owner::review(server.state.clone(), "kept").await.unwrap();
+    assert!(review.baseline.unwrap().contains(twelve));
+    assert_eq!(review.baseline_revision, Some(1));
+
+    patch(&server, 2, twelve, "Led a team of 15 engineers.")
+        .await
+        .ok();
+    owner_approve(&server, "default").await;
+    let review = owner::review(server.state.clone(), "kept").await.unwrap();
+    assert_eq!(review.baseline, None, "replaced where it stood");
+}
+
+/// An approval under facts that came back doesn't outrank what the owner approved since.
+#[tokio::test]
+async fn a_fact_changed_and_changed_back_brings_back_nothing_the_owner_corrected() {
+    let server = locked_server().await;
+    let before = json!({"languages": [{"name": "German", "level": "C1"}]});
+    let during = json!({"languages": [{"name": "German", "level": "B2"}]});
+    let (superseded, corrected) = ("Holds a superseded claim.", "Holds the corrected claim.");
+    patch(&server, 0, "Built the routing service.", superseded)
+        .await
+        .ok();
+    owner_approve(&server, "default").await;
+    owner_set(&server, during.clone()).await;
+    patch(&server, 1, superseded, corrected).await.ok();
+    owner_approve(&server, "default").await;
+    owner_set(&server, before.clone()).await;
+
+    assert_eq!(
+        head_state(&server, "default").await,
+        "draft",
+        "an approval under other facts is no approval"
+    );
+    let reverted = revert(&server, 1, 2).await;
+    assert_eq!(reverted["state"], "draft", "{reverted}");
+    let rendered = server
+        .call("render_cv_pdf", json!({"previewPages": 0}))
+        .await
+        .ok();
+    assert_eq!(rendered["state"], "draft", "{rendered}");
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert_eq!(review.baseline, None, "nothing that stands to read against");
+
+    let copied = server
+        .call(
+            "patch_cv",
+            json!({"variant": "copy", "createFrom": "default", "expectedRevision": 3,
+                "summary": "New", "origin": "test", "edits": []}),
+        )
+        .await
+        .ok();
+    assert_eq!(copied["state"], "draft", "{copied}");
+
+    // The owner can stand by it again under these facts, and that then is what counts.
+    owner_approve(&server, "default").await;
+    assert_eq!(head_state(&server, "default").await, "approved");
+    let undone = revert(&server, 2, 3).await;
+    assert_eq!(undone["state"], "draft", "{undone}");
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert!(review.baseline.unwrap().contains(superseded));
+
+    // With nothing approved in between, a fact changed and changed back took nothing away.
+    owner_approve(&server, "default").await;
+    owner_set(&server, during).await;
+    assert_eq!(head_state(&server, "default").await, "draft");
+    owner_set(&server, before).await;
+    assert_eq!(head_state(&server, "default").await, "approved");
+}
+
+/// The lock path of the same case: wording the lock approved doesn't come back over the owner's own
+/// later approval, under whichever facts that was made.
+#[tokio::test]
+async fn a_lock_does_not_speak_over_what_the_owner_approved_under_other_facts() {
+    let server = locked_server().await;
+    let before = json!({"languages": [{"name": "German", "level": "C1"}]});
+    let during = json!({"languages": [{"name": "German", "level": "B2"}]});
+    let app = server.application("Acme").await;
+    let plain = generate_all(&app);
+    let first = server.call("generate_tailored_cv", plain.clone()).await;
+    assert_eq!(first.ok()["message"], "CV generated successfully");
+
+    // A lock's own approval under old facts doesn't stand in the way of the lock under new ones.
+    owner_set(&server, during.clone()).await;
+    let relocked = server.call("generate_tailored_cv", plain.clone()).await;
+    assert_eq!(relocked.ok()["message"], "CV generated successfully");
+
+    let mut edited = plain.clone();
+    edited["profileOverride"] = "Backend engineer, corrected by hand.".into();
+    let held = server.call("generate_tailored_cv", edited).await;
+    assert_eq!(held.code(), "cv_approval_required");
+    owner_approve(&server, &format!("application-{app}")).await;
+
+    owner_set(&server, before).await;
+    let documents = document_count(&server).await;
+    let back = server.call("generate_tailored_cv", plain.clone()).await;
+    assert_eq!(back.code(), "cv_approval_required");
+    assert_eq!(document_count(&server).await, documents);
+}

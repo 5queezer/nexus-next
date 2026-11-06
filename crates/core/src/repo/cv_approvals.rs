@@ -19,21 +19,21 @@ pub fn facts_sha256(facts: &Facts) -> String {
     sha256_hex(&renderable)
 }
 
-/// SQL saying whether a source is approved in a variant, under these facts. An approval the owner has
-/// since replaced in a variant stops counting there, so the text must be the variant's newest approved
-/// one. A variant with no approval of its own takes text from elsewhere, as long as that hasn't been
-/// replaced where it was approved: a new variant can't bring back what the owner corrected. Its
-/// arguments are SQL written in this file, never data.
+/// SQL saying whether a source is approved in a variant, under these facts. A variant's newest approval
+/// decides, under whichever facts it was made: the text is approved only if that row's source and
+/// facts both match, so an approval the owner has since replaced stops counting, even if the facts
+/// come back to what they were. A variant with no approval of its own takes text from elsewhere, as
+/// long as that is still the newest approval where it was made: a new variant can't bring back what
+/// the owner corrected. Its arguments are SQL written in this file, never data.
 fn approved_sql(variant: &str, source: &str, facts: &str) -> String {
     format!(
         "COALESCE(
-            {source} = (SELECT own.source_sha256 FROM cv_approvals own
-                WHERE own.variant_id = {variant} AND own.facts_sha256 = {facts}
+            (SELECT own.source_sha256 = {source} AND own.facts_sha256 = {facts} FROM cv_approvals own
+                WHERE own.variant_id = {variant}
                 ORDER BY own.id DESC LIMIT 1),
             EXISTS (SELECT 1 FROM cv_approvals a
                 WHERE a.source_sha256 = {source} AND a.facts_sha256 = {facts}
-                AND a.id = (SELECT max(b.id) FROM cv_approvals b
-                    WHERE b.variant_id = a.variant_id AND b.facts_sha256 = {facts}))
+                AND a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id))
         )"
     )
 }
@@ -54,19 +54,16 @@ pub async fn is_approved(
         .await?)
 }
 
-/// Who made a variant's newest approval under these facts, if it has one: a lock doesn't speak over
+/// Who made a variant's newest approval, under whichever facts, if it has one: a lock doesn't speak over
 /// the owner's own.
 pub async fn newest_approved_by(
     conn: &mut SqliteConnection,
     variant_id: i64,
-    facts_sha256: &str,
 ) -> Result<Option<String>> {
     Ok(sqlx::query_scalar(
-        "SELECT approved_by FROM cv_approvals WHERE variant_id = ? AND facts_sha256 = ?
-         ORDER BY id DESC LIMIT 1",
+        "SELECT approved_by FROM cv_approvals WHERE variant_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(variant_id)
-    .bind(facts_sha256)
     .fetch_optional(conn)
     .await?)
 }
@@ -82,15 +79,15 @@ pub struct NewApproval<'a> {
     pub approved_by: &'a str,
 }
 
-/// Run inside `Db::begin_write`. Approving what is the variant's newest approved text changes nothing.
-/// Approving what the owner replaced there makes it the newest again.
+/// Run inside `Db::begin_write`. Approving what is the variant's newest approval, under these same
+/// facts, changes nothing. Anything else becomes the newest, which is what decides.
 pub async fn record(conn: &mut SqliteConnection, new: &NewApproval<'_>) -> Result<()> {
     sqlx::query(
         "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
              revision_number, approved_by, approved_at)
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-         WHERE COALESCE(?1 <> (SELECT source_sha256 FROM cv_approvals
-             WHERE variant_id = ?4 AND facts_sha256 = ?2 ORDER BY id DESC LIMIT 1), 1)",
+         WHERE NOT COALESCE((SELECT source_sha256 = ?1 AND facts_sha256 = ?2 FROM cv_approvals
+             WHERE variant_id = ?4 ORDER BY id DESC LIMIT 1), 0)",
     )
     .bind(new.source_sha256)
     .bind(new.facts_sha256)
@@ -104,20 +101,25 @@ pub async fn record(conn: &mut SqliteConnection, new: &NewApproval<'_>) -> Resul
     Ok(())
 }
 
-/// What a variant's next draft is read against, and at which revision: its newest approval under these
-/// facts, or for a variant with none of its own, the newest approval of a text it holds. By approval,
-/// not revision number: a revert to older text must not hide the correction it undoes. Under other
-/// facts it is no baseline, since a line the owner has corrected would read as unchanged.
+/// What a variant's next draft is read against, at which revision, and whether the approval is its own.
+/// Its newest approval, if that was made under these facts: under others it is no baseline, since a
+/// line the owner has corrected would read as unchanged. For a variant with none of its own, the newest
+/// approval of a text it holds, if that is still the newest where it was made: replaced text would
+/// read as unchanged too. By approval, not revision number: a revert to older text must not hide the
+/// correction it undoes.
 pub async fn last_approved(
     conn: &mut SqliteConnection,
     variant: &Variant,
     facts_sha256: &str,
-) -> Result<Option<(String, i64)>> {
+) -> Result<Option<(String, i64, bool)>> {
     Ok(sqlx::query_as(
-        "SELECT a.rendered_text, r.number
+        "SELECT a.rendered_text, r.number, a.variant_id = ?1
          FROM cv_revisions r JOIN cv_approvals a ON a.source_sha256 = r.source_sha256
          WHERE r.variant_id = ?1 AND a.facts_sha256 = ?2
-         ORDER BY a.variant_id = ?1 DESC, a.id DESC, r.number DESC
+         AND a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id)
+         AND (a.variant_id = ?1
+             OR NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1))
+         ORDER BY a.id DESC, r.number DESC
          LIMIT 1",
     )
     .bind(variant.id)

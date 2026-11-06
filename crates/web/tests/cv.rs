@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
 use nexus_core::Db;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
-use nexus_core::repo::cv_facts;
+use nexus_core::repo::cv_facts::{self, OwnerFacts};
 use nexus_mcp::McpState;
 use nexus_web::{OPENAI_BASE_URL, VoiceConfig, VoiceKey};
 use serde_json::{Value, json};
@@ -200,6 +200,7 @@ async fn save(f: &Fixture, expected: i64, source: &str) -> (StatusCode, HeaderMa
         &[
             ("csrf", TOKEN),
             ("expected", &expected.to_string()),
+            ("fromBase", "1"),
             ("source", source),
             ("summary", "A human edit"),
         ],
@@ -1277,7 +1278,7 @@ async fn a_change_in_looks_says_so_and_opens_the_source() {
     assert!(page.contains("<details open"), "{page}");
     assert!(page.contains("#strike"), "the source diff is on the page");
 
-    // With a real wording change, the source stays folded and nothing is claimed.
+    // With a real wording change, nothing is claimed about looks.
     let (_, now) = head_of(&f).await;
     let worded = now.replace("Built the routing service.", "Built the routing engine.");
     let landed = agent_call(
@@ -1368,4 +1369,304 @@ async fn a_cached_clean_preview_is_not_served_for_text_since_replaced() {
     let edited = source.replace("Built the routing service.", "Built the routing engine.");
     assert_eq!(save(&f, 1, &edited).await.0, StatusCode::SEE_OTHER);
     assert_ne!(picture(&png).await, clean, "revision 1 has a stamp again");
+}
+
+/// Fields of the page's own editor form, as a browser sends them.
+fn editor_fields(page: &str) -> Vec<(String, String)> {
+    let form = &page[page.find("id=\"cv-editor-form\"").unwrap()..];
+    let form = &form[..form.find("</form>").unwrap()];
+    let mut fields: Vec<(String, String)> = form
+        .split("<input type=\"hidden\"")
+        .skip(1)
+        .map(|input| {
+            let attribute = |name: &str| {
+                let from = input.find(&format!("{name}=\"")).unwrap() + name.len() + 2;
+                unescape(input[from..].split('"').next().unwrap())
+            };
+            (attribute("name"), attribute("value"))
+        })
+        .collect();
+    fields.push(("source".to_owned(), editor_text(page)));
+    fields
+}
+
+async fn send_form(f: &Fixture, fields: &[(String, String)]) -> (StatusCode, HeaderMap, String) {
+    let fields: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    post(&f.app, &format!("{VARIANT}/save"), &fields).await
+}
+
+/// A conflict moves the form to the new head and keeps the typed text, so the form's base no longer
+/// says where that text came from. It stores a draft, even if the new head is approved.
+#[tokio::test]
+async fn a_form_sent_after_a_conflict_stores_a_draft_on_any_base() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Holds a Doctorate from Stanford.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains(">Save draft<"), "{page}");
+    let mut fields = editor_fields(&page);
+    let typed = editor_text(&page).replace("Backend engineer", "Backend developer");
+    fields.last_mut().unwrap().1 = typed.clone();
+
+    let reverted = agent_call(
+        &f,
+        "revert_cv",
+        json!({"toRevision": 1, "expectedRevision": 2}),
+    )
+    .await;
+    assert_eq!(reverted.structured_content.unwrap()["state"], "approved");
+    let approvals_before = approvals(&f.db).await;
+
+    let (status, _, page) = send_form(&f, &fields).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(editor_text(&page), typed);
+    assert_eq!(hidden(&page, "expected"), "3");
+    assert!(page.contains(">Save draft<"), "{page}");
+    assert!(!page.contains("Save and approve"), "{page}");
+
+    // The form sent again and refused for its text stays what it was.
+    let mut broken = editor_fields(&page);
+    broken.last_mut().unwrap().1 = format!("{typed}\n#nonsense(");
+    let (status, _, refused) = send_form(&f, &broken).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(refused.contains(">Save draft<"), "{refused}");
+
+    let (status, headers, _) = send_form(&f, &editor_fields(&page)).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, headers["location"].to_str().unwrap()).await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(page.contains("Saved as a draft"), "{page}");
+    assert!(
+        !page.contains("it started from text that isn't approved"),
+        "its base was approved: {page}"
+    );
+    assert_eq!(approvals(&f.db).await, approvals_before);
+}
+
+/// A form that doesn't say its text came from its base stores a draft: a lost mark can approve nothing.
+#[tokio::test]
+async fn a_form_without_the_mark_of_its_base_stores_a_draft() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let edited = source.replace("Built the routing service.", "Built the routing engine.");
+    let approvals_before = approvals(&f.db).await;
+    let (status, headers, _) = post(
+        &f.app,
+        &format!("{VARIANT}/save"),
+        &[
+            ("csrf", TOKEN),
+            ("expected", "1"),
+            ("source", &edited),
+            ("summary", "x"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, headers["location"].to_str().unwrap()).await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert_eq!(approvals(&f.db).await, approvals_before);
+}
+
+/// A browser may give a reloaded or revisited page the text typed before it, under the new page's base.
+#[tokio::test]
+async fn the_editor_form_keeps_no_typing_across_a_reload() {
+    let f = locked().await;
+    approved_start(&f).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let opening = page[..page.find("id=\"cv-editor-form\"").unwrap()]
+        .rfind("<form")
+        .unwrap();
+    let tag = page[opening..].split('>').next().unwrap();
+    assert!(tag.contains("autocomplete=\"off\""), "{tag}");
+}
+
+/// Finding 5: one changed word elsewhere must not fold what shows a change in looks.
+#[tokio::test]
+async fn every_draft_opens_its_source_changes() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the #strike[routing] service well.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("cv-looks-only"), "words changed too: {page}");
+    assert!(page.contains("<details open"), "{page}");
+    assert!(page.contains("#strike[routing]"), "{page}");
+}
+
+/// Finding 11: a one-letter word marks itself, and not every word that holds its letter.
+#[tokio::test]
+async fn a_word_is_marked_where_it_stands_whole() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "I am certified as a logistics auditor in Italy.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(page.contains(">I</mark>"), "{page}");
+    assert!(
+        !page.contains(">i</mark>"),
+        "marked inside logistics: {page}"
+    );
+}
+
+/// The approval screen: the picture before the button, and text that says what it is.
+#[tokio::test]
+async fn the_approval_screen_shows_the_picture_before_the_button() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "I am #strike[not] certified.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("What a reader sees"), "{page}");
+    assert!(page.contains("What the text says"), "{page}");
+    let panel = &page[page.find("id=\"cv-approval\"").unwrap()..];
+    let picture = panel
+        .find("preview.png?revision=2&amp;page=1")
+        .unwrap_or_else(|| {
+            panic!("no picture in the panel: {panel}");
+        });
+    let button = panel.find("class=\"approve-form\"").unwrap();
+    let read = panel.find("Read the picture").unwrap();
+    assert!(read < picture && picture < button, "{panel}");
+    let to_full_size = &panel[..picture];
+    assert!(
+        to_full_size
+            .rfind("<a ")
+            .is_some_and(|at| panel[at..picture].contains("href=")),
+        "a tap opens the page at full size: {panel}"
+    );
+}
+
+/// Page text about what it reads against says only what is true of this variant.
+#[tokio::test]
+async fn the_page_says_truly_what_a_draft_is_read_against() {
+    let f = locked().await;
+    approved_start(&f).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("the last you approved"), "approved: {page}");
+
+    let page_of = async |variant: &str| get(&f.app, &format!("/cv/variants/{variant}")).await.2;
+    let call = async |args: Value| {
+        let reply = agent_call(&f, "patch_cv", args).await;
+        assert_ne!(reply.is_error, Some(true), "{reply:?}");
+    };
+    call(
+        json!({"variant": "copy", "createFrom": "default", "expectedRevision": 1,
+        "summary": "New", "edits": []}),
+    )
+    .await;
+    call(json!({"variant": "copy", "expectedRevision": 1, "summary": "Edit",
+        "edits": [{"oldText": "Built the routing service.", "newText": "Built the routing engine."}]}))
+    .await;
+    let page = page_of("copy").await;
+    assert!(page.contains("in another variant"), "{page}");
+    assert!(!page.contains("the last you approved"), "{page}");
+
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the routing core.",
+    )
+    .await;
+    let page = page_of("default").await;
+    assert!(
+        page.contains("the last you approved in this variant"),
+        "{page}"
+    );
+
+    // The same text, under a fact changed since: "isn't the text you last approved" would be false.
+    agent_call(
+        &f,
+        "revert_cv",
+        json!({"toRevision": 1, "expectedRevision": 2}),
+    )
+    .await;
+    let fields: OwnerFacts =
+        serde_json::from_value(json!({"languages": [{"name": "German", "level": "B2"}]})).unwrap();
+    let mut tx = f.db.begin_write().await.unwrap();
+    cv_facts::set_owner_facts(&mut tx, &fields, "test")
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let page = page_of("default").await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(!page.contains("isn't the text you last approved"), "{page}");
+    assert!(!page.contains("Nothing is approved yet"), "{page}");
+    assert!(page.contains("no approved text to compare with"), "{page}");
+}
+
+/// A stored revision that can't be drawn: no form, a refused tap, and no claim that nothing is stored.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revision_too_heavy_to_draw_says_so_and_cant_be_approved() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let shown = [
+        ("csrf", TOKEN.to_owned()),
+        ("revision", hidden(&page, "revision")),
+        ("sourceSha256", hidden(&page, "sourceSha256")),
+        ("factsSha256", hidden(&page, "factsSha256")),
+    ];
+    let worker = f.dir.path().join("heavy-worker");
+    std::fs::write(&worker, "#!/bin/sh\nexec /usr/bin/sleep 60\n").unwrap();
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let heavy = McpState::new(
+        f.db.clone(),
+        "owner-1".to_owned(),
+        "owner@example.com".to_owned(),
+        nexus_mcp::Renderer::Subprocess {
+            exe: worker,
+            rss_limit_bytes: 1,
+            timeout: Duration::from_secs(20),
+        },
+    );
+    let app = build(&heavy, &f.dir, None);
+    let (_, _, page) = get(&app, VARIANT).await;
+    assert!(!page.contains("class=\"approve-form\""), "{page}");
+    assert!(page.contains("too much memory"), "{page}");
+    assert!(!page.contains("Nothing was stored"), "it is stored: {page}");
+    let (status, _, json) = get(&app, &format!("{VARIANT}/preview.json?revision=2")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(json.contains("too much memory"), "{json}");
+    assert!(!json.contains("Nothing was stored"), "it is stored: {json}");
+
+    let approvals_before = approvals(&f.db).await;
+    let fields: Vec<(&str, &str)> = shown.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (status, _, page) = post(&app, &format!("{VARIANT}/approve"), &fields).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!page.contains("Nothing was stored"), "{page}");
+    assert!(page.contains("Nothing was approved"), "{page}");
+    assert_eq!(approvals(&f.db).await, approvals_before);
 }

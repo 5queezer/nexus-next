@@ -436,3 +436,142 @@ async fn nothing_an_agent_wrote_reaches_the_owners_terminal_raw() {
     assert!(shown.contains("The wording is unchanged"), "{shown}");
     assert!(shown.contains("+#strong[#header()]"), "{shown}");
 }
+
+/// What a terminal of this size still shows at the end of `output`.
+fn last_screen(output: &Output, rows: usize, columns: usize) -> String {
+    let bytes = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut screen: Vec<String> = Vec::new();
+    for line in text.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            screen.push(String::new());
+        }
+        for row in chars.chunks(columns) {
+            screen.push(row.iter().collect());
+        }
+    }
+    screen[screen.len().saturating_sub(rows)..].join("\n")
+}
+
+/// Line breaks and long values in what an agent wrote can't scroll the facts off the owner's screen,
+/// and a value too long to print says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_an_agent_wrote_scrolls_the_lock_list_off_the_terminal() {
+    let breaks = "\n".repeat(70);
+    let long = "y".repeat(100_000);
+    for (name, id, company) in [
+        ("line breaks", format!("{breaks}y"), "Second".to_owned()),
+        (
+            "carriage returns",
+            format!("{}y", "\r".repeat(70)),
+            "Second".to_owned(),
+        ),
+        (
+            "other separators",
+            format!("{}y", "\u{2028}\u{2029}\u{85}\u{b}\u{c}".repeat(14)),
+            "Second".to_owned(),
+        ),
+        ("a long id", long.clone(), "Second".to_owned()),
+        ("a long value", "second".to_owned(), long.clone()),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (node, token) = Node::create(root.path(), &[]).await;
+        let agent = Agent::new(node.addr, &token);
+        let mut hostile = profile();
+        hostile["experience"] = json!([
+            {"id": "fake", "company": "Fake Inc", "title": "CEO", "date": "2020", "location": "Bonn",
+             "tier": 1, "bullets": []},
+            {"id": id, "company": company, "title": "Clerk", "date": "2021", "location": "Kiel",
+             "tier": 1, "bullets": []},
+        ]);
+        agent.ok("upsert_cv_profile", hostile).await;
+        let refused = cv_facts(&node.dir, &["lock"]);
+        assert!(!refused.status.success(), "{name}");
+        let screen = last_screen(&refused, 50, 200);
+        assert!(screen.contains("Fake Inc"), "{name}: {screen}");
+        assert!(screen.contains("CEO"), "{name}: {screen}");
+        assert!(screen.contains("--confirm"), "{name}: {screen}");
+        if name.starts_with("a long") {
+            assert!(screen.contains("more characters"), "{name}: {screen}");
+        }
+    }
+}
+
+/// A worker that does what the real one does, except that it can't draw: what a source does when it
+/// fits in memory until its pages are drawn. Whatever asks it to draw is told so.
+fn worker_that_cannot_draw(root: &Path) -> nexus_mcp::Renderer {
+    use std::os::unix::fs::PermissionsExt;
+    let real = env!("CARGO_BIN_EXE_nexus");
+    let worker = root.join("worker");
+    std::fs::write(
+        &worker,
+        format!(
+            "#!/bin/sh\ninput=$(/usr/bin/cat)\ncase \"$input\" in\n*'\"previewPages\":0,'*) \
+             printf '%s' \"$input\" | exec {real} __render ;;\n*) exit 9 ;;\nesac\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&worker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    nexus_mcp::Renderer::Subprocess {
+        exe: worker,
+        rss_limit_bytes: 512 * 1024 * 1024,
+        timeout: Duration::from_secs(30),
+    }
+}
+
+/// The owner's two steps draw what the preview draws: a source that can be stored and can't be drawn
+/// has nothing to read, and so nothing to approve.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_that_cannot_be_drawn_cannot_be_reviewed_or_approved() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    agent.ok("upsert_cv_profile", profile()).await;
+    lock_confirmed(&node.dir);
+    let source = agent.ok("get_cv_source", json!({})).await;
+    let source = source["source"].as_str().unwrap().to_owned();
+    let drafted = source.replace("Cut invoice errors", "Cut most invoice errors");
+    let patched = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": 0, "summary": "Edit",
+                "edits": [{"oldText": source, "newText": drafted}]}),
+        )
+        .await;
+    assert_eq!(patched["state"], "draft", "{patched}");
+
+    let db = nexus_core::Db::open(&node.dir).await.unwrap();
+    let state = std::sync::Arc::new(nexus_mcp::McpState::new(
+        db.clone(),
+        "owner".to_owned(),
+        "owner@example.test".to_owned(),
+        nexus_mcp::Renderer::Subprocess {
+            exe: env!("CARGO_BIN_EXE_nexus").into(),
+            rss_limit_bytes: 512 * 1024 * 1024,
+            timeout: Duration::from_secs(30),
+        },
+    ));
+    let review = nexus_mcp::owner::review(state, "default").await.unwrap();
+
+    let limited = nexus_mcp::McpState::new(
+        db,
+        "owner".to_owned(),
+        "owner@example.test".to_owned(),
+        worker_that_cannot_draw(root.path()),
+    );
+    let limited = std::sync::Arc::new(limited);
+    let refused = nexus_mcp::owner::review(limited.clone(), "default").await;
+    assert!(refused.is_err(), "a review with no picture: {refused:?}");
+    let tap = nexus_mcp::owner::approve(
+        limited,
+        "default",
+        review.revision,
+        &review.source_sha256,
+        &review.facts_sha256,
+        "dashboard",
+    )
+    .await;
+    assert_eq!(tap.is_error, Some(true), "approved unseen: {tap:?}");
+    assert_eq!(node.count("SELECT count(*) FROM cv_approvals").await, 0);
+}

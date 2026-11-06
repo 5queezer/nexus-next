@@ -103,8 +103,11 @@
     const nextExpected = fresh.getElementById("cv-expected");
     if (editor && nextExpected) {
       if (byId("cv-expected").value === nextExpected.value) {
-        // The same base, approved since: the button says what a save does now.
-        byId("cv-save").replaceWith(document.adoptNode(fresh.getElementById("cv-save")));
+        // The same base, approved since: the button says what a save does now. A form that came
+        // through a conflict stores a draft, whatever a fresh page's button would say.
+        if (byId("cv-from-base")) {
+          byId("cv-save").replaceWith(document.adoptNode(fresh.getElementById("cv-save")));
+        }
         setNote(byId("cv-live-note"), note);
       } else {
         setNote(
