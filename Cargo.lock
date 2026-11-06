@@ -3072,6 +3072,7 @@ dependencies = [
  "nexus-mcp",
  "nexus-tailor",
  "nexus-web",
+ "png",
  "reqwest",
  "rpassword",
  "serde_json",
@@ -3083,6 +3084,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

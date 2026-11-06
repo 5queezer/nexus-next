@@ -235,9 +235,15 @@ async fn locked_changes(
     if *education != stored_education.0 {
         fields.push("education".to_owned());
     }
-    for entry in employment.as_array().map_or(&[][..], Vec::as_slice) {
+    let facts = &state.facts.employment;
+    let entries = employment.as_array().map_or(&[][..], Vec::as_slice);
+    for (index, entry) in entries.iter().enumerate() {
         let given: Employment = serde_json::from_value(entry.clone()).unwrap_or_default();
-        let Some(fact) = state.facts.employment.iter().find(|e| e.id == given.id) else {
+        let fact = facts
+            .get(index)
+            .filter(|fact| fact.id == given.id)
+            .or_else(|| facts.iter().find(|fact| fact.id == given.id));
+        let Some(fact) = fact else {
             fields.push(format!("experience.{}", given.id));
             continue;
         };

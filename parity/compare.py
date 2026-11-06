@@ -25,7 +25,14 @@ Per-call modes, set in the scenario and copied to the trace:
                             by flags first, so comparing by position compares the multisets.
   compare: "batch-results"  Exact, except that a per-item error holding a Prisma message only has
                             to be some error on the other side.
+  compare: "pdf-size"       Exact, except the top-level "size": the same request renders different PDF
+                            bytes, because old Nexus used react-pdf and this server uses Typst.
+  compare: "tools-prefix"   The second list starts with exactly the first, and what follows is
+                            exactly contract/mcp-tools.additive.json.
   allowDiff: "<reason>"     Differences are listed as documented and do not fail the run.
+
+Modes are read from the second trace, so a recorded baseline need not be re-recorded when a scenario's
+mode changes. They come from the committed scenarios either way.
 
 Option --unordered KEY sorts arrays of records under KEY by id on both sides first. Old Nexus returned
 `contacts` and document `applications` in Postgres heap order, which no later read or restore promises,
@@ -219,6 +226,16 @@ def compare_call(call, a, b, show):
         out = []
         diff(error_flags(a), error_flags(b), "$", show, out)
         return out
+    if mode == "pdf-size":
+        a, b = (({**side, "json": {k: v for k, v in side.get("json", {}).items() if k != "size"}}) for side in (a, b))
+    if mode == "tools-prefix":
+        additive = json.loads((HERE.parent / "contract" / "mcp-tools.additive.json").read_text())["tools"]
+        tools = b.get("json", {}).get("tools", [])
+        first = a.get("json", {}).get("tools", [])
+        out = []
+        diff(first, tools[: len(first)], "$.frozen", show, out)
+        diff(additive, tools[len(first) :], "$.additive", show, out)
+        return out
     if mode == "batch-results":
         for left, right in zip(a.get("json", {}).get("results", []), b.get("json", {}).get("results", [])):
             if PRISMA_ERROR in str(left.get("error", "")) and right.get("error"):
@@ -257,14 +274,14 @@ def main():
             row["calls"] += 1
             if other.get("expectFailures"):
                 failures.append(f"{name} call {index} {call['tool']}: candidate failed expectation on {', '.join(other['expectFailures'])}")
-            problems = [f"tool {call['tool']} vs {other['tool']}"] if call["tool"] != other["tool"] else compare_call(call, a, b, args.show_values)
-            if call.get("compare"):
+            problems = [f"tool {call['tool']} vs {other['tool']}"] if call["tool"] != other["tool"] else compare_call(other, a, b, args.show_values)
+            if other.get("compare"):
                 row["relaxed"] += 1
             if not problems:
                 row["pass"] += 1
-            elif call.get("allowDiff"):
+            elif other.get("allowDiff"):
                 row["documented"] += 1
-                documented.append(f"{name} call {index} {call['tool']}: {call['allowDiff']}")
+                documented.append(f"{name} call {index} {call['tool']}: {other['allowDiff']}")
             else:
                 row["fail"] += 1
                 head = f"{name} call {index} {call['tool']}"

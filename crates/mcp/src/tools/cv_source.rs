@@ -708,3 +708,42 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
 pub(super) fn application_variant(application_id: i64) -> String {
     format!("{RESERVED_VARIANT_PREFIX}{application_id}")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nexus_core::Db;
+    use nexus_tailor::Renderer;
+
+    use super::*;
+    use crate::McpState;
+
+    #[tokio::test]
+    async fn waiting_for_a_render_ends_in_a_clear_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let held = state.render_slot.clone().acquire_owned().await.unwrap();
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+        };
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let error = compile(&ctx, "= CV", &Facts::default(), false, 0)
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() >= RENDER_QUEUE_WAIT);
+        assert_eq!(error.is_error, Some(true));
+        let text = serde_json::to_string(&error.structured_content).unwrap();
+        assert!(text.contains("cv_render_busy"), "{text}");
+        drop(held);
+    }
+}

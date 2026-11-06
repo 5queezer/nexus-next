@@ -40,6 +40,8 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 base64.workspace = true
 futures-util = { version = "0.3", default-features = false }
+png.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["io-util", "test-util"] }
 tower.workspace = true
+url.workspace = true

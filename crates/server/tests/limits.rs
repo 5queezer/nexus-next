@@ -561,6 +561,27 @@ async fn a_download_holds_a_large_slot_until_its_response_is_written() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_cv_render_takes_the_same_large_slots_as_a_download() {
+    let app = call_route();
+    let render = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "render_cv_pdf", "arguments": {}},
+    });
+    let mut open = Vec::new();
+    for _ in 0..MAX_LARGE_BODIES {
+        let response = app.clone().oneshot(call(render.clone())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        open.push(response);
+    }
+    let refused = app.clone().oneshot(call(render.clone())).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let refused = app.oneshot(call(download_call())).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
 #[tokio::test]
 async fn a_batch_cannot_ask_for_more_downloads_than_there_are_slots() {
     let batch = vec![download_call(); MAX_LARGE_BODIES + 1];

@@ -11,6 +11,7 @@ use age::x25519;
 use nexus_core::Db;
 use nexus_core::repo::applications::{self, ApplicationFields};
 use nexus_core::repo::documents::{self, NewDocument};
+use nexus_core::repo::{cv, cv_facts, cv_revisions};
 use nexus_server::backup::{self, read_recipients};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Connection};
@@ -93,6 +94,84 @@ fn blob_names(data_dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+#[tokio::test]
+async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
+    let keys = new_keys();
+    let recipients = read_recipients(&keys.recipient_file).unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    add_application_with_document(&db, 0).await;
+    let mut tx = db.begin_write().await.unwrap();
+    let input = cv::CvProfileInput {
+        name: "Mara Example".to_owned(),
+        contact: serde_json::json!({"email": "mara@example.test"}),
+        profile: "Summary with 7 words.".to_owned(),
+        skills: serde_json::json!([]),
+        experience: serde_json::json!([{"id": "a", "company": "Acme", "title": "Engineer",
+            "date": "2020", "location": "Kiel", "tier": 1, "bullets": []}]),
+        projects: None,
+        education: None,
+    };
+    cv::upsert_profile(&mut tx, &input).await.unwrap();
+    cv_facts::lock(&mut tx, "test").await.unwrap();
+    let default = cv_revisions::get_variant(&mut tx, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    cv_revisions::append(
+        &mut tx,
+        default.id,
+        &cv_revisions::NewRevision {
+            source: "= CV",
+            origin: "test",
+            summary: "first",
+            facts_version: 3,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let out = source.path().join("backup.age");
+    backup::backup(source.path(), &out, &recipients)
+        .await
+        .unwrap();
+    db.close().await;
+
+    let target = tempfile::tempdir().unwrap();
+    backup::restore(&out, &keys.identity_file, target.path(), false, false)
+        .await
+        .unwrap();
+    let restored = Db::open(target.path()).await.unwrap();
+    let mut conn = restored.conn().await.unwrap();
+    let state = cv_facts::get(&mut conn).await.unwrap();
+    assert!(state.is_locked());
+    assert_eq!(state.facts.allowed_tokens, ["7"]);
+    let profile = cv::get_profile(&mut conn).await.unwrap().unwrap();
+    assert_eq!(profile.experience.0[0]["company"], "Acme");
+    let variant = cv_revisions::get_variant(&mut conn, "default")
+        .await
+        .unwrap()
+        .unwrap();
+    let head = cv_revisions::head(&mut conn, variant.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((head.number, head.source.as_str()), (1, "= CV"));
+    let history: i64 = sqlx::query_scalar("SELECT count(*) FROM cv_facts_history")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert_eq!(history, 1);
+    let update = sqlx::query("UPDATE cv_revisions SET source = 'x'")
+        .execute(&mut *conn)
+        .await;
+    assert!(update.is_err(), "the triggers came along");
+    drop(conn);
+    restored.close().await;
 }
 
 #[tokio::test]

@@ -17,6 +17,7 @@
           "revision": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 2147483647,
             "description": "A stored revision to read. Omit for the head."
           }
         },
@@ -42,6 +43,7 @@
           "expectedRevision": {
             "type": "integer",
             "minimum": 0,
+            "maximum": 2147483647,
             "description": "The revision these edits were written against, from get_cv_source. With createFrom, the head of that variant."
           },
           "edits": {
@@ -113,6 +115,7 @@
           "revision": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 2147483647,
             "description": "A stored revision to render. Omit for the head."
           },
           "previewPages": {
@@ -149,6 +152,7 @@
           "page": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 2147483647,
             "default": 1
           },
           "pageSize": {
@@ -185,11 +189,13 @@
           "toRevision": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 2147483647,
             "description": "The revision whose source to restore."
           },
           "expectedRevision": {
             "type": "integer",
             "minimum": 1,
+            "maximum": 2147483647,
             "description": "The variant's current head."
           }
         },
