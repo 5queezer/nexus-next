@@ -21,11 +21,13 @@ pub use http::router;
 pub use rmcp::model::CallToolResult;
 
 /// Runs one tool for a caller inside this process: the same validation, handlers and error codes
-/// as the HTTP route. `scopes` are the grants the caller holds, so a caller without `mcp:tools`
+/// as the HTTP route. `source` is who is calling (`mcp` on the route, `dashboard` for a person's click) and is stored on every event the call writes.
+/// `scopes` are the grants the caller holds, so a caller without `mcp:tools`
 /// is refused and one without `mcp:submissions` can't reach submission data.
 pub async fn call_tool(
     state: Arc<McpState>,
     scopes: &[&str],
+    source: &'static str,
     name: &str,
     args: Value,
 ) -> CallToolResult {
@@ -36,7 +38,7 @@ pub async fn call_tool(
     if !auth.has_scope(SCOPE_TOOLS) {
         return tools::code_error("insufficient_scope");
     }
-    tools::call(state, &auth, name, Some(args)).await
+    tools::call(state, &auth, source, name, Some(args)).await
 }
 
 const SNAPSHOT: &str = include_str!("../../../contract/mcp-tools.snapshot.json");
@@ -105,9 +107,11 @@ impl ServerHandler for Handler {
             .cloned()
             .ok_or_else(|| ErrorData::internal_error("missing auth context", None))?;
         let args = request.arguments.map(Value::Object);
-        Ok(tools::call(self.state.clone(), &auth, &request.name, args)
-            .await
-            .into())
+        Ok(
+            tools::call(self.state.clone(), &auth, "mcp", &request.name, args)
+                .await
+                .into(),
+        )
     }
 }
 

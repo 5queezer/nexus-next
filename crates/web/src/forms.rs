@@ -326,7 +326,9 @@ pub(crate) async fn submit(
             if needs_confirmation(kind, &form) && field(&form, "confirm") != "1" {
                 return Ok(confirm_page(&application, kind, &form, &token));
             }
-            let result = nexus_mcp::call_tool(dash.mcp.clone(), &[SCOPE_TOOLS], name, args).await;
+            let result =
+                nexus_mcp::call_tool(dash.mcp.clone(), &[SCOPE_TOOLS], "dashboard", name, args)
+                    .await;
             let result = serde_json::to_value(&result).unwrap_or_default();
             if result["isError"] != json!(true) {
                 return Ok(

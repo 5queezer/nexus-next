@@ -130,6 +130,64 @@ fn location(headers: &HeaderMap) -> &str {
     headers["location"].to_str().unwrap()
 }
 
+async fn sources(db: &Db, id: i64) -> Vec<String> {
+    events::list_for_application(&mut db.conn().await.unwrap(), id, Some(500))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|event| event.source.unwrap_or_default())
+        .collect()
+}
+
+#[tokio::test]
+async fn events_from_forms_say_dashboard_and_from_the_tool_route_say_mcp() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "inbound").await;
+    submit(&f, id, "note", &[("note", "n")]).await;
+    let own = [
+        ("what", "interview"),
+        ("detail", "Phone"),
+        ("when", "2030-05-06T10:30"),
+    ];
+    submit(&f, id, "event", &own).await;
+    submit(&f, id, "event", &[("what", "applied"), ("confirm", "1")]).await;
+    submit(&f, id, "event", &[("what", "offer"), ("confirm", "1")]).await;
+    submit(&f, id, "event", &[("what", "rejected"), ("confirm", "1")]).await;
+    submit(
+        &f,
+        id,
+        "event",
+        &[("what", "follow_up"), ("when", "2030-06-01T09:00")],
+    )
+    .await;
+    // These forms write no event, so there is no source to get wrong.
+    submit(&f, id, "triage", &[("rating", "3")]).await;
+    submit(&f, id, "contact", &[("name", "Pat")]).await;
+    submit(&f, id, "archive", &[("confirm", "1")]).await;
+    submit(&f, id, "unarchive", &[]).await;
+    let stored = sources(&f.db, id).await;
+    assert_eq!(stored.len(), 6, "{stored:?}");
+    assert!(stored.iter().all(|s| s == "dashboard"), "{stored:?}");
+
+    let args = serde_json::json!({"applicationId": id.to_string(), "note": "from an agent", "occurredAt": "2030-01-01T00:00:00.000Z", "idempotencyKey": "agent-key-1"});
+    let state = std::sync::Arc::new(f.state.clone());
+    let done = nexus_mcp::call_tool(
+        state,
+        &[SCOPE_TOOLS],
+        "mcp",
+        "append_application_note",
+        args,
+    )
+    .await;
+    assert_ne!(serde_json::to_value(&done).unwrap()["isError"], true);
+    let stored = sources(&f.db, id).await;
+    assert_eq!(
+        stored.iter().filter(|s| *s == "mcp").count(),
+        1,
+        "{stored:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_note_is_appended_once_and_shown() {
     let f = fixture().await;
@@ -526,6 +584,7 @@ async fn the_tool_entry_point_still_refuses_mixed_lifecycle_calls_whole() {
     let result = nexus_mcp::call_tool(
         std::sync::Arc::new(f.state.clone()),
         &[SCOPE_TOOLS],
+        "mcp",
         "update_application",
         args,
     )
@@ -542,6 +601,7 @@ async fn the_tool_entry_point_still_refuses_mixed_lifecycle_calls_whole() {
     let none = nexus_mcp::call_tool(
         std::sync::Arc::new(f.state.clone()),
         &[],
+        "mcp",
         "get_application",
         serde_json::json!({"id": "1"}),
     )

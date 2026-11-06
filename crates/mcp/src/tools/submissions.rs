@@ -547,7 +547,7 @@ async fn run_record(ctx: &Ctx, args: &Args) -> Result<Value, Thrown> {
             idempotency_key: Some(event_key),
             request_hash: None,
             occurred_at: Some(submitted_at.clone()),
-            source: Some("mcp".to_owned()),
+            source: Some(ctx.source.to_owned()),
             actor: Some(ctx.state.owner_email.clone()),
             contact_id: None,
             outcome: None,
