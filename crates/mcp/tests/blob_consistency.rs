@@ -65,7 +65,10 @@ async fn deleting_a_document_keeps_a_blob_another_one_shares() {
     let sha256 = sha256_hex(&bytes);
     let first = upload(&server, "first.pdf", &bytes).await;
     let second = upload(&server, "second.pdf", &bytes).await;
-    assert_eq!(server.db.blobs().list().unwrap(), [sha256.clone()]);
+    assert_eq!(
+        server.db.blobs().list().unwrap(),
+        std::slice::from_ref(&sha256)
+    );
 
     let reply = server
         .call("delete_document", json!({"id": first["id"]}))
@@ -91,7 +94,10 @@ async fn an_upload_interrupted_before_its_row_leaves_nothing_visible_and_a_retry
 
     let listed = server.call("list_documents", json!({})).await.ok();
     assert_eq!(listed, json!([]));
-    assert_eq!(server.db.blobs().list().unwrap(), [sha256.clone()]);
+    assert_eq!(
+        server.db.blobs().list().unwrap(),
+        std::slice::from_ref(&sha256)
+    );
 
     let retried = upload(&server, "retried.pdf", &bytes).await;
     assert_eq!(retried["contentHash"], json!(sha256));

@@ -134,12 +134,7 @@ impl Node {
 
     /// A read-only connection for audits, safe while the server runs.
     pub async fn audit_connection(&self) -> SqliteConnection {
-        SqliteConnectOptions::new()
-            .filename(self.dir.join("nexus.db"))
-            .read_only(true)
-            .connect()
-            .await
-            .unwrap()
+        Self::audit_of(&self.dir).await
     }
 
     /// Fails on corruption or a dangling foreign key.
@@ -198,14 +193,13 @@ impl Node {
     }
 
     /// A read-only connection to any data directory, for restored copies.
-    pub async fn audit_of(dir: &Path) -> tokio::sync::Mutex<SqliteConnection> {
-        let conn = SqliteConnectOptions::new()
+    pub async fn audit_of(dir: &Path) -> SqliteConnection {
+        SqliteConnectOptions::new()
             .filename(dir.join("nexus.db"))
             .read_only(true)
             .connect()
             .await
-            .unwrap();
-        tokio::sync::Mutex::new(conn)
+            .unwrap()
     }
 
     /// Peak resident memory in MiB, and current WAL size in MiB.

@@ -314,16 +314,16 @@ async fn backup_and_restore_under_load(node: &Node, root: &std::path::Path) {
     );
     restored.kill().unwrap();
     restored.wait().unwrap();
-    let audit = Node::audit_of(&target).await;
+    let mut audit = Node::audit_of(&target).await;
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
-        .fetch_one(&mut *audit.lock().await)
+        .fetch_one(&mut audit)
         .await
         .unwrap();
     assert_eq!(integrity, "ok");
     let events_after: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM application_events WHERE idempotency_key LIKE 'load-%'",
     )
-    .fetch_one(&mut *audit.lock().await)
+    .fetch_one(&mut audit)
     .await
     .unwrap();
     assert!(
@@ -333,7 +333,7 @@ async fn backup_and_restore_under_load(node: &Node, root: &std::path::Path) {
     let shas: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT blob_sha256 FROM documents WHERE blob_sha256 IS NOT NULL",
     )
-    .fetch_all(&mut *audit.lock().await)
+    .fetch_all(&mut audit)
     .await
     .unwrap();
     for sha256 in shas {
@@ -395,7 +395,7 @@ async fn parallel_agents_keep_every_invariant() {
     }
 
     let (peak_rss, _) = node.peak_rss_and_wal();
-    let table = latencies.lock().unwrap();
+    let table = std::mem::take(&mut *latencies.lock().unwrap());
     let mut all: Vec<f64> = table.values().flatten().copied().collect();
     all.sort_by(f64::total_cmp);
     for (tool, values) in table.iter() {
