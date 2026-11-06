@@ -7,6 +7,7 @@ Golden request/response traces from old Nexus (`nexus-crm` at `235138d`), for co
 | `scenarios/*.json` | Ordered tool calls. Personal values are discovered at runtime; only integer IDs and invented strings are committed. |
 | `runner-mcp/run.mjs` | Streamable HTTP MCP client that runs scenarios against any URL. No dependencies. |
 | `runner-old/` | Serves the real old route handlers on loopback, then drives them with `run.mjs`. |
+| `runner-rust.sh` | Imports an export into a throwaway data dir, serves it with the real binary and real bearer checks, then drives it with `run.mjs`. |
 | `env/pg.sh` | Throwaway Postgres 17 and uploads dir, restored from the export. |
 | `compare.py` | Compares two trace directories. Its docstring is the complete list of normalizations. |
 | `id-floors.json` | Highest IDs in the export. Higher IDs were created during a run. |
@@ -27,6 +28,14 @@ Expected row counts: Application 190, ApplicationEvent 205, Contact 36, Document
 `runner-old` stays on loopback: GCS variables are unset, so storage uses the local uploads dir, `DATABASE_URL` must be loopback, and `fetch` to any other host throws. The harness does not modify old code. It replaces one thing, the `require()` in `lib/db/index.ts` that can't load TypeScript under vitest, with the same `PrismaAdapter`.
 
 ## Run against the Rust server
+
+```bash
+parity/runner-rust.sh target/debug/nexus ~/.local/share/nexus-export/20261106T001410Z /private/path/rust-run
+python3 parity/compare.py ~/.local/share/nexus-export/parity-golden/baseline /private/path/rust-run \
+  --unordered contacts --unordered applications
+```
+
+Or against any server, by hand:
 
 ```bash
 node parity/runner-mcp/run.mjs \
