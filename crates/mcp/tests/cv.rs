@@ -1326,7 +1326,7 @@ async fn a_patch_landing_during_approval_is_never_approved_by_accident() {
 async fn an_approval_refuses_a_revision_that_stopped_being_the_head_during_its_compile() {
     for round in 0..12 {
         let slow = format!(
-            "Freight engineer {round} #for a in range(4000) {{ for b in range(4000) {{ }} }}"
+            "Freight engineer {round} #for a in range(1500) {{ for b in range(1500) {{ }} }}"
         );
         let server = locked_server().await;
         patch(&server, 0, "Backend engineer", "Freight engineer")

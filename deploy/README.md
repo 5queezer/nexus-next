@@ -85,7 +85,7 @@ Rate limits and login backoff key on the client's address. Behind `cloudflared` 
 - **Cloudflare tunnel:** `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`.
 - **Tailscale Funnel:** not confirmed yet. Check what Funnel really sends before relying on it; `X-Forwarded-For` works if Funnel appends the client address, because the last entry is the one used.
 
-The header is only believed on connections from `NEXUS_TRUSTED_PROXY_PEERS`, so keep the bind on loopback and let nothing else on the board reach port 8080 with forged headers. Verify it after the first public request: failed-login log lines must show `source=<your real address>`, not `source=127.0.0.1`.
+The header is only believed on connections from `NEXUS_TRUSTED_PROXY_PEERS`, so keep the bind on loopback and let nothing else on the board reach port 8091 with forged headers. Verify it after the first public request: failed-login log lines must show `source=<your real address>`, not `source=127.0.0.1`.
 
 ### OAuth redirect hosts
 
@@ -167,7 +167,7 @@ The passphrase and `nexus.env` from section 3 must be in place, or the service e
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now nexus.service nexus-backup.timer
-curl -fsS http://127.0.0.1:8080/healthz        # ok
+curl -fsS http://127.0.0.1:8091/healthz        # ok
 sudo journalctl -u nexus -n 20 --no-pager
 systemctl list-timers nexus-backup.timer
 ```
@@ -256,14 +256,14 @@ Restoring over the live data: `sudo systemctl stop nexus`, run `nexus restore ..
 
 ## 7. Ingress
 
-`nexus serve` binds `127.0.0.1:8080` and should stay on loopback; something on the board forwards to it. Claude.ai needs a public HTTPS URL. Test both options; the M1 gate is a full Claude.ai OAuth and tool call through whichever one is chosen (SPEC section 8).
+`nexus serve` binds `127.0.0.1:8091` and should stay on loopback; something on the board forwards to it. The unit sets that port because Coolify's proxy holds `0.0.0.0:8080` on this board, the binary's own default, and Nexus would fail to bind there. Claude.ai needs a public HTTPS URL. Test both options; the M1 gate is a full Claude.ai OAuth and tool call through whichever one is chosen (SPEC section 8).
 
 Whichever is used, set `NEXUS_TRUSTED_IP_HEADER` for it (section 3) and restart before going public.
 
 **Buffering.** The MCP router is mounted, and this is what its responses really carry. `POST` returns one complete `application/json` body with `Content-Length`, and no `Cache-Control`. `GET` returns `text/event-stream` with `Cache-Control: no-cache, no-transform` and an empty body that ends at once. Nothing sets `X-Accel-Buffering`. So there is no long-lived stream for a proxy to buffer, and that header shouldn't be needed. That is an expectation, not a result: nothing has been tested through either ingress, and only a real Claude.ai OAuth and tool call can settle it. The steps are in [`docs/CUTOVER.md`](../docs/CUTOVER.md), step 4.
 
-- **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8080`): keeps a stable custom domain, but a tunnel is always proxied. Old Nexus's local notes say Cloudflare's proxy broke MCP Streamable HTTP by buffering streaming responses, so its domain stayed DNS-only.
-- **Tailscale Funnel** (`tailscale funnel 8080`): no Cloudflare in the path, but the hostname becomes `*.ts.net`, so every OAuth client re-registers once.
+- **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8091`): keeps a stable custom domain, but a tunnel is always proxied. Old Nexus's local notes say Cloudflare's proxy broke MCP Streamable HTTP by buffering streaming responses, so its domain stayed DNS-only.
+- **Tailscale Funnel** (`tailscale funnel 8091`): no Cloudflare in the path, but the hostname becomes `*.ts.net`, so every OAuth client re-registers once.
 
 `NEXUS_PUBLIC_BASE_URL` must be the public origin. It is the OAuth issuer, so changing it later means every client registers again. Calendar apps that cannot send bearer tokens use the secret URL; Google Calendar cannot reach a tailnet-only URL, so use an on-device subscriber (ICSx5) or the public ingress.
 

@@ -16,7 +16,7 @@ StateDirectoryMode=0700
 # refuses to start. Create it with `nexus set-passphrase`.
 EnvironmentFile=-/etc/nexus/nexus.env
 LoadCredential=calendar-token:/etc/nexus/calendar-token
-ExecStart=/usr/local/bin/nexus serve --bind 127.0.0.1:8080 --data-dir /var/lib/nexus --calendar-token-file %d/calendar-token
+ExecStart=/usr/local/bin/nexus serve --bind 127.0.0.1:8091 --data-dir /var/lib/nexus --calendar-token-file %d/calendar-token
 Restart=on-failure
 RestartSec=3
 # serve drains for 20 s, then closes the database

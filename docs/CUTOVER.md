@@ -48,7 +48,7 @@ NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP   # Cloudflare. For Funnel, see step 4
 
 Import the first export, which is enough to test with, then start (sections 4 and 5). Step 9 replaces this data, and everything authorized on it.
 
-Reboot with `/home` locked. `systemctl is-active nexus` and `curl -fsS http://127.0.0.1:8080/healthz` must succeed with nothing unlocked.
+Reboot with `/home` locked. `systemctl is-active nexus` and `curl -fsS http://127.0.0.1:8091/healthz` must succeed with nothing unlocked.
 
 ## 3. Verify the sandbox under real systemd
 
@@ -69,7 +69,7 @@ journalctl -u nexus -b | grep -iE 'bpf|ip firewall'         # must print nothing
 sudo systemd-run --wait --pipe -p IPAddressDeny=any -p IPAddressAllow=localhost \
   curl -sS -m 5 -o /dev/null https://example.com; echo "exit $?"
 sudo systemd-run --wait --pipe -p IPAddressDeny=any -p IPAddressAllow=localhost \
-  curl -fsS -m 5 http://127.0.0.1:8080/healthz
+  curl -fsS -m 5 http://127.0.0.1:8091/healthz
 ```
 
 If the filter isn't enforced, the service can still reach the network if compromised. Record that and decide: it doesn't stop the cutover by itself.
@@ -78,9 +78,9 @@ If the filter isn't enforced, the service can still reach the network if comprom
 
 Test Cloudflare and Funnel, on `<test-host>`, with the same checks. Only one can be live at a time, and each needs its own `NEXUS_PUBLIC_BASE_URL`, then `sudo systemctl restart nexus`.
 
-**Set up, Cloudflare tunnel:** `cloudflared` on the board with ingress `http://127.0.0.1:8080`, and `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`. A tunnel is always proxied. Old Nexus stayed DNS-only because its notes say the proxy broke MCP.
+**Set up, Cloudflare tunnel:** `cloudflared` on the board with ingress `http://127.0.0.1:8091`, and `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`. A tunnel is always proxied. Old Nexus stayed DNS-only because its notes say the proxy broke MCP.
 
-**Set up, Tailscale Funnel:** `sudo tailscale funnel --bg 8080`. Base URL is the `*.ts.net` name. Which header carries the client address isn't confirmed: set `X-Forwarded-For`, then check the source address in check 3 below.
+**Set up, Tailscale Funnel:** `sudo tailscale funnel --bg 8091`. Base URL is the `*.ts.net` name. Which header carries the client address isn't confirmed: set `X-Forwarded-For`, then check the source address in check 3 below.
 
 **Check 1, HTTP.** Workstation. Issue a token on the board first: `sudo -u nexus nexus issue-token --data-dir /var/lib/nexus --name ingress-test`, and put it in `TOKEN`.
 
