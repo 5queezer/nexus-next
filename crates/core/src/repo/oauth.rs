@@ -220,3 +220,43 @@ pub async fn delete_refresh_token(conn: &mut SqliteConnection, id: i64) -> Resul
         .await?;
     Ok(done.rows_affected() == 1)
 }
+
+pub async fn count_clients(conn: &mut SqliteConnection) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients")
+        .fetch_one(conn)
+        .await?)
+}
+
+/// Deletes the oldest client created at or before `cutoff` that holds no code or token, making room
+/// at the client cap. False if every older client is in use. Run after `prune_expired`.
+pub async fn evict_oldest_unused_client(
+    conn: &mut SqliteConnection,
+    cutoff: &Timestamp,
+) -> Result<bool> {
+    let done = sqlx::query(
+        "DELETE FROM oauth_clients WHERE id = (
+             SELECT c.id FROM oauth_clients c
+             WHERE c.created_at <= ?
+               AND NOT EXISTS (SELECT 1 FROM oauth_auth_codes t WHERE t.client_id = c.client_id)
+               AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.client_id = c.client_id)
+               AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = c.client_id)
+             ORDER BY c.created_at, c.id LIMIT 1
+         )",
+    )
+    .bind(cutoff)
+    .execute(conn)
+    .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// Deletes expired codes and tokens. Used codes go at expiry too: after that they fail either way.
+pub async fn prune_expired(conn: &mut SqliteConnection, now: &Timestamp) -> Result<()> {
+    for sql in [
+        "DELETE FROM oauth_auth_codes WHERE expires_at <= ?",
+        "DELETE FROM oauth_access_tokens WHERE expires_at <= ?",
+        "DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?",
+    ] {
+        sqlx::query(sql).bind(now).execute(&mut *conn).await?;
+    }
+    Ok(())
+}
