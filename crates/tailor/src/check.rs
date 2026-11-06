@@ -26,7 +26,8 @@ pub enum Rule {
     MixedScript,
     /// A bidi control character: the page then draws text in another order than the check reads it.
     BidiControl,
-    /// Text rotated, mirrored, skewed or stretched: it can draw as something else, like 6 as 9.
+    /// Text rotated, mirrored, skewed, stretched or squeezed: it can draw as something else, like 6
+    /// as 9.
     Transform,
     /// An email, URL or link target the contact facts don't back. A reply goes to whoever it names.
     ContactDetails,
@@ -804,7 +805,13 @@ impl Document {
             body.push_str(line);
             body_with_hyphens.push_str(line);
         }
-        let metadata: Vec<String> = text.metadata.iter().map(|item| normalize(item)).collect();
+        let targets = text.links.iter().map(|link| &link.target);
+        let metadata: Vec<String> = text
+            .metadata
+            .iter()
+            .chain(targets)
+            .map(|item| normalize(item))
+            .collect();
         Self {
             lines,
             body,
@@ -1279,12 +1286,7 @@ fn check_contact(
     findings: &mut Findings,
 ) {
     let email = facts.contact.email.trim().to_lowercase();
-    // The targets have their own rule. The rest of the metadata is text like any other.
-    let metadata = text
-        .metadata
-        .iter()
-        .filter(|item| !text.links.iter().any(|link| link.target == **item))
-        .map(|item| normalize(item));
+    let metadata = text.metadata.iter().map(|item| normalize(item));
     for said in std::iter::once(document.body.clone()).chain(metadata) {
         let (emails, urls) = addresses(&said);
         for found in emails {
@@ -1354,7 +1356,8 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
         findings.add(
             Rule::Transform,
             run,
-            "rotated, mirrored, skewed or stretched text can draw as something else".to_owned(),
+            "rotated, mirrored, skewed, stretched or squeezed text can draw as something else"
+                .to_owned(),
         );
     }
 

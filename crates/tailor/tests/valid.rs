@@ -394,6 +394,9 @@ async fn translation_and_a_uniform_scale_stay_readable() {
         "#box(clip: true, height: 1.5em)[Gap]",
         "#place(bottom + right)[Work]",
         "#super[Work] and #sub[work]",
+        "#set par(justify: true)\n#box(width: 8cm)[Mentored two colleagues through their first on-call rotation, and they stayed on the team for it.]",
+        "*Bold* and _italic_ and #text(fill: blue)[blue] and #text(size: 12pt)[large] words.",
+        "#text(tracking: 0.1em)[Spaced out] and #text(tracking: -0.02em)[slightly tight].",
     ] {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;

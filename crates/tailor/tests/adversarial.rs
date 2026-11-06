@@ -878,6 +878,66 @@ async fn transforms_cannot_draw_numbers_the_check_reads_otherwise() {
     .await;
 }
 
+/// Found while fixing finding 7: glyphs and spaces can be squeezed as far as transforms can move them.
+#[tokio::test]
+async fn squeezed_text_cannot_draw_numbers_the_check_reads_otherwise() {
+    let mut facts = facts_en();
+    facts
+        .allowed_tokens
+        .extend(["1", "2", "12"].map(str::to_owned));
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "negative tracking draws 12 as 21",
+                Rule::Transform,
+                "Served #text(tracking: -1.3em)[12] clients.",
+            ),
+            (
+                "no word space draws 1 2 as 12",
+                Rule::Transform,
+                "Served #text(spacing: 0%)[1 2] clients.",
+            ),
+            (
+                "a thin word space draws 1 2 almost as 12",
+                Rule::Transform,
+                "Served #text(spacing: 30%)[1 2] clients.",
+            ),
+            (
+                "negative word space",
+                Rule::Transform,
+                "Served #text(spacing: -50%)[1 2] clients.",
+            ),
+            (
+                "a space tracked away",
+                Rule::Transform,
+                "Served #text(tracking: -0.22em)[1 2] clients.",
+            ),
+        ],
+    )
+    .await;
+    let mut no_twelve = facts_en();
+    no_twelve
+        .allowed_tokens
+        .extend(["1", "2"].map(str::to_owned));
+    assert_flagged_with(
+        &no_twelve,
+        &[
+            (
+                "a tiny space between digits reads as what it draws",
+                Rule::Numbers,
+                "Served 1#text(size: 1pt)[ ]2 clients.",
+            ),
+            (
+                "a tiny space between boxes",
+                Rule::Numbers,
+                "Served #box[1]#text(size: 0.5pt)[ ]#box[2] clients.",
+            ),
+        ],
+    )
+    .await;
+}
+
 /// The review's proof of finding 9: the bookmark says what the page doesn't.
 #[tokio::test]
 async fn heading_numbering_reaches_the_check_as_the_bookmark_has_it() {

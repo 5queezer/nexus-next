@@ -5,7 +5,7 @@ use typst::foundations::Smart;
 use typst::introspection::Introspector;
 use typst::layout::{Frame, FrameItem, Point, Size, Transform};
 use typst::model::{Destination, Document, HeadingElem, Numbering};
-use typst::text::TextItem;
+use typst::text::{Glyph, TextItem};
 use typst::visualize::Paint;
 use typst_layout::PagedDocument;
 
@@ -28,6 +28,8 @@ const MAX_READABLE_LUMA: f32 = 0.9;
 const VISIBLE_MARGIN: f64 = 1.0;
 /// How high above its baseline the middle of a run stands. In ems.
 const RUN_MIDDLE: f64 = 0.3;
+/// A word space narrower than this draws no gap, in ems. Justifying shrinks one to 0.17 at the least.
+const MIN_SPACE_ADVANCE: f64 = 0.15;
 /// How far a transform may stray from a uniform scale through rounding alone, as in `rotate(360deg)`.
 const TRANSFORM_TOLERANCE: f64 = 1e-6;
 
@@ -103,6 +105,26 @@ fn draws_as_it_reads(ts: Transform) -> bool {
     let (sx, sy, kx, ky) = (ts.sx.get(), ts.sy.get(), ts.kx.get(), ts.ky.get());
     let tolerance = TRANSFORM_TOLERANCE * sx.abs();
     sx > 0.0 && (sx - sy).abs() <= tolerance && kx.abs() <= tolerance && ky.abs() <= tolerance
+}
+
+/// Tracking can turn `12` into a drawn `21`, and word spacing can draw `1 2` as `12`. A space at a
+/// line's end has no width, and separates nothing.
+fn squeezed(text: &TextItem) -> bool {
+    let is_space = |glyph: &Glyph| {
+        text.text
+            .get(glyph.range())
+            .is_some_and(|said| !said.is_empty() && said.trim().is_empty())
+    };
+    let glyphs = text.glyphs.as_slice();
+    let start = glyphs.iter().position(|glyph| !is_space(glyph));
+    let end = glyphs.iter().rposition(|glyph| !is_space(glyph));
+    let (Some(start), Some(end)) = (start, end) else {
+        return false;
+    };
+    glyphs[start..=end].iter().any(|glyph| {
+        let advance = glyph.x_advance.get();
+        advance < 0.0 || (is_space(glyph) && advance < MIN_SPACE_ADVANCE)
+    })
 }
 
 fn drawn_backwards(text: &TextItem) -> bool {
@@ -235,7 +257,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                         if !seen {
                             result.hidden.push(text.text.to_string());
                         }
-                        if !draws_as_it_reads(ts) {
+                        if !draws_as_it_reads(ts) || squeezed(text) {
                             result.transformed.push(text.text.to_string());
                         }
                         if overridden(text) {
@@ -259,7 +281,6 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                 }
                 FrameItem::Image(..) => result.image_count += 1,
                 FrameItem::Link(Destination::Url(url), size) => {
-                    result.metadata.push(url.as_str().to_owned());
                     if links.len() == MAX_LINKS {
                         return Err(RenderError::TooManyPages);
                     }
@@ -385,6 +406,10 @@ fn join_line(mut line: Vec<Run>) -> String {
     let mut text = String::new();
     let mut end = f64::NEG_INFINITY;
     for run in line {
+        // A run of only spaces says nothing the gap to the next run doesn't, and a tiny one draws none.
+        if run.text.trim().is_empty() {
+            continue;
+        }
         let gap = run.x - end;
         if gap > WORD_GAP * run.size && !text.is_empty() && !text.ends_with(' ') {
             text.push(' ');

@@ -124,15 +124,16 @@ pub struct RenderedText {
     pub lines: Vec<String>,
     /// The runs among those no reader can see.
     pub hidden: Vec<String>,
-    /// The runs among those drawn under anything but a translation and a uniform positive scale.
+    /// The runs among those drawn under anything but a translation and a uniform positive scale, or
+    /// squeezed until they draw otherwise than they read.
     pub transformed: Vec<String>,
     /// The runs among those a bidi override draws back to front. Typst trims the control character
     /// from a line's ends, while its effect stays.
     pub reversed: Vec<String>,
     /// Every URL link, with the text it covers on the page.
     pub links: Vec<RenderedLink>,
-    /// Document title, authors, description, keywords, date, bookmarks, link targets and page
-    /// labels: what the PDF says beyond its pages.
+    /// Document title, authors, description, keywords, date, bookmarks and page labels: with `links`,
+    /// what the PDF says beyond its pages.
     pub metadata: Vec<String>,
     pub image_count: u32,
 }
