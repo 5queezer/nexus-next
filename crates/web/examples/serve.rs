@@ -9,11 +9,12 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: serve <data-dir> [port]"))?;
     let port = args.next().unwrap_or_else(|| "8099".to_owned());
     let db = nexus_core::Db::open(data_dir.as_ref()).await?;
-    let state = nexus_mcp::McpState {
-        db: db.clone(),
-        owner_id: "owner".to_owned(),
-        owner_email: "owner@example.com".to_owned(),
-    };
+    let state = nexus_mcp::McpState::new(
+        db.clone(),
+        "owner".to_owned(),
+        "owner@example.com".to_owned(),
+        nexus_mcp::Renderer::InProcess,
+    );
     let app = nexus_web::dashboard_router(state, "Europe/Madrid".parse().unwrap())
         .merge(nexus_web::static_router())
         .merge(nexus_web::api_router(db.clone()))

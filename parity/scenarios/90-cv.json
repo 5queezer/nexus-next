@@ -246,7 +246,7 @@
         "profileOverride": "Override.",
         "includeProjects": true
       },
-      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+      "compare": "pdf-size"
     },
     {
       "tool": "generate_tailored_cv",
@@ -257,7 +257,7 @@
         ],
         "skillCategories": []
       },
-      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+      "compare": "pdf-size"
     },
     {
       "tool": "list_documents",
@@ -272,7 +272,7 @@
           "source"
         ]
       },
-      "allowDiff": "SPEC section 4 item 6: with a profile, M1 returns a rendering-arrives-in-M2 tool error and writes nothing"
+      "expect": { "isError": false }
     },
     {
       "tool": "generate_tailored_cv",

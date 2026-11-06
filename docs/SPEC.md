@@ -1,6 +1,6 @@
 # Nexus rewrite: spec
 
-Status: M1 built, gate open. M2 and M3 designed in sections 9a and 9b.
+Status: M1 built, gate open. M2 built on top of it (section 9a). M3 designed in section 9b.
 Baseline: `nexus-crm` at `235138d`, the commit in the running production image's tag on 2026-11-06. Sources marked **[handoff]** are not yet checked against the code or the Nexus skills.
 
 ## 1. Goal
@@ -11,7 +11,7 @@ Replace the Next.js Nexus with one Rust binary on a ROCK 4 SE: an MCP tool serve
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| CV rendering | No renderer in M1. Typst arrives in M2 | `CvProfile` and `CvPatch` are empty in production and no stored CV came from `generate_tailored_cv`. See section 4 for its M1 behaviour. |
+| CV rendering | Typst, from M2. M1 has no renderer | `CvProfile` and `CvPatch` are empty in production and no stored CV came from `generate_tailored_cv`. See section 4. |
 | Data storage on the board | Root filesystem, outside `/home`, with encrypted off-site backups | Nexus restarts unattended after a reboot. Data sits unencrypted on the NVMe if the board is taken. |
 | Host | ROCK 4 SE, subject to the Ethernet check in section 10 | |
 | Auth | Keep OAuth 2.1 in v1, alongside API tokens | Port the authorization server, consent flow and a login page to Rust. Needs a public endpoint. |
@@ -52,14 +52,14 @@ Build: cross-compile to `aarch64-unknown-linux-musl` so the binary doesn't depen
 `contract/mcp-tools.snapshot.json` holds real `tools/list` output for all 35 tools, generated from source at `235138d`.
 
 1. **Serve the frozen schemas verbatim.** Embed the snapshot's `inputSchema` values instead of generating them from Rust types. Generated schemas would drift in small ways, such as `nullable` encoding and `$schema`. The golden contract test confirms the served schemas match.
-2. **Golden test.** CI compares the server's `tools/list` with the snapshot. Any difference fails the build. M2 tools are additive and go in a separate allowlist.
+2. **Golden test.** CI compares the server's `tools/list` with the snapshot, byte for byte and in order, then the rest of the list with `contract/mcp-tools.additive.json`. Any difference fails the build. A client now sees 40 tools: the 35 frozen ones, then 5 additive.
 3. **Keep the quirks.** Limits differ per tool, and clients may depend on that:
    - `source` has `maxLength: 100` on `upsert_application_by_job_url` and `update_document_metadata`, but no limit in the schema on `create_application` or `update_application`.
    - `rating` is an integer on create and upsert, but a number on update.
    - `update_application` advertises lifecycle fields, then rejects them.
 4. **Lifecycle rule.** `update_application` with any of `status`, `appliedAt`, `lastContact`, `followUpAt` or `currentStage` returns `{"error":{"code":"lifecycle_event_required","fields":[...]}}` as a tool error, and nothing is written.
 5. **Confirm against production.** The snapshot was generated from the deployed commit, not read from the running server. Compare it with a live `tools/list` once before freezing.
-6. **`generate_tailored_cv` in M1.** The tool stays listed with its frozen schema. With no profile it returns old Nexus's exact tool error, `No CV profile found. Use upsert_cv_profile first.`. `get_cv_profile` and `upsert_cv_profile` work normally. If a profile exists, the tool returns a clear tool error saying rendering arrives in M2, and writes nothing. This is the one documented gap in the frozen behaviour, and it can't affect current data.
+6. **`generate_tailored_cv`.** The tool keeps its frozen schema and response. With no profile it returns old Nexus's exact tool error, `No CV profile found. Use upsert_cv_profile first.`. With one, it renders with Typst as section 9a describes. M1 alone returned a tool error here, and that gap is closed: what remains different is the PDF's bytes and so `size`, and that the document carries a `contentHash` where old Nexus left it null. An output the integrity check refuses is a new error old Nexus could not return (`cv_fact_violation`), and it can't affect current data, because production has no profile.
 
 Runtime behaviour the schemas don't show is covered by the parity scenarios in `parity/`. The `nexus-job-intake-interview-pipeline` skill listed these from real use. This table is what the parity run against old Nexus's code at `235138d` found:
 
@@ -161,7 +161,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 - For every application: `get_application`, `list_application_events`, contacts, documents and submissions return the same content from both servers, allowing only for documented differences.
 - Writes go to a copy, never to live: replay recorded calls and compare responses and readbacks.
 
-**Parity result, 2026-11-06.** Golden scenarios of 1,809 calls through the real `nexus serve` binary, compared with old Nexus at `235138d` restored locally: 1,805 pass, 3 documented (the `generate_tailored_cv` gap), 1 fail (`sort: company`). That one is an artifact of the baseline: it ran under glibc `en_US` collation, while production compares bytewise (`'Z' < 'a'` is true there), as Rust does. Contact and linked-application order is compared unordered, because old Nexus returned Postgres heap order, which no client can rely on. About 18,000 further fuzzed calls matched apart from explained differences. The baseline goes stale for time-dependent `pipeline_healthcheck` checks from 2026-11-09, so re-record it after that.
+**Parity result, 2026-11-06, M2.** Golden scenarios of 1,809 calls through the real `nexus serve` binary, compared with old Nexus at `235138d` restored locally: 1,808 pass, 1 fail (`sort: company`), none documented. `generate_tailored_cv` now compares exactly except `size`, and `tools/list` must be the frozen list followed by exactly the additive contract. The M1 run had 1,805 pass and 3 documented for the same calls. That one is an artifact of the baseline: it ran under glibc `en_US` collation, while production compares bytewise (`'Z' < 'a'` is true there), as Rust does. Contact and linked-application order is compared unordered, because old Nexus returned Postgres heap order, which no client can rely on. About 18,000 further fuzzed calls matched apart from explained differences. The baseline goes stale for time-dependent `pipeline_healthcheck` checks from 2026-11-09, so re-record it after that.
 
 **Cutover:** stop writes to old Nexus, re-export, import, re-run parity, then repoint clients. Keep old Nexus stopped but restorable for 30 days. The runbook is [`CUTOVER.md`](CUTOVER.md).
 
@@ -182,7 +182,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 - Tailscale Funnel avoids Cloudflare, but the hostname becomes `*.ts.net`, so clients change URL once.
 - M1 gate: a full Claude.ai OAuth and tool call through whichever one is chosen.
 
-**Limits.** Each kind of caller has its own pool of request slots: public (login, OAuth, calendar: 8 in flight, 2 s wait, 10 s deadline), owner (dashboard, JSON API: 8, 10 s, 60 s) and mcp (8, 10 s, 60 s, or 300 s for a large body). A full pool gives a 503. On the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content`, also needs one of 2 large slots, because one 10 MiB document costs about 85 MB in the transport. At most 256 connections. Details in `deploy/README.md` section 7.
+**Limits.** Each kind of caller has its own pool of request slots: public (login, OAuth, calendar: 8 in flight, 2 s wait, 10 s deadline), owner (dashboard, JSON API: 8, 10 s, 60 s) and mcp (8, 10 s, 60 s, or 300 s for a large body). A full pool gives a 503. On the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content` or `render_cv_pdf`, also needs one of 2 large slots, because one 10 MiB document costs about 85 MB in the transport. At most 256 connections. Details in `deploy/README.md` section 7.
 
 **Calendar.** Calendar apps can't send bearer tokens, so `/calendar.ics` needs a secret URL token. Google Calendar fetches subscriptions from its own servers and can't reach a tailnet-only URL. Use an on-device subscriber such as ICSx5, or publish the URL through the public ingress.
 
@@ -193,7 +193,7 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 | Milestone | Scope | Gate |
 |---|---|---|
 | M1 | Core, 35 tools (`generate_tailored_cv` per section 4), OAuth and tokens, REST, calendar, importer, read-only dashboard | Golden contract test, parity on real data, Claude.ai through real ingress, RAM measured on board |
-| M2 | Typst renderer behind `generate_tailored_cv`; source and revisions: `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions`, `revert_cv`; Telegram dictation | Voice edits can't change hard facts |
+| M2 | Typst renderer behind `generate_tailored_cv`; source and revisions: `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions`, `revert_cv`; Telegram dictation ([`DICTATION.md`](DICTATION.md)) | Voice edits can't change hard facts |
 | M3 | Interactive PWA, push-to-talk, realtime session with a narrow toolset | Session can't mark anything `applied` |
 | M4 | ratatui TUI | |
 | M5 | Native wrap, only if the PWA proves painful | |
@@ -204,11 +204,11 @@ M1's gate is still open (section 10). M2 and M3 are built on top of it, but none
 
 ## 9a. M2 design: Typst and dictation
 
-**Voice stays outside Nexus [handoff].** Tier 0 dictation is Telegram voice note → Hermes transcribes → Hermes calls `patch_cv` → Hermes sends the PNG preview back. Nexus has no Telegram code and no bot token. "Dictation works" means these tools plus the Hermes skill text in `SKILL-CHANGES.md`, tested by a scripted MCP client. A real Telegram run needs the owner and the deployed server.
+**Voice stays outside Nexus [handoff].** Tier 0 dictation is Telegram voice note → Hermes transcribes → Hermes calls `patch_cv` → Hermes sends the PNG preview back. Nexus has no Telegram code and no bot token. "Dictation works" means these tools plus the Hermes skill text in [`DICTATION.md`](DICTATION.md) and `SKILL-CHANGES.md`, tested by a scripted MCP client through real OAuth and the real render child (`crates/server/tests/cv_dictation.rs`). A real Telegram run needs the owner and the deployed server.
 
 **`crates/tailor`, the `nexus-tailor` library.** It embeds Typst and owns rendering and the integrity check. No other crate touches Typst.
 
-- **World.** Only three virtual files exist: `/main.typ` (the revision's source), `/facts.json` (the locked facts) and `/nexus.typ` (the read-only template library, embedded in the binary). No filesystem, network, packages or system fonts. `datetime.today()` returns none. Fonts are a small embedded OFL set, chosen for binary size.
+- **World.** Only three virtual files exist: `/main.typ` (the revision's source), `/facts.json` (the facts, without `banned_phrases`: nothing a source renders needs them, and a source that printed them would read them back from the violation) and `/nexus.typ` (the read-only template library, embedded in the binary). No filesystem, network, packages or system fonts. `datetime.today()` returns none. Fonts are a small embedded OFL set, chosen for binary size.
 - **Worker process.** Every compile runs in a child, `nexus __render` (same binary; handled before clap and the async runtime, so it stays out of `--help` and a compile runs in a plain process), with a cleared environment, JSON on stdin and a framed result on stdout. This keeps the server's RSS near M1's and lets a runaway compile die alone. The parent allows one compile at a time and kills the child on wall-clock timeout or when `/proc/<pid>/statm` RSS passes the limit. The child raises its own `oom_score_adj` to 1000, so the kernel takes it first. It doesn't call `setrlimit`: the unit's `SystemCallFilter=~@resources` forbids that. The unit gets `OOMPolicy=continue`. Tests in crates that can't name the binary use an in-process renderer, which is never used by `serve`.
 - **Limits.** Source 256 KiB, 10 pages, PDF 10 MiB, 30 s wall clock. The RSS limit is 128 MiB. Its real ceiling is `MemoryHigh=256M`, not `MemoryMax`: above it the kernel kills nothing but stalls every task in the cgroup, the server included. So the limit, the server's own peak of about 85 MB and what a compile can allocate between two 20 ms polls (about 45 MB seen) must fit below it.
 - **Diagnostics.** A compile error is data, not a failure: `{severity, message, file, line, column, endLine, endColumn, hints}`. Agents see it in the tool result. Users never do.
@@ -218,15 +218,19 @@ M1's gate is still open (section 10). M2 and M3 are built on top of it, but none
 | Table | Holds | Rules |
 |---|---|---|
 | `cv_facts` | Singleton. `name`, `contact`, `employment` (`id, company, title, date, location`), `education` (`id, institution, qualification, date, location, details`), `languages` (`name, level`), `metrics` (`key, text`), `allowed_tokens`, `banned_phrases`, `vocabulary`, `version`, `locked_at` | Hard facts. JSON columns are checked with `json_valid` |
-| `cv_facts_history` | Each previous `cv_facts` state with who changed it | Append-only |
-| `cv_profile` | `experience` keeps only `id, tier, bullets`. Name, contact, company, title, date, location and education move to `cv_facts` | `get_cv_profile` merges them, so its JSON is unchanged. The importer splits any real row the same way |
-| `cv_variants` | `id, name` (unique), `application_id`, `head_revision_id` | One variant per purpose. `default` is the base CV |
-| `cv_revisions` | `id, variant_id, number, parent_id, source, source_sha256, facts_version, origin, summary, warnings, created_at` | Immutable, enforced with triggers except for the foreign-key cascade when an application is deleted |
+| `cv_facts_history` | Each previous `cv_facts` state with who changed it, written by the owner's paths | Append-only, with triggers |
+| `cv_profile` | `experience` keeps only `id, tier, bullets`. Name, contact, company, title, date, location and education move to `cv_facts` | `get_cv_profile` merges them, so its JSON is unchanged, key order included. Migration `0004` and the importer split any real row the same way. Education has no ID in old Nexus, so an entry's ID is its position (`edu-1`), which reordering it while unlocked changes. `degree` is stored as `qualification` |
+| `cv_variants` | `id, name` (unique), `application_id`, `head_revision_id` | One variant per purpose. `default` is the base CV and always exists. `application-<id>` belongs to `generate_tailored_cv` and goes with its application |
+| `cv_revisions` | `id, variant_id, number, parent_id, source, source_sha256, facts_version, origin, summary, warnings, created_at` | Immutable, enforced with triggers except for the foreign-key cascade when an application is deleted. `parent_id` has no foreign key, because a first revision's parent can be in another variant, which that cascade may remove |
 
 **The integrity gate: voice edits can't change hard facts.**
 
-1. **Facts have one writer.** Nothing reachable from MCP or voice can change locked facts. Owner-only paths lock, unlock or edit them: `nexus cv-facts` on the board, and the dashboard from M3. Only those record a `cv_facts_history` row.
-2. **`upsert_cv_profile` keeps its frozen schema.** While facts are unlocked, it writes facts and wording as old Nexus would, so parity holds. While locked, a change to any fact field, a new `experience.id`, or a new numeric token in wording returns `{"error":{"code":"cv_facts_locked","fields":[...]}}`, and nothing is written.
+1. **Facts have one writer.** Nothing reachable from MCP or voice can change locked facts, or lock or unlock them. Owner-only paths lock, unlock or edit them: `nexus cv-facts` on the board, and the dashboard from M3, through the same functions in `repo::cv_facts`. Only those record a `cv_facts_history` row.
+   - `nexus cv-facts show` prints the facts to the owner's terminal.
+   - `nexus cv-facts set --file facts.json` replaces the fields a profile can't express (`languages`, `metrics`, `allowedTokens`, `bannedPhrases`, `vocabulary`). Anything else in the file is refused. Employment, education, name and contact change through `upsert_cv_profile` while unlocked.
+   - `nexus cv-facts lock` also adds the numbers and spelled-out counts in the profile's wording to `allowed_tokens` and prints each one, because locking is the owner confirming them. It refuses while no profile has set a name.
+   - `nexus cv-facts unlock` opens them again.
+2. **`upsert_cv_profile` keeps its frozen schema.** While facts are unlocked, it writes facts and wording as old Nexus would, so parity holds. While locked, a change to any fact field, a new `experience.id`, or a new numeric token in wording returns `{"error":{"code":"cv_facts_locked","fields":[...],"tokens":[...]}}`, and nothing is written. `tokens` names the new numbers. Leaving `education` out counts as a change, since old Nexus reads that as empty. Leaving a job out of `experience` doesn't: it changes the profile's wording only, and the job's facts stay. An unlocked write moves `version`, so that a compile which raced it can't store.
 3. **`patch_cv` and `revert_cv` need locked facts.** Otherwise: `{"error":{"code":"cv_facts_not_locked"}}`. So an agent can't first rewrite the facts through the profile and then patch to match them.
 4. **Sources refer to facts by id.** The template library renders `#employment("acme")`, `#education("x")`, `#languages()`, `#contact()`, `#metric("key")` from `/facts.json`.
 5. **The check reads rendered output, not source.** Typst can compute text and rewrite it with show rules, so a source scan proves nothing. After a compile, the worker extracts every text run from the laid-out pages, including white, tiny, clipped and off-page text and the content of tilings, and what the PDF says beyond its pages: title, author, description, keywords, date, heading bookmarks, link targets and page-label prefixes. PDFs are untagged, so alt texts carry nothing. `hide` and `pdf.attach` are compile errors: Typst drops hidden text from the frames altogether, so the check could never see it, and an attachment is text no page shows. `nexus_tailor::check` then decides:
@@ -263,13 +267,29 @@ M1's gate is still open (section 10). M2 and M3 are built on top of it, but none
 
 | Tool | Behaviour |
 |---|---|
-| `get_cv_source` | `variant` (default `default`), optional `revision`. Returns source, revision number, facts, template-library help |
-| `patch_cv` | `variant`, `expectedRevision` (required), `edits: [{oldText, newText}]` (each `oldText` must match exactly once, or the call fails naming the edit), `summary`, optional `origin`. Atomic. Compile failure returns diagnostics and stores nothing. Creates a variant from `default` with `createFrom` |
-| `render_cv_pdf` | `variant`, optional `revision`, `previewPages` (default 1), `saveToApplicationId`. Returns the PDF and PNG as base64 in MCP resource and image content. Saving makes a normal document, linked to the application |
-| `list_cv_revisions` | Paged, newest first, with `includeDiff` (unified diff against the parent) |
+| `get_cv_source` | `variant` (default `default`), optional `revision`. Returns source, revision number, facts without `bannedPhrases`, facts version and lock state, template-library help. A variant with nothing stored reads as revision 0, with a source generated from the master profile, or from the facts alone if there is none |
+| `patch_cv` | `variant`, `expectedRevision` (required, 0 for nothing stored), `edits: [{oldText, newText}]` (applied in order; each `oldText` must match exactly once in the source as edited so far, or the call fails naming the edit), `summary`, optional `origin` (free text up to 64 characters, default `mcp`, recorded as data). Atomic. Compile failure returns diagnostics and stores nothing. Creates a variant with `createFrom`, the name of the variant to start from, whose head `expectedRevision` then names. Returns the revision number, `reviewTokens`, a unified diff and the page count |
+| `render_cv_pdf` | `variant`, optional `revision`, `previewPages` (default 1, at most 3), `saveToApplicationId`. Returns a JSON summary, the PDF as an MCP `resource` with a base64 blob, and each PNG as MCP `image` content. Saving makes a normal document through the document store, linked to the application |
+| `list_cv_revisions` | Paged, newest first (`page`, `pageSize` up to 50), with `includeDiff` (unified diff against the parent, or against nothing if the parent is gone) |
 | `revert_cv` | `variant`, `toRevision`, `expectedRevision`. Adds a new revision with the old source: history never shrinks |
 
-**`generate_tailored_cv`.** The section 4 gap closes: it generates a source from the profile and patch, stores it as a revision of variant `application-<id>` (`origin: generate`), compiles, checks, and stores the PDF as a document linked to the application, replacing the previous one unless that was submitted. The response keeps the frozen fields: `message, documentId, originalName, size, applicationId, company, role`, and `warnings` when any. The parity differences change from "M1 gap" to "PDF bytes differ", since old Nexus used react-pdf.
+**The write flow.** Read the head, confirm `expectedRevision`, apply the edits, compile, check, then store in a transaction that re-reads the head and the facts' version. No connection is held across a compile. There is no override argument: unknown arguments are stripped by validation.
+
+| Error code | Means |
+|---|---|
+| `cv_facts_not_locked` | The owner hasn't locked the facts |
+| `cv_revision_conflict` | The head moved. Carries `currentRevision` and `expectedRevision` |
+| `cv_facts_changed` | The owner changed the facts during the compile. Nothing was stored: try again |
+| `cv_edit_no_match`, `cv_edit_ambiguous` | An `oldText` matched 0 or several times. Carries `edit` (its index), `oldText` and `matches` |
+| `cv_no_change` | The edits leave the source as it was |
+| `cv_compile_failed` | Carries `diagnostics` |
+| `cv_fact_violation` | Carries `violations`, each with `rule`, `token` and `context` |
+| `cv_variant_not_found`, `cv_revision_not_found`, `cv_variant_exists`, `cv_variant_name_invalid` | As named. A new variant's name is letters, digits, `-`, `_` and `.`, and can't start with `application-` |
+| `cv_render_busy` | Compiles run one at a time, and the 20 s wait for a turn ran out. Nothing was stored |
+| `cv_source_too_large`, `cv_too_many_pages`, `cv_pdf_too_large`, `cv_render_timeout`, `cv_render_memory_exceeded`, `cv_render_failed` | The worker's limits. `cv_pdf_too_large` is found only by a full render, since patches compile without a PDF |
+| `cv_render_result_too_large` | The PDF and previews together pass 12 MiB, which is what the transport is sized for. A PDF at its 10 MiB limit with a normal preview fits, tested over the real transport |
+
+**`generate_tailored_cv`.** The section 4 gap closes: it generates a source from the profile and patch, stores it as a revision of variant `application-<id>` (`origin: generate`), compiles, checks, and stores the PDF as a document linked to the application, replacing the previous one unless that was submitted. Nothing, the patch included, is stored unless the check passes. The response keeps the frozen fields: `message, documentId, originalName, size, applicationId, company, role`, and `warnings` when any, which hold only old Nexus's unmatched-ID messages. It needs no lock, as old Nexus had none, and judges against the facts as they stand: numbers in the wording are refused until the owner locks, which confirms them. The revision's `warnings` hold new capitalized words compared with the master profile. The parity differences change from "M1 gap" to "PDF bytes differ", since old Nexus used react-pdf.
 
 **Reactive Resume** stays usable until the owner has moved real applications across. Removing the old `/resume` and `/tailor` routes is already part of cutover (section 10).
 

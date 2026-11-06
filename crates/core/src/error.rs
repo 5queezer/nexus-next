@@ -20,6 +20,14 @@ pub enum Error {
     SubmittedStateReserved,
     #[error("document_already_submitted")]
     DocumentAlreadySubmitted,
+    #[error("cv_facts_locked")]
+    CvFactsLocked {
+        fields: Vec<String>,
+        tokens: Vec<String>,
+    },
+    /// An owner's `cv-facts` command that doesn't apply to the facts' current state.
+    #[error("{0}")]
+    CvFacts(&'static str),
     #[error("not a lowercase sha256 hex digest")]
     InvalidBlobAddress,
     #[error("blob {0} does not match its address")]

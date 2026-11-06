@@ -8,7 +8,7 @@ use nexus_core::Db;
 use nexus_core::blob::sha256_hex;
 use nexus_core::db::db_path;
 use nexus_core::import::{self, ImportError, ImportOptions, ImportSummary, TableCount};
-use nexus_core::repo::{applications, documents};
+use nexus_core::repo::{applications, cv, cv_facts, documents};
 use serde_json::{Value, json};
 use sqlx::Row as _;
 use tempfile::TempDir;
@@ -243,6 +243,55 @@ async fn ids_are_preserved_and_new_ids_continue_after_the_max() {
 }
 
 #[tokio::test]
+async fn a_real_profile_row_splits_as_upsert_would() {
+    let env = Env::new();
+    let experience = json!([{"id": "brightpath", "company": "Brightpath Logistics",
+        "title": "Software Engineer", "date": "2019 – 2022", "location": "Hamburg", "tier": 1,
+        "bullets": ["Built the routing service."]}]);
+    let education = json!([{"institution": "Nordsee University", "degree": "BSc Computer Science",
+        "date": "2015 – 2018", "location": "Kiel", "details": "Thesis on routing."}]);
+    env.edit_rows("CvProfile", |rows| {
+        rows[0]["experience"] = experience.clone();
+        rows[0]["education"] = education.clone();
+    });
+    env.reseal();
+    env.import().await.unwrap();
+
+    let db = env.db().await;
+    let mut conn = db.conn().await.unwrap();
+    let profile = cv::get_profile(&mut conn).await.unwrap().unwrap();
+    assert_eq!(profile.id, 2);
+    assert_eq!(profile.name, "Invented Person");
+    assert_eq!(profile.contact.0, json!({"email": "me@example.test"}));
+    assert_eq!(profile.experience.0, experience);
+    assert_eq!(profile.education.0, education);
+    let (kept,): (String,) = sqlx::query_as("SELECT experience FROM cv_profile")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+    assert!(
+        !kept.contains("Brightpath"),
+        "cv_profile keeps only wording"
+    );
+    let state = cv_facts::get(&mut conn).await.unwrap();
+    assert_eq!(state.facts.employment[0].company, "Brightpath Logistics");
+    assert_eq!(state.facts.education[0].id, "edu-1");
+    assert!(!state.is_locked(), "the owner locks after reading them");
+    drop(conn);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_profile_row_whose_facts_could_not_be_read_back_is_refused() {
+    let env = Env::new();
+    env.edit_rows("CvProfile", |rows| {
+        rows[0]["experience"] = json!([{"id": "x", "company": 7}]);
+    });
+    env.reseal();
+    assert_invalid(env.import().await, "experience");
+}
+
+#[tokio::test]
 async fn next_ids_follow_the_postgres_sequence_or_the_max_whichever_is_higher() {
     let env = Env::new();
     env.import().await.unwrap();
@@ -277,7 +326,7 @@ async fn next_ids_follow_the_postgres_sequence_or_the_max_whichever_is_higher() 
     assert_eq!(
         issued,
         "application_events=12 application_submissions=9 applications=14 contacts=7 \
-         cv_patches=6 cv_profile=2 documents=25"
+         cv_patches=6 cv_profile=2 cv_variants=1 documents=25"
     );
     drop(conn);
     db.close().await;

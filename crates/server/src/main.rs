@@ -5,6 +5,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use nexus_core::Db;
 use nexus_core::import::{self, ImportOptions};
+use nexus_core::repo::cv_facts::{self, OwnerFacts};
 use nexus_server::backup;
 use nexus_server::config::ServeArgs;
 use nexus_server::serve;
@@ -95,6 +96,18 @@ enum Command {
         #[arg(long)]
         keep_credentials: bool,
     },
+    /// See and change the CV's hard facts. Only the owner, on this machine, can do this: no tool can.
+    CvFacts {
+        #[arg(
+            long,
+            env = "NEXUS_DATA_DIR",
+            default_value = "/var/lib/nexus",
+            global = true
+        )]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        action: CvFactsAction,
+    },
     /// Record that documents' files are truly gone, so backups work again. Refuses a document whose
     /// file exists, and refuses while the server runs.
     MarkBlobMissing {
@@ -115,6 +128,60 @@ enum GrantAction {
         /// The ID from `grants list`, also logged as `grant=`.
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum CvFactsAction {
+    /// Print the facts, including banned phrases, to this terminal.
+    Show,
+    /// Replace the fields a profile can't express, from a JSON file: languages, metrics,
+    /// allowedTokens, bannedPhrases, vocabulary. Fields left out stay as they are.
+    Set {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Lock the facts, confirming the numbers in the profile's wording. Prints the ones it added.
+    Lock,
+    /// Unlock the facts, so that upsert_cv_profile can change them again.
+    Unlock,
+}
+
+/// Who a change by this command is recorded as.
+const CV_FACTS_ACTOR: &str = "cli";
+
+async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
+    if let CvFactsAction::Show = action {
+        let state = cv_facts::get(&mut *db.conn().await?).await?;
+        println!("{}", serde_json::to_string_pretty(&state)?);
+        return Ok(());
+    }
+    let mut tx = db.begin_write().await?;
+    let (state, added) = match action {
+        CvFactsAction::Show => unreachable!("handled above"),
+        CvFactsAction::Set { file } => {
+            let bytes =
+                std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
+            let fields: OwnerFacts = serde_json::from_slice(&bytes)
+                .with_context(|| format!("{} is not valid", file.display()))?;
+            (
+                cv_facts::set_owner_facts(&mut tx, &fields, CV_FACTS_ACTOR).await?,
+                Vec::new(),
+            )
+        }
+        CvFactsAction::Lock => cv_facts::lock(&mut tx, CV_FACTS_ACTOR).await?,
+        CvFactsAction::Unlock => (cv_facts::unlock(&mut tx, CV_FACTS_ACTOR).await?, Vec::new()),
+    };
+    tx.commit().await?;
+    for token in &added {
+        println!("added to allowed tokens: {token}");
+    }
+    let lock = if state.is_locked() {
+        "locked"
+    } else {
+        "unlocked"
+    };
+    println!("facts version {}, {lock}", state.version);
+    Ok(())
 }
 
 async fn shutdown_signal() {
@@ -265,6 +332,15 @@ async fn run() -> anyhow::Result<()> {
             let summary =
                 backup::restore(&from, &identity, &data_dir, force, keep_credentials).await?;
             println!("restored: {summary}");
+        }
+        Command::CvFacts { data_dir, action } => {
+            serve::init_logging(Level::INFO, std::io::stderr);
+            let db = Db::open(&data_dir)
+                .await
+                .context("cannot open the database")?;
+            let result = run_cv_facts(&db, action).await;
+            db.close().await;
+            result?;
         }
         Command::MarkBlobMissing { data_dir, ids } => {
             let changed = backup::mark_blob_missing(&data_dir, &ids).await?;

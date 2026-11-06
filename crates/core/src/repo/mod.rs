@@ -9,6 +9,8 @@ pub mod api_tokens;
 pub mod applications;
 pub mod contacts;
 pub mod cv;
+pub mod cv_facts;
+pub mod cv_revisions;
 pub mod documents;
 pub mod events;
 pub mod oauth;

@@ -2095,7 +2095,7 @@ async fn pipeline_healthcheck_reports_findings() {
 }
 
 #[tokio::test]
-async fn cv_profile_and_generation_gap() {
+async fn cv_profile_and_generation() {
     let server = Server::start().await;
     let id = server.application("Acme").await;
     let none = server.call("get_cv_profile", json!({})).await;
@@ -2160,18 +2160,13 @@ async fn cv_profile_and_generation_gap() {
             .contains("too_big")
     );
 
-    let gap = server.call("generate_tailored_cv", generate).await;
-    assert!(gap.err_text().contains("M2"));
+    let generated = server.call("generate_tailored_cv", generate).await.ok();
+    assert_eq!(generated["message"], "CV generated successfully");
+    assert_eq!(generated["originalName"], "CV - Acme - Engineer.pdf");
     assert_eq!(
-        server.call("list_documents", json!({})).await.ok(),
-        json!([]),
-        "generation writes nothing"
+        server.call("list_documents", json!({})).await.ok()[0]["id"],
+        generated["documentId"]
     );
-    let patches: i64 = sqlx::query_scalar("SELECT count(*) FROM cv_patches")
-        .fetch_one(server.db.pool())
-        .await
-        .unwrap();
-    assert_eq!(patches, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

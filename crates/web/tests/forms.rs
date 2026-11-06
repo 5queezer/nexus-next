@@ -25,11 +25,12 @@ struct Fixture {
 async fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(dir.path()).await.unwrap();
-    let state = McpState {
-        db: db.clone(),
-        owner_id: "owner-1".to_owned(),
-        owner_email: "owner@example.com".to_owned(),
-    };
+    let state = McpState::new(
+        db.clone(),
+        "owner-1".to_owned(),
+        "owner@example.com".to_owned(),
+        nexus_mcp::Renderer::InProcess,
+    );
     let app = nexus_web::dashboard_router(state.clone(), "Europe/Madrid".parse().unwrap())
         .merge(nexus_web::static_router());
     Fixture {

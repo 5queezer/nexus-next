@@ -19,6 +19,7 @@ use sqlx::{AssertSqlSafe, ConnectOptions, Connection, SqliteConnection};
 
 use crate::blob::{BlobStore, sha256_hex};
 use crate::db::{self, MIGRATOR, create_data_dir, db_path, side_file};
+use crate::repo::cv::{split_education, split_experience};
 use crate::time::Timestamp;
 
 #[derive(Debug, thiserror::Error)]
@@ -296,6 +297,22 @@ const CV_PROFILE: Spec = Spec {
         ("experience", Json),
         ("projects", Json),
         ("education", Json),
+        ("createdAt", Ts),
+        ("updatedAt", Ts),
+    ],
+};
+
+/// What `cv_profile` holds once [`split_cv_profile`] has moved the facts out.
+const CV_PROFILE_WORDING: Spec = Spec {
+    file: "CvProfile",
+    table: "cv_profile",
+    dropped: &["userId"],
+    columns: &[
+        ("id", Int),
+        ("profile", Text),
+        ("skills", Json),
+        ("experience", Json),
+        ("projects", Json),
         ("createdAt", Ts),
         ("updatedAt", Ts),
     ],
@@ -742,8 +759,15 @@ async fn is_replaceable(path: &Path) -> std::result::Result<bool, sqlx::Error> {
     .await?;
     let mut rows = 0_i64;
     for table in tables {
+        // Every migrated database starts with these rows.
+        let written = match table.as_str() {
+            "cv_facts" => " WHERE version > 1",
+            "cv_variants" => " WHERE name != 'default' OR head_revision_id IS NOT NULL",
+            "sqlite_sequence" => " WHERE name != 'cv_variants'",
+            _ => "",
+        };
         rows += sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!(
-            "SELECT count(*) FROM \"{table}\""
+            "SELECT count(*) FROM \"{table}\"{written}"
         )))
         .fetch_one(&mut conn)
         .await?;
@@ -798,8 +822,50 @@ fn issued_through(
     Ok(Some(max_id.max(*sequence)))
 }
 
+/// The facts of an exported profile, as `cv_facts` holds them.
+struct ProfileFacts {
+    name: String,
+    contact: Value,
+    employment: Value,
+    education: Value,
+}
+
+/// Splits owner profile rows as `upsert_cv_profile` would: facts leave the row, wording stays. A
+/// value `cv_facts` couldn't later be read back from is refused here, not at the first render.
+fn split_cv_profile(rows: &mut [Row]) -> Result<Option<ProfileFacts>> {
+    let mut facts = None;
+    for row in rows {
+        let bad = |field: &str| {
+            invalid!(
+                "{} line {}: {field} does not have the expected shape",
+                CV_PROFILE.file,
+                row.line
+            )
+        };
+        let name = row.string("name").ok_or_else(|| bad("name"))?.to_owned();
+        let contact = row.fields.get("contact").cloned().unwrap_or(Value::Null);
+        serde_json::from_value::<nexus_tailor::Contact>(contact.clone())
+            .map_err(|_| bad("contact"))?;
+        let (employment, wording) = split_experience(&row.fields["experience"]);
+        serde_json::from_value::<Vec<nexus_tailor::Employment>>(employment.clone())
+            .map_err(|_| bad("experience"))?;
+        let education = split_education(&row.fields["education"]);
+        serde_json::from_value::<Vec<nexus_tailor::Education>>(education.clone())
+            .map_err(|_| bad("education"))?;
+        row.fields.insert("experience".to_owned(), wording);
+        facts = Some(ProfileFacts {
+            name,
+            contact,
+            employment,
+            education,
+        });
+    }
+    Ok(facts)
+}
+
 struct Plan<'a> {
     tables: [(&'a Spec, Vec<Row>); 8],
+    profile_facts: Option<ProfileFacts>,
     blobs: &'a [BlobPlan],
     manifest_sha256: &'a str,
     sequences: &'a HashMap<String, i64>,
@@ -822,6 +888,15 @@ async fn build_database(path: &Path, plan: &Plan<'_>) -> Result<()> {
     let mut tx = conn.begin().await?;
     for (spec, rows) in &plan.tables {
         insert_rows(&mut tx, spec, rows).await?;
+    }
+    if let Some(facts) = &plan.profile_facts {
+        sqlx::query("UPDATE cv_facts SET name = ?, contact = ?, employment = ?, education = ?")
+            .bind(&facts.name)
+            .bind(facts.contact.to_string())
+            .bind(facts.employment.to_string())
+            .bind(facts.education.to_string())
+            .execute(&mut *tx)
+            .await?;
     }
     for blob in plan.blobs {
         sqlx::query(
@@ -1058,7 +1133,8 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
     let (events, _) = partition(events, |row| {
         foreign(row) || row.flag("isDemo") || of_skipped_app(row)
     });
-    let (cv_profiles, _) = partition(cv_profiles, foreign);
+    let (mut cv_profiles, _) = partition(cv_profiles, foreign);
+    let profile_facts = split_cv_profile(&mut cv_profiles)?;
     let (cv_patches, _) = partition(cv_patches, of_skipped_app);
 
     let (blobs, missing_list_disagreements) =
@@ -1073,7 +1149,7 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
         (&DOCUMENTS, documents),
         (&LINKS, links),
         (&EVENTS, events),
-        (&CV_PROFILE, cv_profiles),
+        (&CV_PROFILE_WORDING, cv_profiles),
         (&CV_PATCHES, cv_patches),
     ];
     let mut summary = ImportSummary {
@@ -1099,6 +1175,7 @@ pub async fn run(options: &ImportOptions) -> Result<ImportSummary> {
     remove_if_present(&side_file(&temp, "-journal"))?;
     let plan = Plan {
         tables,
+        profile_facts,
         blobs: &blobs,
         manifest_sha256: &export.manifest_sha256,
         sequences: &sequences,

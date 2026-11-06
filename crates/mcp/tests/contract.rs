@@ -9,27 +9,29 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use serde_json::{Value, json};
 
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut keys: Vec<_> = map.keys().collect();
-            keys.sort();
-            let mut sorted = serde_json::Map::new();
-            for key in keys {
-                sorted.insert(key.clone(), canonical(&map[key]));
-            }
-            Value::Object(sorted)
-        }
-        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
-        other => other.clone(),
+#[test]
+fn additive_tools_keep_the_snapshot_style() {
+    let additive: Value =
+        serde_json::from_str(include_str!("../../../contract/mcp-tools.additive.json")).unwrap();
+    let tools = additive["tools"].as_array().unwrap();
+    assert_eq!(additive["count"], tools.len());
+    for tool in tools {
+        let schema = &tool["inputSchema"];
+        assert_eq!(schema["$schema"], "http://json-schema.org/draft-07/schema#");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(tool["execution"]["taskSupport"], "forbidden");
     }
 }
 
 #[tokio::test]
-async fn tools_list_is_byte_equal_to_the_snapshot() {
+async fn tools_list_is_byte_equal_to_the_contract_files() {
     let server = Server::start().await;
     let snapshot: Value =
         serde_json::from_str(include_str!("../../../contract/mcp-tools.snapshot.json")).unwrap();
+    let additive: Value =
+        serde_json::from_str(include_str!("../../../contract/mcp-tools.additive.json")).unwrap();
+    let frozen = snapshot["tools"].as_array().unwrap();
+    let added = additive["tools"].as_array().unwrap();
     for token in [FULL, TOOLS_ONLY] {
         let (status, body) = server
             .post(
@@ -38,9 +40,19 @@ async fn tools_list_is_byte_equal_to_the_snapshot() {
             )
             .await;
         assert_eq!(status, 200);
-        let served = serde_json::to_string(&canonical(&body["result"]["tools"])).unwrap();
-        let frozen = serde_json::to_string(&canonical(&snapshot["tools"])).unwrap();
-        assert_eq!(served, frozen);
+        let tools = body["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), frozen.len() + added.len());
+        let (served_frozen, served_added) = tools.split_at(frozen.len());
+        assert_eq!(
+            serde_json::to_string(served_frozen).unwrap(),
+            serde_json::to_string(frozen).unwrap(),
+            "the 35 frozen tools, in order, byte for byte"
+        );
+        assert_eq!(
+            serde_json::to_string(served_added).unwrap(),
+            serde_json::to_string(added).unwrap(),
+            "then the additive ones"
+        );
         assert_eq!(
             body["result"].as_object().unwrap().len(),
             1,
@@ -68,8 +80,9 @@ async fn a_real_mcp_client_connects_lists_and_calls() {
     );
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 35);
+    assert_eq!(tools.len(), 40);
     assert_eq!(tools[0].name, "list_applications");
+    assert_eq!(tools[35].name, "get_cv_source");
 
     let mut args = serde_json::Map::new();
     args.insert("company".to_owned(), "Acme Robotics".into());

@@ -1262,8 +1262,8 @@ async fn cv_profile_is_a_single_row() {
         1
     );
     let extra = sqlx::query(
-        "INSERT INTO cv_profile (singleton, name, contact, profile, skills, experience, updated_at)
-         VALUES (2, 'x', '{}', 'p', '[]', '[]', '2026-01-01T00:00:00.000Z')",
+        "INSERT INTO cv_profile (singleton, profile, skills, experience, updated_at)
+         VALUES (2, 'p', '[]', '[]', '2026-01-01T00:00:00.000Z')",
     )
     .execute(&mut *conn)
     .await;

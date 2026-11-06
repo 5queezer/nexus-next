@@ -1101,6 +1101,20 @@ fn check_binding(document: &Document, facts: &Facts, findings: &mut Findings) {
     }
 }
 
+/// The numbers and spelled-out counts in `text` that the facts don't vouch for, as written there.
+/// Each one, added to `allowed_tokens`, passes the check.
+pub fn unverified_numbers(text: &str, facts: &Facts) -> Vec<String> {
+    let known = Known::new(facts);
+    let masked = known.mask_contact(&normalize(text));
+    let mut findings = Findings {
+        seen: HashSet::new(),
+        violations: Vec::new(),
+    };
+    check_numbers(&masked, &known, &mut findings);
+    check_number_words(&prepare_for_words(&masked), &known, &mut findings);
+    findings.violations.into_iter().map(|v| v.token).collect()
+}
+
 /// Judges a rendered document against the facts. `previous` is the parent revision's text, for
 /// `review_tokens`. Linear in the text, for facts of a fixed size.
 pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>) -> Report {

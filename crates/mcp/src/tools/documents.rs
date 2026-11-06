@@ -137,9 +137,14 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|e| nexus_core::Error::Io(std::io::Error::other(e)))?
 }
 
+pub(super) async fn put_blob(db: &Db, bytes: Arc<Vec<u8>>) -> nexus_core::Result<String> {
+    let blobs = db.blobs().clone();
+    run_blocking(move || blobs.put(&bytes)).await
+}
+
 /// Holds the write lock across the check and the removal, so an upload of the same bytes can't
 /// commit its row in between. `upload` restores the file under the same lock.
-async fn remove_blob_if_unreferenced(db: &Db, sha256: String) -> nexus_core::Result<()> {
+pub(super) async fn remove_blob_if_unreferenced(db: &Db, sha256: String) -> nexus_core::Result<()> {
     let mut tx = db.begin_write().await?;
     if repo::blob_is_referenced(&mut tx, &sha256).await? {
         return Ok(());
@@ -197,11 +202,7 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
         blob_sha256: String::new(),
     };
     let bytes = Arc::new(bytes);
-    let put = |bytes: Arc<Vec<u8>>| {
-        let blobs = ctx.state.db.blobs().clone();
-        run_blocking(move || blobs.put(&bytes))
-    };
-    let Ok(sha256) = put(bytes.clone()).await else {
+    let Ok(sha256) = put_blob(&ctx.state.db, bytes.clone()).await else {
         return Ok(text_error("Failed to upload document"));
     };
     let new = NewDocument {
@@ -212,7 +213,7 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
         let mut tx = ctx.state.db.begin_write().await?;
         // A delete of the same bytes may have removed the file since the put above.
         if !ctx.state.db.blobs().exists(&sha256)? {
-            put(bytes.clone()).await?;
+            put_blob(&ctx.state.db, bytes.clone()).await?;
         }
         let document = repo::create(&mut tx, &new).await?;
         tx.commit().await?;

@@ -1,7 +1,7 @@
 //! The HTTP surface of old Nexus's stateless, JSON-response TS SDK transport: its header checks,
 //! JSON-RPC error bodies, batches, GET and DELETE. Single requests then go to rmcp's stateless
-//! service, except `tools/list`: rmcp's `Tool` has no `execution` field, so the frozen tools are
-//! served as they are.
+//! service, except `tools/list`: rmcp's `Tool` has no `execution` field, so the tools are served as
+//! the contract files have them.
 
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use serde_json::{Value, json};
 
-use crate::{Handler, McpState, frozen_tools};
+use crate::{Handler, McpState, all_tools};
 
 /// Old Nexus had no body limit. This keeps the largest legal upload (about 14 MB of base64) well
 /// inside it while bounding what one request can make the board hold in memory.
@@ -300,7 +300,7 @@ async fn answer(service: &Rmcp, parts: &axum::http::request::Parts, mut message:
     }
     match method(&message) {
         Some("tools/list") => {
-            json!({"result": {"tools": frozen_tools()}, "jsonrpc": "2.0", "id": id})
+            json!({"result": {"tools": all_tools()}, "jsonrpc": "2.0", "id": id})
         }
         Some("initialize" | "ping" | "tools/call") => {
             // Old Nexus ignored `_meta`; to rmcp it can select a newer protocol's lifecycle.
