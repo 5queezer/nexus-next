@@ -169,8 +169,20 @@ async fn run_grants(db: &Db, action: GrantAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Not a clap subcommand, so it stays out of `--help`, and handled before the async runtime starts,
+/// so a compile runs in a plain process.
+fn main() -> anyhow::Result<()> {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "__render")
+    {
+        nexus_tailor::run_worker();
+    }
+    run()
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Import {
             export,
