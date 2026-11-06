@@ -1,5 +1,6 @@
 //! Follow-up classification, ported from old Nexus's `focus-queue.ts` and `follow-up-policy.ts`.
 
+use std::cmp::Reverse;
 use std::sync::LazyLock;
 
 use chrono::{NaiveDate, Utc};
@@ -127,7 +128,7 @@ pub fn build<'a>(
                 (
                     x.follow_up_at.is_none(),
                     x.follow_up_at.clone(),
-                    -x.triage_quality.unwrap_or(0),
+                    Reverse(x.triage_quality.unwrap_or(0)),
                     x.id,
                 )
             };

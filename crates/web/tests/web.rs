@@ -553,7 +553,7 @@ async fn calendar_lists_interviews_and_follow_ups_per_rfc_5545() {
     assert!(
         property(interview, "DESCRIPTION")
             .unwrap()
-            .contains("Call back\\nsecond line")
+            .contains("Engineer (#")
     );
 
     let dated = events
@@ -630,5 +630,205 @@ async fn rescheduled_interview_keeps_its_uid_and_later_rounds_get_new_ones() {
         rounds
             .iter()
             .any(|e| property(e, "UID") == Some(format!("interview-{id}-{round_two}@nexus")))
+    );
+}
+
+// ── Strange stored data ──────────────────────────────────────────────────────
+
+async fn raw(db: &Db, sql: &str) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+/// Every value here passes the columns' checks, which only look at a timestamp's shape and whether
+/// JSON parses. Agents can't store most of them, but the pages must not depend on that.
+const NOT_A_DATE: &str = "2026-99-99T99:99:99.999Z";
+
+#[tokio::test]
+async fn poisoned_rows_cost_at_most_themselves_on_every_page() {
+    let f = fixture().await;
+    let good = add_app(&f.db, "Good Co", "applied", |fields| {
+        fields.follow_up_at = Some(Some(ts("2030-01-02T10:00:00Z")));
+    })
+    .await;
+    add_event(
+        &f.db,
+        good,
+        "interview_scheduled",
+        "2026-01-01T10:00:00Z",
+        json!({"scheduledAt": "2030-02-01T10:00:00Z", "interviewType": "good"}),
+    )
+    .await;
+
+    raw(
+        &f.db,
+        &format!(
+            r#"INSERT INTO applications (id, company, role, status, current_stage, applied_at,
+                   last_contact, follow_up_at, archived_at, job_posted_at, created_at, updated_at,
+                   salary_min, salary_max, rating, triage_quality, event_version,
+                   eligible_countries, primary_locations, job_url)
+               VALUES
+                 (900, 'Bad Dates', 'r', 'interview', 'x', '{d}', '{d}', '{d}', NULL, '{d}', '{d}', '{d}',
+                  -9223372036854775808, 9223372036854775807, -9223372036854775808,
+                  -9223372036854775808, 9223372036854775807, '{{"a":1}}', '5', 'javascript:x'),
+                 (901, 'Min Quality', 'r', 'not-a-status', '', NULL, NULL, '2030-01-02T10:00:00.000Z',
+                  NULL, NULL, '0000-01-01T00:00:00.000Z', '9999-12-31T23:59:59.999Z',
+                  NULL, NULL, NULL, -9223372036854775808, 0, '[[[]]]', 'null', ''),
+                 (902, 'Max Quality', 'r', '', '', NULL, NULL, '2030-01-02T10:00:00.000Z',
+                  NULL, NULL, '9999-12-31T23:59:59.999Z', '0000-01-01T00:00:00.000Z',
+                  NULL, NULL, NULL, 9223372036854775807, 0, NULL, NULL, NULL);"#,
+            d = NOT_A_DATE
+        ),
+    )
+    .await;
+    let metadata = [
+        r#"{"scheduledAt":"2030-03-01T10:00:00Z","interviewType":"huge","durationMinutes":1000000000000}"#,
+        r#"{"scheduledAt":"2030-03-02T10:00:00Z","interviewType":"max","durationMinutes":9223372036854775807}"#,
+        r#"{"scheduledAt":"2030-03-03T10:00:00Z","interviewType":"min","durationMinutes":-9223372036854775808}"#,
+        r#"{"scheduledAt":"2030-03-04T10:00:00Z","interviewType":"float","durationMinutes":1.5e300}"#,
+        r#"{"scheduledAt":"2030-03-05T10:00:00Z","interviewType":"text","durationMinutes":"long"}"#,
+        r#"{"scheduledAt":"9999-12-31T23:59:59.000Z","interviewType":"last","durationMinutes":1440}"#,
+        r#"{"scheduledAt":"0000-01-01T00:00:00.000Z","interviewType":"first"}"#,
+        r#"{"scheduledAt":"2026-99-99T99:99:99.999Z","interviewType":"bad"}"#,
+        r#"{"scheduledAt":12345,"interviewType":{"a":1},"note":[1,2],"followUpAt":null}"#,
+        "[1,2,3]",
+        "5",
+        "null",
+        r#"{"overflow":1e999}"#,
+    ];
+    for (i, metadata) in metadata.iter().enumerate() {
+        raw(
+            &f.db,
+            &format!(
+                "INSERT INTO application_events (application_id, type, occurred_at, created_at, metadata)
+                 VALUES (900, 'interview_scheduled', '{d}', '{d}', '{m}');
+                 INSERT INTO application_events (application_id, type, occurred_at, metadata)
+                 VALUES (900, 'x{i}', '2026-01-01T10:00:00.000Z', '{m}');",
+                d = NOT_A_DATE,
+                m = metadata.replace('\'', "''"),
+            ),
+        )
+        .await;
+    }
+    let deep = format!("{}1{}", "[".repeat(300), "]".repeat(300));
+    raw(
+        &f.db,
+        &format!(
+            r#"INSERT INTO application_events (application_id, type, occurred_at, metadata)
+                 VALUES (900, 'deep', '2026-01-01T10:00:00.000Z', '{deep}');
+               INSERT INTO contacts (application_id, name, created_at)
+                 VALUES (900, 'Contact', '{d}');
+               INSERT INTO documents (filename, original_name, size, mime_type, uploaded_at, version)
+                 VALUES ('f', 'f', -9223372036854775808, '', '{d}', -1);
+               INSERT INTO application_documents (application_id, document_id)
+                 VALUES (900, last_insert_rowid());
+               INSERT INTO application_submissions (application_id, idempotency_key, request_hash,
+                     submitted_at, answers, policy, document_ids)
+                 VALUES (900, 'k1', 'h', '{d}', '5', '[]', '"x"'),
+                        (900, 'k2', 'h', '2026-01-01T10:00:00.000Z', '{{"a":1e999}}', '{{}}', '[]'),
+                        (900, 'k3', 'h', '2026-01-01T10:00:00.000Z', '[{{"question":5,"answer":null}}, 7]', 'null', '{{}}');"#,
+            d = NOT_A_DATE,
+        ),
+    )
+    .await;
+
+    for path in [
+        "/",
+        "/?archived=all",
+        "/queue",
+        "/applications/900",
+        "/applications/901",
+        "/applications/902",
+        "/api/applications",
+        "/api/applications/900",
+        "/api/applications/900/events",
+        "/api/applications/900/contacts",
+        "/api/applications/900/documents",
+        "/api/applications/900/submissions",
+    ] {
+        let (status, _, _) = fetch(&f.app, path).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+    }
+
+    let pipeline = html(&f.app, "/?archived=all").await;
+    assert!(pipeline.contains("Good Co") && pipeline.contains("Bad Dates"));
+    let queue = html(&f.app, "/queue").await;
+    assert!(queue.contains("Good Co") && queue.contains("Min Quality"));
+    assert!(
+        queue.find("Max Quality") < queue.find("Min Quality"),
+        "higher triage quality comes first, even at the limits"
+    );
+
+    let (status, _, bytes) = fetch(&f.app, &format!("/calendar.ics?token={TOKEN}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let body = String::from_utf8(bytes).unwrap();
+    let events = parse_calendar(&body);
+    let summaries: Vec<String> = events
+        .iter()
+        .map(|event| {
+            event
+                .properties
+                .iter()
+                .find(|p| p.name == "SUMMARY")
+                .and_then(|p| p.value.clone())
+                .unwrap()
+        })
+        .collect();
+    assert!(
+        summaries.iter().any(|s| s.contains("good")),
+        "{summaries:?}"
+    );
+    assert!(
+        summaries.iter().any(|s| s.contains("huge")),
+        "{summaries:?}"
+    );
+    for line in body.lines().filter(|l| l.starts_with("DTEND")) {
+        assert_eq!(line.trim().len(), "DTEND:20300301T110000Z".len(), "{line}");
+    }
+    assert!(body.contains("DTSTART:20300301T100000Z\r\nDTEND:20300301T110000Z"));
+    assert!(body.contains("DTSTART:20300302T100000Z\r\nDTEND:20300302T110000Z"));
+    assert!(body.contains("DTSTART:20300303T100000Z\r\nDTEND:20300303T110000Z"));
+    assert!(body.contains("DTSTART:99991231T235959Z\r\nDTEND:99991231T235959Z"));
+}
+
+#[tokio::test]
+async fn the_longest_allowed_interview_is_kept_and_longer_ones_get_the_default() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Long Co", "interview", |_| {}).await;
+    for (day, minutes) in [(1, 1440), (2, 1441), (3, 0)] {
+        add_event(
+            &f.db,
+            id,
+            "interview_scheduled",
+            "2026-01-01T10:00:00Z",
+            json!({
+                "scheduledAt": format!("2030-03-0{day}T10:00:00Z"),
+                "interviewType": format!("round {day}"),
+                "durationMinutes": minutes,
+            }),
+        )
+        .await;
+    }
+    let body = calendar(&f.app).await;
+    assert!(body.contains("DTSTART:20300301T100000Z\r\nDTEND:20300302T100000Z"));
+    assert!(body.contains("DTSTART:20300302T100000Z\r\nDTEND:20300302T110000Z"));
+    assert!(body.contains("DTSTART:20300303T100000Z\r\nDTEND:20300303T110000Z"));
+}
+
+#[tokio::test]
+async fn the_feed_leaves_out_free_text_next_action() {
+    let f = fixture().await;
+    add_app(&f.db, "Quiet Co", "applied", |fields| {
+        fields.follow_up_at = Some(Some(ts("2030-01-02T10:00:00Z")));
+        fields.next_action = Some(Some("PRIVATE-NOTE call the recruiter".to_owned()));
+    })
+    .await;
+    let body = calendar(&f.app).await;
+    assert!(body.contains("Follow up: Quiet Co"), "{body}");
+    assert!(
+        !body.contains("PRIVATE-NOTE") && !body.contains("Next action"),
+        "{body}"
     );
 }

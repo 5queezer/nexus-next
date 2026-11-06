@@ -1839,6 +1839,7 @@ async fn auth_state_refuses_to_build_without_a_valid_hash_or_base_url() {
         public_base_url: base.to_owned(),
         owner_passphrase_hash: hash.to_owned(),
         trusted_proxy: None,
+        redirect_hosts: Vec::new(),
     };
     for hash in ["", "plaintext passphrase", "$2b$12$abcdefghijklmnopqrstuv"] {
         assert!(matches!(
@@ -1946,6 +1947,7 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
             public_base_url: BASE.to_owned(),
             owner_passphrase_hash: std::fs::read_to_string(&path).unwrap().trim().to_owned(),
             trusted_proxy: None,
+            redirect_hosts: Vec::new(),
         },
     )
     .unwrap();
@@ -1961,4 +1963,193 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
         .attempt_login(&h, "another passphrase", DEFAULT_IP)
         .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+}
+
+// ── Redirect allowlist ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn only_listed_hosts_and_loopback_can_register() {
+    let h = Harness::new().await;
+    for good in [
+        REDIRECT,
+        "https://client.example.test:8443/cb",
+        "http://127.0.0.1:39123/callback",
+        "http://localhost:39123/callback",
+    ] {
+        h.register_with(json!({ "redirect_uris": [good] })).await;
+    }
+    for evil in [
+        "https://evil.test/cb",
+        "https://client.example.test.evil.test/cb",
+        "https://sub.client.example.test/cb",
+        "https://client.example.test./cb",
+        "https://client.example.test@evil.test/cb",
+        "https://client.example.test;script-src.evil.test/cb",
+        "https://client.example.test,evil.test/cb",
+        "https://xn--laude-0ye.ai/cb",
+    ] {
+        let reply = h
+            .send(json_req(
+                "/api/mcp/register",
+                &json!({ "redirect_uris": [REDIRECT, evil] }),
+            ))
+            .await;
+        reply.assert_error(StatusCode::BAD_REQUEST, "invalid_client_metadata");
+        assert!(
+            reply.json()["error_description"]
+                .as_str()
+                .unwrap()
+                .starts_with("redirect_uri host is not allowed: "),
+            "{evil}: {}",
+            reply.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_refused_registration_spends_no_budget() {
+    let h = Harness::new().await;
+    for i in 0..100 {
+        let refused = with_ip(
+            json_req(
+                "/api/mcp/register",
+                &json!({ "redirect_uris": ["https://evil.test/cb"] }),
+            ),
+            &format!("203.0.113.{i}"),
+        );
+        assert_eq!(h.send(refused).await.status, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(h.count("oauth_clients").await, 0);
+    assert_eq!(
+        h.send(register_from("203.0.113.1")).await.status,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+async fn a_client_registered_before_the_list_is_refused_at_authorize() {
+    let h = Harness::new().await;
+    execute(
+        &h,
+        r#"INSERT INTO oauth_clients (client_id, redirect_uris, grant_types, response_types)
+           VALUES ('old', '["https://evil.test/cb"]', '[]', '[]')"#,
+    )
+    .await;
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let reply = browser
+        .send(
+            &h,
+            get_req(&format!(
+                "/api/mcp/authorize?client_id=old&redirect_uri={}&code_challenge={CHALLENGE}&response_type=code",
+                encode("https://evil.test/cb")
+            )),
+        )
+        .await;
+    reply.assert_error(StatusCode::BAD_REQUEST, "invalid_request");
+    assert!(reply.body.contains("evil.test"), "{}", reply.body);
+    assert_eq!(h.count("oauth_auth_codes").await, 0);
+}
+
+#[tokio::test]
+async fn a_client_name_cannot_hold_control_or_format_characters() {
+    let h = Harness::new().await;
+    for name in [
+        "Claude\u{202e}ia.edualc",
+        "Cl\u{200b}aude",
+        "Claude\n",
+        "Claude\u{7f}",
+        "\u{feff}Claude",
+    ] {
+        h.send(json_req(
+            "/api/mcp/register",
+            &json!({ "client_name": name, "redirect_uris": [REDIRECT] }),
+        ))
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_client_metadata");
+    }
+    assert_eq!(h.count("oauth_clients").await, 0);
+    // Other scripts and ordinary punctuation are fine, and the page isolates a stored name.
+    let client = h
+        .register_with(json!({
+            "client_name": "Клиент — שלום",
+            "redirect_uris": [REDIRECT],
+            "token_endpoint_auth_method": "none",
+        }))
+        .await;
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let page = browser
+        .send(
+            &h,
+            get_req(&authorize_path(
+                client["client_id"].as_str().unwrap(),
+                "mcp:tools",
+            )),
+        )
+        .await;
+    assert!(
+        page.body.contains("<bdi>Клиент — שלום</bdi>"),
+        "{}",
+        page.body
+    );
+}
+
+// ── Grants ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn one_grant_can_be_listed_and_revoked_without_touching_the_others() {
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let first = h.grant(&id, "mcp:tools mcp:submissions").await;
+    let second = h.grant(&id, "mcp:tools").await;
+    let token = |grant: &Value| grant["access_token"].as_str().unwrap().to_owned();
+
+    let grants = nexus_auth::list_grants(&h.db).await.unwrap();
+    assert_eq!(grants.len(), 2);
+    assert!(grants.iter().all(|g| g.client_id == id
+        && g.client_name == "Synthetic Client"
+        && g.redirect_origin == "https://client.example.test"
+        && g.id.len() == 12));
+    assert!(
+        grants
+            .iter()
+            .any(|g| g.scopes == "mcp:tools mcp:submissions")
+    );
+
+    assert!(matches!(
+        nexus_auth::revoke_grant(&h.db, "").await,
+        Err(nexus_auth::RevokeError::NotFound)
+    ));
+    assert!(matches!(
+        nexus_auth::revoke_grant(&h.db, "0000000000000").await,
+        Err(nexus_auth::RevokeError::NotFound)
+    ));
+
+    let target = grants.iter().find(|g| g.scopes == "mcp:tools").unwrap();
+    let revoked = nexus_auth::revoke_grant(&h.db, &target.id).await.unwrap();
+    assert_eq!((revoked.access_tokens, revoked.refresh_tokens), (1, 1));
+    assert_eq!(
+        h.whoami(&token(&second)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(h.whoami(&token(&first)).await.status, StatusCode::OK);
+    assert_eq!(nexus_auth::list_grants(&h.db).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn set_passphrase_refuses_short_and_repetitive_passphrases() {
+    let h = Harness::new().await;
+    let path = h.dir.path().join("hash");
+    assert!(matches!(
+        set_owner_passphrase(&h.db, &path, "fifteen chars..").await,
+        Err(PassphraseError::TooShort)
+    ));
+    for weak in ["aaaaaaaaaaaaaaaa", "abcdabcdabcdabcd"] {
+        assert!(matches!(
+            set_owner_passphrase(&h.db, &path, weak).await,
+            Err(PassphraseError::Repetitive)
+        ));
+    }
+    assert!(!path.exists());
 }

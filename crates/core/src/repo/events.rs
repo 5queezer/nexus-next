@@ -115,14 +115,15 @@ pub async fn list_for_application(
     application_id: i64,
     limit: Option<i64>,
 ) -> Result<Vec<ApplicationEvent>> {
-    Ok(sqlx::query_as(
+    let rows = sqlx::query(
         "SELECT * FROM application_events WHERE application_id = ?
          ORDER BY occurred_at DESC, id DESC LIMIT ?",
     )
     .bind(application_id)
     .bind(limit.unwrap_or(100).clamp(1, 500))
     .fetch_all(conn)
-    .await?)
+    .await?;
+    Ok(super::decode_rows(rows))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -218,8 +219,9 @@ pub async fn list_filtered(conn: &mut SqliteConnection, filter: &EventFilter) ->
     ))
     .push_bind(filter.limit + 1);
 
-    let mut items: Vec<ApplicationEvent> = qb.build_query_as().fetch_all(&mut *conn).await?;
-    let has_more = items.len() as i64 > filter.limit;
+    let rows = qb.build().fetch_all(&mut *conn).await?;
+    let has_more = rows.len() as i64 > filter.limit;
+    let mut items: Vec<ApplicationEvent> = super::decode_rows(rows);
     items.truncate(filter.limit.max(0) as usize);
 
     let ids: Vec<i64> = items.iter().map(|event| event.application_id).collect();

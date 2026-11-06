@@ -68,7 +68,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         addr,
         &format!(
             "GET /calendar.ics?token={CALENDAR_TOKEN}&who=jane.doe@example.com HTTP/1.1\r\n\
-             Host: x\r\nAuthorization: Bearer hunter2-bearer\r\nCookie: sid=hunter2-cookie\r\n\
+             Host: localhost\r\nAuthorization: Bearer hunter2-bearer\r\nCookie: sid=hunter2-cookie\r\n\
              Connection: close\r\n\r\n"
         ),
     )
@@ -76,19 +76,19 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     assert!(feed.starts_with("HTTP/1.1 200"), "{feed}");
     send(
         addr,
-        "GET /calendar.ics?token=wrong-guess-12345 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /calendar.ics?token=wrong-guess-12345 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     )
     .await;
     send(
         addr,
-        "GET /applications/424242?q=secret-search HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /applications/424242?q=secret-search HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     )
     .await;
     let body = "body-secret-payload";
     send(
         addr,
         &format!(
-            "POST /api/mcp/token?code=oauth-code-xyz HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\
+            "POST /api/mcp/token?code=oauth-code-xyz HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\
              Connection: close\r\n\r\n{body}",
             body.len()
         ),
@@ -99,7 +99,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     let created = send(
         addr,
         &format!(
-            "POST /api/mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\
+            "POST /api/mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
              Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\
              Connection: close\r\n\r\n{tool_call}",
             tool_call.len()

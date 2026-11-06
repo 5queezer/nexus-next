@@ -2122,6 +2122,8 @@ dependencies = [
  "clap",
  "futures-util",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "nexus-auth",
  "nexus-core",
  "nexus-mcp",
@@ -2164,6 +2166,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "unicode-properties",
  "url",
 ]
 
@@ -2180,6 +2183,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3772,10 +3776,8 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
- "tokio-util",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
