@@ -108,8 +108,12 @@ async fn memory_limit_kills_and_reaps() {
         .render(request())
         .await;
     assert_eq!(result, Err(RenderError::MemoryExceeded));
-    let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
-    wait_gone(pid.trim()).await;
+    // With a limit of one byte, the first poll can kill the script before it writes its pid.
+    if let Ok(pid) = std::fs::read_to_string(dir.join("pid"))
+        && !pid.trim().is_empty()
+    {
+        wait_gone(pid.trim()).await;
+    }
 }
 
 #[tokio::test]
