@@ -8,6 +8,7 @@ use typst::model::{Destination, Document, HeadingElem, Numbering};
 use typst::text::{Glyph, TextItem};
 use typst::visualize::Paint;
 use typst_layout::PagedDocument;
+use unicode_normalization::char::is_combining_mark;
 
 use crate::{MAX_TEXT_BYTES, RenderError, RenderedLink, RenderedText};
 
@@ -26,10 +27,22 @@ const MIN_READABLE_ALPHA: f32 = 0.3;
 const MAX_READABLE_LUMA: f32 = 0.9;
 /// How far text may stand outside what shows, in points, before it counts as hidden.
 const VISIBLE_MARGIN: f64 = 1.0;
-/// How high above its baseline the middle of a run stands. In ems.
-const RUN_MIDDLE: f64 = 0.3;
+/// How high above its baseline a run's letters stand, and how far into a link's area a run must reach
+/// to count as read through it. In ems. Runs either side of a link touch it, and don't reach in.
+const RUN_HEIGHT: f64 = 0.7;
+const MIN_LINK_REACH: f64 = 0.1;
 /// A word space narrower than this draws no gap, in ems. Justifying shrinks one to 0.17 at the least.
 const MIN_SPACE_ADVANCE: f64 = 0.15;
+/// A letter or digit advancing less than this share of its own width draws onto the next. Tracking of
+/// -0.3 em, an advance of 0.17 em on a digit, draws `1000` as a blot read as other digits. The fonts'
+/// tightest kerned pair stays above this, which `no_kerned_pair_counts_as_squeezed` tests.
+const MIN_ADVANCE_SHARE: f64 = 0.6;
+/// Fonts kern punctuation far tighter, as in `."`, to under 0.1 em, so it only has this floor, in ems.
+const MIN_ADVANCE: f64 = 0.05;
+/// What a glyph's advance may exceed its own by, in ems. Past that, `1000` is read as `1 0 0 0`.
+const MAX_ADVANCE_ADDED: f64 = 1.0;
+/// A stroke thicker than this, in ems, closes the gaps that tell one letter from another.
+const MAX_STROKE: f64 = 0.1;
 /// How far a transform may stray from a uniform scale through rounding alone, as in `rotate(360deg)`.
 const TRANSFORM_TOLERANCE: f64 = 1e-6;
 
@@ -94,6 +107,13 @@ fn readable_paint(paint: &Paint) -> bool {
         && color.to_luma().luma <= MAX_READABLE_LUMA
 }
 
+/// A stroke paints over the glyph it outlines, so a white one hides it, and a thick one blots it.
+fn readable_stroke(text: &TextItem) -> bool {
+    text.stroke.as_ref().is_none_or(|stroke| {
+        readable_paint(&stroke.paint) && stroke.thickness.to_pt() <= MAX_STROKE * text.size.to_pt()
+    })
+}
+
 /// How much `ts` scales a glyph along its narrower axis, so that text squeezed one way counts as small.
 fn glyph_scale(ts: Transform) -> f64 {
     let (sx, sy, kx, ky) = (ts.sx.get(), ts.sy.get(), ts.kx.get(), ts.ky.get());
@@ -107,8 +127,9 @@ fn draws_as_it_reads(ts: Transform) -> bool {
     sx > 0.0 && (sx - sy).abs() <= tolerance && kx.abs() <= tolerance && ky.abs() <= tolerance
 }
 
-/// Tracking can turn `12` into a drawn `21`, and word spacing can draw `1 2` as `12`. A space at a
-/// line's end has no width, and separates nothing.
+/// Tracking can turn `12` into a drawn `21` and `1000` into `10`, or spread `10` into `1 0`, and word
+/// spacing can draw `1 2` as `12`. A space at a line's end has no width, and separates nothing. Marks
+/// and invisible characters take no room of their own, whatever their glyph's width says.
 fn squeezed(text: &TextItem) -> bool {
     let is_space = |glyph: &Glyph| {
         text.text
@@ -121,9 +142,21 @@ fn squeezed(text: &TextItem) -> bool {
     let (Some(start), Some(end)) = (start, end) else {
         return false;
     };
+    let said = |glyph: &Glyph| text.text.get(glyph.range()).unwrap_or_default();
     glyphs[start..=end].iter().any(|glyph| {
         let advance = glyph.x_advance.get();
-        advance < 0.0 || (is_space(glyph) && advance < MIN_SPACE_ADVANCE)
+        if advance < 0.0 || (is_space(glyph) && advance < MIN_SPACE_ADVANCE) {
+            return true;
+        }
+        let own = text.font.x_advance(glyph.id).map_or(0.0, |own| own.get());
+        let least = if said(glyph).chars().any(char::is_alphanumeric) {
+            MIN_ADVANCE_SHARE * own
+        } else {
+            MIN_ADVANCE.min(own)
+        };
+        !is_space(glyph)
+            && !said(glyph).chars().all(is_combining_mark)
+            && (advance < least || advance > own + MAX_ADVANCE_ADDED)
     })
 }
 
@@ -252,6 +285,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                         .into_iter()
                         .all(|p| visible.contains(p))
                         && readable_paint(&text.fill)
+                        && readable_stroke(text)
                         && size >= MIN_READABLE_SIZE;
                     if !text.text.trim().is_empty() {
                         if !seen {
@@ -294,7 +328,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
             }
         }
     }
-    result.links = links.iter().map(|link| link.read(&runs)).collect();
+    result.links = read_links(links, &runs);
     result.lines = lines_from_runs(runs, &mut result.transformed);
     let info = document.info();
     result
@@ -361,24 +395,60 @@ impl PageLink {
         }
     }
 
-    /// The runs whose middle lies in the area, which is what a reader takes the link to be.
-    fn read(&self, runs: &[Run]) -> RenderedLink {
-        let inside = runs.iter().filter(|run| {
-            let x = (run.x + run.end_x) / 2.0;
-            let y = run.y - RUN_MIDDLE * run.size;
-            run.bucket == self.bucket
-                && (self.x0..=self.x1).contains(&x)
-                && (self.y0..=self.y1).contains(&y)
-        });
-        RenderedLink {
-            target: self.target.clone(),
-            text: {
-                let mut inside: Vec<Run> = inside.cloned().collect();
-                inside.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-                join_line(inside)
-            },
-        }
+    /// The runs reaching into the area, which is what a reader may take the link to be: a link over
+    /// part of a run counts as over all of it.
+    fn read(&self, runs: &[Run]) -> String {
+        let reach = |from: f64, to: f64, low: f64, high: f64| to.min(high) - from.max(low);
+        let mut inside: Vec<Run> = runs
+            .iter()
+            .filter(|run| {
+                let least = MIN_LINK_REACH * run.size;
+                run.bucket == self.bucket
+                    && reach(run.x, run.end_x, self.x0, self.x1) > least
+                    && reach(run.y - RUN_HEIGHT * run.size, run.y, self.y0, self.y1) > least
+            })
+            .cloned()
+            .collect();
+        inside.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        join_line(inside)
     }
+
+    /// Whether `next`, the following link in reading order, reads on from this one: it goes to the
+    /// same place, or stands right beside it, so that a reader sees one link.
+    fn reads_on(&self, next: &Self) -> bool {
+        let height = (self.y1 - self.y0).max(next.y1 - next.y0);
+        let same_line = self.y0 < next.y1 && next.y0 < self.y1;
+        self.bucket == next.bucket
+            && (self.target == next.target || (same_line && next.x0 - self.x1 <= WORD_GAP * height))
+    }
+}
+
+/// Every link in reading order, with the text it covers and what it spells with its neighbours: an
+/// address split over two links is still the address.
+fn read_links(mut links: Vec<PageLink>, runs: &[Run]) -> Vec<RenderedLink> {
+    links.sort_by(|a, b| {
+        (a.bucket, a.y0, a.x0)
+            .partial_cmp(&(b.bucket, b.y0, b.x0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let texts: Vec<String> = links.iter().map(|link| link.read(runs)).collect();
+    let mut read = Vec::with_capacity(links.len());
+    let mut start = 0;
+    for end in 1..=links.len() {
+        if end < links.len() && links[end - 1].reads_on(&links[end]) {
+            continue;
+        }
+        let together = texts[start..end].concat();
+        for (link, text) in links[start..end].iter().zip(&texts[start..end]) {
+            read.push(RenderedLink {
+                target: link.target.clone(),
+                text: text.clone(),
+                together: together.clone(),
+            });
+        }
+        start = end;
+    }
+    read
 }
 
 /// A line's runs that stand on another's text by more than a word gap's width, as `#h(-1em)` does.

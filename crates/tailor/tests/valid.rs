@@ -406,6 +406,53 @@ fn most_serious_items_come_first() {
 
 include!("common/normal_bullets.rs");
 
+/// The squeeze rule against what the embedded fonts really do: every pair of these characters as the
+/// font kerns it, in each style a CV uses, marks and invisible characters too.
+#[tokio::test]
+async fn no_kerned_pair_counts_as_squeezed() {
+    let chars: Vec<char> = (' '..='~')
+        .chain('¡'..='ÿ')
+        .chain("–—‘’“”„•…€ıłŁœŒšŠžŽ".chars())
+        .filter(|c| !c.is_whitespace() && *c != '\u{ad}')
+        .collect();
+    let literal = |c: char| match c {
+        '"' => "\\\"".to_owned(),
+        '\\' => "\\\\".to_owned(),
+        c => c.to_string(),
+    };
+    for style in [
+        "",
+        "#set text(weight: \"bold\")\n",
+        "#set text(style: \"italic\")\n",
+        "#set text(weight: \"bold\", style: \"italic\")\n",
+    ] {
+        for chunk in chars.chunks(20) {
+            let mut body = String::new();
+            for first in chunk {
+                let pairs: Vec<String> = chars
+                    .iter()
+                    .map(|second| format!("{}{}", literal(*first), literal(*second)))
+                    .collect();
+                body.push_str(&format!("#\"{}\"\n\n", pairs.join(" ")));
+            }
+            let source = format!(
+                "#set page(width: 1200pt, height: 1200pt, margin: 5pt)\n#set text(size: 6pt)\n{style}{body}"
+            );
+            let rendered = render(&source, &facts_en()).await.unwrap();
+            assert_eq!(rendered.text.transformed, Vec::<String>::new(), "{chunk:?}");
+        }
+    }
+    for body in [
+        "Cafe\u{301} and n\u{303}o, with marks that take no room.",
+        "soft\u{ad}hyphen, zero\u{200b}width, join\u{200d}er, word\u{2060}joiner, vs\u{fe0f}.",
+        "Fi fl ffi ffl ligatures, office affluent.",
+    ] {
+        let source = format!("#\"{body}\"\n");
+        let rendered = render(&source, &facts_en()).await.unwrap();
+        assert_eq!(rendered.text.transformed, Vec::<String>::new(), "{body}");
+    }
+}
+
 #[tokio::test]
 async fn normal_bullets_are_never_refused_in_either_language() {
     let mut facts_and_bullets: Vec<(Facts, &str, &[&str])> = vec![
@@ -537,6 +584,8 @@ async fn honest_links_and_skills_pass() {
         "#skills(\"Web\")[Node.js, Next.js/React, ASP.NET, ADO.NET/EF, socket.io, Vue.js, net/http]",
         "#skills(\"Other\")[e.g. this, i.e. that, C\\#/.NET, CI/CD, I/O, a.m., z.B. so]",
         "Rust \\@ home, on call via pager.",
+        "#link(\"https://example.org/x\")[Pallet]#link(\"https://example.org/y\")[Crate]",
+        "#link(\"https://example.org/x\")[Pallet] and mara\\@example.org beside it",
     ] {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;
@@ -558,6 +607,24 @@ async fn words_like_digits_pass_when_they_are_words() {
         "I worked for days.",
     ] {
         let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        clean(&report, &source);
+    }
+}
+
+/// Finding 17 of the second gate review: an id an old profile could hold finds its entry again.
+#[tokio::test]
+async fn an_id_with_a_line_break_or_a_control_character_finds_its_fact() {
+    for id in [
+        "a\nb",
+        "a\r\nb",
+        "tab\there",
+        "\u{1b}[2K",
+        "quote\"and\\slash",
+    ] {
+        let mut facts = facts_en();
+        facts.employment[0].id = id.to_owned();
+        let source = default_source(&facts);
         let report = render_and_check(&source, &facts).await;
         clean(&report, &source);
     }

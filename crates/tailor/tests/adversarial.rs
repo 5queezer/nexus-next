@@ -1296,8 +1296,6 @@ async fn nothing_in_a_source_removes_or_covers_the_stamp() {
         "#show text: none\nWork.".to_owned(),
         "#set text(fill: white)\n#show: it => none\n".to_owned(),
         "Page one.\n#pagebreak()\nPage two.\n#pagebreak()\nPage three.".to_owned(),
-        "#set page(width: 40pt, height: 40pt, margin: 1pt)\nx".to_owned(),
-        "#set page(width: 6000pt, height: 6000pt)\nWork.".to_owned(),
     ];
     for body in attacks {
         let source = format!("#import \"/nexus.typ\": *\n#show: cv\n{body}\n");
@@ -1514,6 +1512,429 @@ async fn a_false_phone_number_is_refused_and_the_true_one_is_not() {
         "#contact()",
     ] {
         let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
+        assert_eq!(report.violations, [], "{body}");
+    }
+}
+
+/// A source sets the page's size, so these go out as compile errors: no CV needs them, and a page far
+/// longer than wide once left the stamp's tiles nothing to show in.
+#[tokio::test]
+async fn a_page_no_cv_needs_is_a_compile_error() {
+    let long = "Worked on the routing service.\n\n".repeat(120);
+    let wide = "Worked on the routing service. ".repeat(60);
+    for (name, body) in [
+        (
+            "tall strip",
+            "#set page(width: 150pt, height: 14400pt, margin: 5pt)\nWork.".to_owned(),
+        ),
+        (
+            "wide strip",
+            "#set page(width: 14400pt, height: 60pt, margin: 5pt)\nWork.".to_owned(),
+        ),
+        (
+            "A4 wide, very tall",
+            "#set page(width: 595pt, height: 60000pt, margin: 40pt)\nWork.".to_owned(),
+        ),
+        (
+            "A3 wide, very tall",
+            "#set page(width: 842pt, height: 80000pt, margin: 40pt)\nWork.".to_owned(),
+        ),
+        (
+            "A4 wide, long",
+            "#set page(width: 595pt, height: 14400pt, margin: 20pt)\nWork.".to_owned(),
+        ),
+        (
+            "just over the limit",
+            "#set page(width: 595pt, height: 1201pt)\nWork.".to_owned(),
+        ),
+        (
+            "just over, sideways",
+            "#set page(width: 1201pt, height: 595pt)\nWork.".to_owned(),
+        ),
+        (
+            "large square",
+            "#set page(width: 6000pt, height: 6000pt)\nWork.".to_owned(),
+        ),
+        (
+            "tiny",
+            "#set page(width: 40pt, height: 40pt, margin: 1pt)\nx".to_owned(),
+        ),
+        (
+            "just under the least",
+            "#set page(width: 199pt, height: 595pt, margin: 5pt)\nWork.".to_owned(),
+        ),
+        (
+            "just under, sideways",
+            "#set page(width: 595pt, height: 199pt, margin: 5pt)\nWork.".to_owned(),
+        ),
+        (
+            "auto height, run long",
+            format!("#set page(height: auto)\n{long}"),
+        ),
+        (
+            "auto height, one line",
+            "#set page(height: auto, margin: 1pt)\nWork.".to_owned(),
+        ),
+        (
+            "auto width, run wide",
+            format!("#set page(width: auto, height: 400pt)\n{wide}"),
+        ),
+        (
+            "only the last page",
+            "Work.\n#pagebreak()\n#set page(height: 3000pt)\nMore.".to_owned(),
+        ),
+    ] {
+        let source = format!("{START}{body}\n");
+        match render(&source, &facts_en()).await {
+            Err(RenderError::Diagnostics(errors)) => assert!(
+                errors.iter().any(|e| e.message.contains("pt on each side")),
+                "{name}: {errors:?}"
+            ),
+            other => panic!(
+                "{name}: wanted a compile error, got {:?}",
+                other.map(|r| r.text.lines)
+            ),
+        }
+    }
+}
+
+/// What remains is stamped on every page, wherever you look. Judged by pixels against the same page
+/// unstamped, and each quarter must show a real part of the stamp, not a stray corner of it.
+#[tokio::test]
+async fn the_stamp_shows_in_every_quarter_at_every_size_left() {
+    let text = "Worked on the routing service.\n\n".repeat(40);
+    let mut sizes: Vec<String> = [
+        (595, 842),   // A4
+        (612, 792),   // Letter
+        (612, 1008),  // Legal
+        (420, 595),   // A5
+        (842, 595),   // A4, sideways
+        (842, 1191),  // A3
+        (1191, 842),  // A3, sideways
+        (200, 200),   // the least
+        (200, 1200),  // the longest strip left
+        (1200, 200),  // and sideways
+        (1200, 1200), // the most
+        (595, 1200),
+        (1200, 595),
+        (320, 180 + 20),
+        (333, 777),
+        (777, 333),
+    ]
+    .iter()
+    .map(|(width, height)| {
+        format!("#set page(width: {width}pt, height: {height}pt, margin: 10pt)\nWork.")
+    })
+    .collect();
+    sizes.push(format!("#set page(height: auto)\n{text}"));
+    sizes.push(format!(
+        "#set page(width: 300pt, height: auto, margin: 10pt)\n{text}"
+    ));
+    for body in sizes {
+        let source = format!("#import \"/nexus.typ\": *\n#show: cv\n{body}\n");
+        let plain = previews_of(&source, false).await;
+        let stamped = previews_of(&source, true).await;
+        assert_eq!(plain.len(), stamped.len(), "{body}");
+        for (plain, stamped) in plain.iter().zip(&stamped) {
+            let (width, height, _, _) = pixels(plain);
+            // A thousandth of a quarter's area: a word of the stamp, not a pixel or two.
+            let least = width * height / 4 / 1000;
+            let quarters = seen_by_quarter(plain, stamped);
+            assert!(
+                quarters.iter().all(|seen| *seen > least.max(5)),
+                "{body}: {quarters:?}, wanted over {least}"
+            );
+        }
+    }
+}
+
+/// Finding 4 of the second gate review: a stroke paints over the glyph it outlines.
+#[tokio::test]
+async fn a_stroke_cannot_hide_the_text_it_outlines() {
+    assert_flagged(&[
+        (
+            "a white stroke",
+            Rule::HiddenText,
+            "I am #text(stroke: 2pt + white)[not] certified.",
+        ),
+        (
+            "a thin white stroke",
+            Rule::HiddenText,
+            "I am #text(stroke: 0.4pt + white)[not] certified.",
+        ),
+        (
+            "near-white",
+            Rule::HiddenText,
+            "I am #text(stroke: 2pt + luma(95%))[not] certified.",
+        ),
+        (
+            "a stroke of no colour",
+            Rule::HiddenText,
+            "I am #text(stroke: 2pt + rgb(0, 0, 0, 10))[not] certified.",
+        ),
+        (
+            "a gradient",
+            Rule::HiddenText,
+            "I am #text(stroke: 2pt + gradient.linear(white, luma(95%)))[not] certified.",
+        ),
+        (
+            "thick and black, a blot",
+            Rule::HiddenText,
+            "Staff of #text(stroke: 3pt + black)[38] in Kiel.",
+        ),
+        (
+            "thick against a small size",
+            Rule::HiddenText,
+            "Staff of #text(size: 5pt, stroke: 1pt + black)[38] in Kiel.",
+        ),
+    ])
+    .await;
+    for body in [
+        "Faux bold #text(stroke: 0.3pt + black)[is] fine.",
+        "A coloured outline #text(stroke: 0.5pt + blue)[reads] too.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts_en()).await;
+        assert_eq!(report.violations, [], "{body}");
+    }
+}
+
+/// Decorations are shapes drawn after the text, like the white rectangle SPEC lists as a limit. This
+/// pins what that limit says: the check still reads the word, and only the stamped picture shows
+/// the blank. Close the limit and this should change.
+#[tokio::test]
+async fn a_shape_over_text_stays_the_limit_spec_lists() {
+    for body in [
+        "I am #strike(stroke: 14pt + white)[not] certified.",
+        "I am #underline(stroke: 14pt + white, offset: -4pt)[not] certified.",
+        "I am #overline(stroke: 14pt + white, offset: -8pt)[not] certified.",
+        "I am #highlight(fill: black)[not] certified.",
+        "I am #place(dx: 1.2em, rect(width: 2em, height: 1em, fill: white))not certified.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let rendered = render(&source, &facts_en()).await.unwrap();
+        let report = check(&rendered.text, &facts_en(), None, "");
+        assert_eq!(report.violations, [], "{body}");
+        assert!(
+            rendered
+                .text
+                .lines
+                .iter()
+                .any(|l| l.contains("not certified")),
+            "{body}"
+        );
+    }
+}
+
+/// Finding 5: tracking short of negative still stacks digits. `1000` draws as `10`, and well before
+/// that as a blot a reader takes for other digits. Spread wide, it reads otherwise than it draws too.
+#[tokio::test]
+async fn tracking_cannot_draw_other_digits_in_either_direction() {
+    let mut facts = facts_en();
+    facts
+        .allowed_tokens
+        .extend(["1000", "111", "10"].map(str::to_owned));
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "111 as 1",
+                Rule::Transform,
+                "Staff of #text(tracking: -0.46em)[111] in Kiel.",
+            ),
+            (
+                "1000 as 10",
+                Rule::Transform,
+                "Headcount #text(tracking: -0.46em)[1000] people.",
+            ),
+            (
+                "almost stacked",
+                Rule::Transform,
+                "Headcount #text(tracking: -0.38em)[1000] people.",
+            ),
+            (
+                "1000 as a blot",
+                Rule::Transform,
+                "Headcount #text(tracking: -0.30em)[1000] people.",
+            ),
+            (
+                "overlapping",
+                Rule::Transform,
+                "Headcount #text(tracking: -0.25em)[1000] people.",
+            ),
+            (
+                "one digit between runs",
+                Rule::Transform,
+                "Headcount 1#text(tracking: -0.46em)[00]0 people.",
+            ),
+            (
+                "letters too",
+                Rule::Transform,
+                "I am #text(tracking: -0.40em)[not] certified.",
+            ),
+            (
+                "through the set rule",
+                Rule::Transform,
+                "#set text(tracking: -0.46em)\nHeadcount 1000 people.",
+            ),
+            (
+                "spread apart",
+                Rule::Transform,
+                "Headcount #text(tracking: 2em)[1000] people.",
+            ),
+            (
+                "spread and interleaved",
+                Rule::Transform,
+                "#text(tracking: 1em)[135]#h(-3em)#text(tracking: 1em)[246]",
+            ),
+        ],
+    )
+    .await;
+    // Runs and moves that stack digits, which only the overlap between runs can see.
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "a run back over the last",
+                Rule::Transform,
+                "Headcount #box[10]#h(-0.75em)#box[00] people.",
+            ),
+            (
+                "a move back over the last",
+                Rule::Transform,
+                "Headcount #box[10]#box(move(dx: -0.75em)[00]) people.",
+            ),
+        ],
+    )
+    .await;
+}
+
+/// The other things that move glyphs. These read as they draw: one line of each, or what SPEC lists.
+#[tokio::test]
+async fn honest_tracking_kerning_and_features_pass() {
+    for body in [
+        "Tight #text(tracking: -0.05em)[1000 people] and #text(tracking: -0.12em)[1000].",
+        "Loose #text(tracking: 0.1em)[1000 people] and #text(tracking: 0.5em)[HEADER].",
+        "#text(kerning: false)[AVATAR To. 1000]",
+        "#text(ligatures: false)[office fly] and office fly",
+        "#text(features: (\"onum\",))[0123456789], #text(features: (\"zero\",))[0123456789]",
+        "#box[10]#h(-0.1em)#box[00] people",
+    ] {
+        let source = format!("{START}{body}\n");
+        let rendered = render(&source, &facts_en()).await.unwrap();
+        assert_eq!(rendered.text.transformed, Vec::<String>::new(), "{body}");
+    }
+}
+
+/// Finding 10: a link is read by what it touches, and neighbours by what they spell together.
+#[tokio::test]
+async fn a_link_over_or_around_a_contact_value_is_judged_by_all_of_it() {
+    let evil = "https://evil.example";
+    assert_flagged(&[
+        (
+            "a small link placed on the address",
+            Rule::ContactDetails,
+            &format!("#box[#contact()#place(top + left, link(\"{evil}\", box(width: 1.2cm, height: 1em)))]"),
+        ),
+        (
+            "over the end of the address only",
+            Rule::ContactDetails,
+            &format!("#box[mara\\@example.org#place(top + right, link(\"{evil}\", box(width: 0.6cm, height: 1em)))]"),
+        ),
+        (
+            "two links with one target",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara\\@ex]#link(\"{evil}\")[ample.org]"),
+        ),
+        (
+            "two links with two targets",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara\\@ex]#link(\"https://other.example\")[ample.org]"),
+        ),
+        (
+            "two links over a line break",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[mara\\@ex]\\\n#link(\"{evil}\")[ample.org]"),
+        ),
+        (
+            "a phone number in two links",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[+49 170]#link(\"{evil}\")[ 5550137]"),
+        ),
+        (
+            "a profile in two links",
+            Rule::ContactDetails,
+            &format!("#link(\"{evil}\")[github.com/mara]#link(\"{evil}\")[example]"),
+        ),
+    ])
+    .await;
+}
+
+/// Findings 11 to 14.
+#[tokio::test]
+async fn the_low_rules_hold_at_their_edges() {
+    let mut facts = facts_en();
+    facts
+        .allowed_tokens
+        .extend(["docs.example.com/guide", "mara.long@example.com"].map(str::to_owned));
+    assert_flagged_with(
+        &facts,
+        &[
+            (
+                "both words spaced",
+                Rule::BannedPhrases,
+                "p a s s i o n a t e #h(1em) t e a m #h(1em) p l a y e r",
+            ),
+            (
+                "two of three spaced",
+                Rule::BannedPhrases,
+                "passionate t e a m #h(1em) p l a y e r",
+            ),
+            (
+                "00 and a space",
+                Rule::ContactDetails,
+                "Call 00 49 170 5550138.",
+            ),
+            (
+                "+ and a space",
+                Rule::ContactDetails,
+                "Call + 49 170 5550138.",
+            ),
+            (
+                "the end of an allowed host",
+                Rule::ContactDetails,
+                "See e.com for more.",
+            ),
+            (
+                "the end of an allowed page",
+                Rule::ContactDetails,
+                "See ple.com/guide for more.",
+            ),
+            (
+                "the parent of an allowed host",
+                Rule::ContactDetails,
+                "See example.com for more.",
+            ),
+            (
+                "the end of an allowed address",
+                Rule::ContactDetails,
+                "Write to long\\@example.com.",
+            ),
+            (".Net", Rule::ContactDetails, "See evil.Net for more."),
+            (".nEt", Rule::ContactDetails, "See evil.nEt for more."),
+            (".NEt", Rule::ContactDetails, "See evil.NEt for more."),
+        ],
+    )
+    .await;
+    for body in [
+        "See docs.example.com/guide and docs.example.com for more.",
+        "Write to mara.long\\@example.com.",
+        "Call 00 49 170 5550137.",
+        "Built on .NET and ASP.NET.",
+        "The hugo took a team playing role.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
         assert_eq!(report.violations, [], "{body}");
     }
 }

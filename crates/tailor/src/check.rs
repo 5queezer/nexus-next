@@ -1026,11 +1026,33 @@ fn check_banned(document: &Document, facts: &Facts, findings: &mut Findings) {
             && let Some(found) = texts.iter().find_map(|text| {
                 text.find(&folded)
                     .map(|start| context(text, start, start + folded.len()))
+                    .or_else(|| closed_up(text, &folded))
             })
         {
             findings.add(Rule::BannedPhrases, phrase, found);
         }
     }
+}
+
+/// Finds `phrase` where closing up spaced letters took its word gaps with them: `r o c k s t a r  n i n
+/// j a` is one run of letters by then. It must start and end on word ends, so `go to` isn't in `Hugo
+/// took`, and it says what it found.
+fn closed_up(text: &str, phrase: &str) -> Option<String> {
+    let phrase: String = phrase.split_whitespace().collect();
+    let words: Vec<&str> = text.split_whitespace().collect();
+    (0..words.len()).find_map(|first| {
+        let mut joined = String::new();
+        for (last, word) in words.iter().enumerate().skip(first) {
+            joined.push_str(word.trim_matches(|c: char| !c.is_alphanumeric()));
+            if joined == phrase {
+                return Some(words[first..=last].join(" "));
+            }
+            if !phrase.starts_with(&joined) {
+                break;
+            }
+        }
+        None
+    })
 }
 
 /// A company or institution, and what belongs with it.
@@ -1338,13 +1360,32 @@ static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the email pattern is valid")
 });
 /// A scheme or `www.`, or a host in a top-level domain common enough, and not a name of something in
-/// tech: `Node.js`, `socket.io`. Upper-case `.NET` is the platform.
+/// tech: `Node.js`, `socket.io`. Only all upper-case `.NET` is the platform.
 static URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(?:[a-z][a-z0-9+-]*://|www\.)[^\s]+|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:com|org|(?-i:net)|info|biz|eu|de|at|ch|uk|dev|app|xyz|example|test)\b(?:[/?#][^\s]*)?",
+        r"(?i)\b(?:[a-z][a-z0-9+-]*://|www\.)[^\s]+|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.(?:com|org|(?-i:net|Net|nEt|neT|NEt|NeT|nET)|info|biz|eu|de|at|ch|uk|dev|app|xyz|example|test)\b(?:[/?#][^\s]*)?",
     )
     .expect("the URL pattern is valid")
 });
+
+/// Whether `key` stands whole in `phrases`: `docs.example.org/guide` holds neither `e.org` nor the
+/// parent host `example.org`, and `mara.long@host` doesn't hold `long@host`. It may stop short of a
+/// path, since that is the same host.
+fn stands_whole(phrases: &str, key: &str) -> bool {
+    let inside = |c: char| c.is_alphanumeric() || "._%+'-@".contains(c);
+    !key.is_empty()
+        && phrases.match_indices(key).any(|(start, _)| {
+            let before = &phrases[..start];
+            let rest = &phrases[start + key.len()..];
+            let starts = before.ends_with("//")
+                || !before
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| inside(c) || c == '/');
+            let rest = rest.strip_prefix('.').unwrap_or(rest);
+            starts && !rest.chars().next().is_some_and(inside)
+        })
+}
 
 /// A URL as it compares: no scheme, no `www.`, no case, no slash at the end.
 fn url_key(url: &str) -> String {
@@ -1386,7 +1427,7 @@ fn addresses(text: &str) -> (Vec<String>, Vec<String>) {
 /// A phone number with its country code: `+49 170 5550137`, `0049 170 5550137`. A local form can't be
 /// told from a date range, so it is only listed for review, as every number is.
 static PHONE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\+|\b00)[0-9][0-9 ()/.-]{6,}[0-9]").expect("the phone pattern is valid")
+    Regex::new(r"(?:\+|\b00)\s*[0-9][0-9 ()/.-]{6,}[0-9]").expect("the phone pattern is valid")
 });
 
 fn check_phones(said: &str, facts: &Facts, findings: &mut Findings) {
@@ -1413,7 +1454,7 @@ fn url_allowed(url: &str, facts: &Facts, known: &Known) -> bool {
         .into_iter()
         .chain(listed)
         .any(|base| is_under(&key, &url_key(base)))
-        || known.phrases.contains(&key)
+        || stands_whole(&known.phrases, &key)
 }
 
 /// A link's target and what it shows must agree with the contact facts. Any `http` or `https` target
@@ -1432,11 +1473,16 @@ fn check_links(text: &RenderedText, facts: &Facts, findings: &mut Findings) {
             (_, Some(number)) => !phone.is_empty() && digits_of(number) == phone,
             _ => web,
         };
-        let shown = normalize(&link.text).to_lowercase();
+        // What a reader takes it to say: two links can split a value, a space between its pieces or not.
+        let shown: String = normalize(&link.together)
+            .to_lowercase()
+            .split_whitespace()
+            .collect();
         let shows = |value: &str| !value.is_empty() && shown.contains(value);
         let key = url_key(&target);
+        let shows_phone = !phone.is_empty() && digits_of(&shown).contains(&phone);
         let shown_ok = !(shows(&email) && mail.is_none())
-            && !(shows(&normalize(contact.phone.trim()).to_lowercase()) && tel.is_none())
+            && !(shows_phone && tel.is_none())
             && profiles
                 .iter()
                 .all(|profile| !shows(profile) || (web && is_under(&key, profile)));
@@ -1444,7 +1490,7 @@ fn check_links(text: &RenderedText, facts: &Facts, findings: &mut Findings) {
             findings.add(
                 Rule::ContactDetails,
                 &link.target,
-                format!("a link showing \"{}\"", link.text),
+                format!("a link showing \"{}\"", link.together),
             );
         }
     }
@@ -1472,7 +1518,7 @@ fn check_contact(
         let (emails, urls) = addresses(&said);
         for found in emails {
             let key: String = found.split_whitespace().collect::<String>().to_lowercase();
-            if key != email && !known.phrases.contains(&key) {
+            if key != email && !stands_whole(&known.phrases, &key) {
                 findings.add(Rule::ContactDetails, &found, found.clone());
             }
         }

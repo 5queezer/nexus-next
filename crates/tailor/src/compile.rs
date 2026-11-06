@@ -8,7 +8,7 @@ use typst::introspection::Introspector;
 use typst::layout::{Abs, Frame, FrameItem, GroupItem, HideElem, Point, Ratio, Transform};
 use typst::model::Document;
 use typst::pdf::AttachElem;
-use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
+use typst::syntax::{FileId, RootedPath, Source, Span, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
@@ -33,6 +33,8 @@ const FONT_FILES: [&[u8]; 4] = [
 /// A preview's scale, and the most pixels one may have: the source sets the page size.
 const PREVIEW_PIXEL_PER_PT: f64 = 2.0;
 const MAX_PREVIEW_PIXELS: f64 = 2_200_000.0;
+const MIN_PAGE_SIDE: f64 = 200.0;
+const MAX_PAGE_SIDE: f64 = 1200.0;
 
 /// A source can raise any number of errors of any length, which would cross to the parent and on to
 /// the agent. These bounds give the worker a fixed budget for them: see `worker::MAX_OUTPUT_BYTES`.
@@ -75,6 +77,30 @@ fn refuse_attachments(world: &CvWorld, document: &PagedDocument) -> Result<(), R
         "pdf.attach is not allowed: a CV has no attachments",
     );
     Err(RenderError::Diagnostics(vec![to_diagnostic(world, &error)]))
+}
+
+/// A page's sides, in points, as a compile error. A source sets them, and a CV needs neither a sheet
+/// over A3's 1191 nor one too small for a stamp a reader can read. The size that counts is the laid
+/// out one, since `auto` can run long.
+fn refuse_odd_pages(world: &CvWorld, document: &PagedDocument) -> Result<(), RenderError> {
+    for (index, page) in document.pages().iter().enumerate() {
+        let (width, height) = (page.frame.width().to_pt(), page.frame.height().to_pt());
+        if ![width, height]
+            .iter()
+            .all(|side| (MIN_PAGE_SIDE..=MAX_PAGE_SIDE).contains(side))
+        {
+            let error = SourceDiagnostic::error(
+                Span::detached(),
+                format!(
+                    "page {} is {width:.0} by {height:.0} pt: a CV page is {MIN_PAGE_SIDE:.0} to \
+                     {MAX_PAGE_SIDE:.0} pt on each side",
+                    index + 1
+                ),
+            );
+            return Err(RenderError::Diagnostics(vec![to_diagnostic(world, &error)]));
+        }
+    }
+    Ok(())
 }
 
 static BOOK: LazyLock<LazyHash<FontBook>> =
@@ -224,15 +250,16 @@ const STAMP_SOURCE: &str = r##"#set page(width: 320pt, height: 180pt, margin: 0p
 "##;
 const STAMP_WIDTH: f64 = 320.0;
 const STAMP_HEIGHT: f64 = 180.0;
-/// A source sets the page's size, so stamps grow with a large page instead of multiplying without end.
-const MAX_STAMPS_PER_SIDE: f64 = 8.0;
+/// At least this many stamps along each side: one stamp is a diagonal, which leaves two corners bare.
+const MIN_STAMPS_PER_SIDE: f64 = 2.0;
 
 /// Tiles the stamp over `page`, as the last thing drawn, so that nothing on the page can cover it.
+/// [`refuse_odd_pages`] bounds the page, and with it how many tiles this makes.
 fn stamp_page(page: &mut Page, stamp: &Frame) {
     let (width, height) = (page.frame.width().to_pt(), page.frame.height().to_pt());
-    let fit = (width / STAMP_WIDTH).min(height / STAMP_HEIGHT).min(1.0);
-    let cap = width.max(height) / (STAMP_WIDTH.max(STAMP_HEIGHT) * MAX_STAMPS_PER_SIDE);
-    let scale = fit.max(cap).max(f64::MIN_POSITIVE);
+    let scale = (width / (STAMP_WIDTH * MIN_STAMPS_PER_SIDE))
+        .min(height / (STAMP_HEIGHT * MIN_STAMPS_PER_SIDE))
+        .min(1.0);
     let columns = (width / (STAMP_WIDTH * scale)).ceil().max(1.0) as u32;
     let rows = (height / (STAMP_HEIGHT * scale)).ceil().max(1.0) as u32;
     let ratio = Ratio::new(scale);
@@ -287,6 +314,7 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     if page_count > MAX_PAGES {
         return Err(RenderError::TooManyPages);
     }
+    refuse_odd_pages(&world, &document)?;
     let text = crate::extract::rendered_text(&document)?;
     let document = if req.stamp {
         stamped(&document)?

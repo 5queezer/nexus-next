@@ -163,6 +163,8 @@ pub struct RenderedText {
 pub struct RenderedLink {
     pub target: String,
     pub text: String,
+    /// `text` with the links it stands beside, or those with its target: what they spell together.
+    pub together: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

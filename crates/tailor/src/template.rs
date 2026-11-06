@@ -77,7 +77,8 @@ fn string(text: &str) -> String {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
-            '\n' | '\r' => out.push(' '),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
             _ => out.push(c),
         }
     }
