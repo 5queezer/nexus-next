@@ -156,6 +156,93 @@ async fn backup_then_restore_reproduces_database_and_blobs() {
     );
 }
 
+/// A backup of one application, and a data directory as a crash leaves it: two more applications
+/// committed only to a WAL that nothing holds open, with files the umask left readable.
+async fn backup_and_crashed_data_dir(keys: &Keys) -> (TempDir, PathBuf, TempDir) {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+
+    let recipients = read_recipients(&keys.recipient_file).unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let db = Db::open(source.path()).await.unwrap();
+    add_application_with_document(&db, 1).await;
+    let out = source.path().join("b.age");
+    backup::backup(source.path(), &out, &recipients)
+        .await
+        .unwrap();
+
+    let live = tempfile::tempdir().unwrap();
+    let other = Db::open(live.path()).await.unwrap();
+    add_application_with_document(&other, 7).await;
+    add_application_with_document(&other, 8).await;
+    let target = tempfile::tempdir().unwrap();
+    for name in ["nexus.db", "nexus.db-wal", "nexus.db-shm"] {
+        fs::copy(live.path().join(name), target.path().join(name)).unwrap();
+        fs::set_permissions(target.path().join(name), Permissions::from_mode(0o644)).unwrap();
+    }
+    other.close().await;
+    (source, out, target)
+}
+
+const COUNT_APPLICATIONS: &str = "SELECT count(*) FROM applications";
+
+#[tokio::test]
+async fn the_safety_copy_opens_with_transactions_only_its_wal_held() {
+    let keys = new_keys();
+    let (_source, out, target) = backup_and_crashed_data_dir(&keys).await;
+
+    backup::restore(&out, &keys.identity_file, target.path(), true, false)
+        .await
+        .unwrap();
+
+    let replaced = target.path().join("nexus.db.before-restore");
+    assert_eq!(scalar(&replaced, COUNT_APPLICATIONS).await, 2);
+    assert_eq!(
+        scalar(&target.path().join("nexus.db"), COUNT_APPLICATIONS).await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn the_safety_copys_wal_is_private_and_leaves_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let keys = new_keys();
+    let (_source, out, target) = backup_and_crashed_data_dir(&keys).await;
+
+    backup::restore(&out, &keys.identity_file, target.path(), true, false)
+        .await
+        .unwrap();
+    for name in [
+        "nexus.db.before-restore",
+        "nexus.db.before-restore-wal",
+        "nexus.db.before-restore-shm",
+    ] {
+        let mode = fs::metadata(target.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{name}");
+    }
+    assert!(!target.path().join("nexus.db-wal").exists());
+    assert!(!target.path().join("nexus.db-shm").exists());
+
+    // A second restore replaces the safety copy. Its old WAL must not replay onto the new one.
+    backup::restore(&out, &keys.identity_file, target.path(), true, false)
+        .await
+        .unwrap();
+    assert!(!target.path().join("nexus.db.before-restore-wal").exists());
+    assert!(!target.path().join("nexus.db.before-restore-shm").exists());
+    assert_eq!(
+        scalar(
+            &target.path().join("nexus.db.before-restore"),
+            COUNT_APPLICATIONS
+        )
+        .await,
+        1
+    );
+}
+
 #[tokio::test]
 async fn restore_refuses_to_overwrite_without_force_and_keeps_the_old_database_with_it() {
     let keys = new_keys();
