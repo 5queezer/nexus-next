@@ -41,9 +41,11 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 >
 > On `cv_compile_failed`, read the `diagnostics`, fix your source and call `patch_cv` again. Don't bother the user with it. On `cv_edit_no_match` or `cv_edit_ambiguous`, fix your `oldText`. On `cv_revision_conflict` or `cv_facts_changed`, read the source again and reapply.
 >
-> On `cv_fact_violation`, tell the user exactly which `token` was refused and that it is a locked fact only they can change, on the board. Never work around it: don't reword it, spell it differently, split it, or try another tool. Nothing was saved. On `cv_facts_not_locked`, tell the user to run `nexus cv-facts lock`.
+> On `cv_fact_violation`, tell the user exactly which `token` was refused and that it is a locked fact only they can change, on the board. Never work around it: don't reword it, spell it differently, split it, or try another tool. Nothing was saved. On `cv_facts_not_locked`, tell the user to run `nexus cv-facts lock`, read what it prints, and confirm it with `--confirm`.
 >
 > On success, call `render_cv_pdf` and send the PNG back. If `reviewTokens` isn't empty, ask the user to check those words: the check can't judge them.
+>
+> On `cv_render_busy`, wait 10 seconds and retry, at most 3 times. If a call gets no answer at all, it may have stored its revision: call `get_cv_source` and see, before you apply the edit again.
 
 **Confirmed accurate, no change:** mixed lifecycle updates failing atomically, `idempotencyKey` needing `occurredAt`, outcome limit 255, omitted `remote` reading `false`, `{id, nextAction: null}`, `status` as an array, `items` as the parameter, event argument names, archived records keeping `inbound`, closure events setting `lastContact`, strict event metadata, `companySize: null` accepted, batch result shape.
 
