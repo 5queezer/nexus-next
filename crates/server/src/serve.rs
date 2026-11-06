@@ -432,6 +432,11 @@ pub async fn run(
         .await
         .with_context(|| format!("cannot open the database in {}", config.data_dir.display()))?;
     resolve_owner(&db, &mut config).await?;
+    match db.blobs().sweep_temp_files() {
+        Ok(0) => {}
+        Ok(removed) => tracing::warn!(removed, "removed unfinished uploads a crash left behind"),
+        Err(error) => tracing::warn!(%error, "could not remove unfinished uploads"),
+    }
     let base_url = match &config.access {
         Access::Owner(auth) => auth.public_base_url.as_str(),
         Access::InsecureLocalOnly => {
