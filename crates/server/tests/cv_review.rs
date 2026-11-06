@@ -14,7 +14,7 @@ use tokio::net::TcpStream;
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n";
 /// Takes seconds in a debug build, in constant memory, and then passes the check.
-const SLOW_BUT_FINE: &str = "#for a in range(30000000) { }\nWork.\n";
+const SLOW_BUT_FINE: &str = "#for a in range(3000) { for b in range(3000) { } }\nWork.\n";
 /// Runs until the worker's timeout.
 const FOR_DAYS: &str =
     "#for a in range(9999) { for b in range(9999) { for c in range(9999) { } } }\n";
@@ -213,14 +213,22 @@ async fn a_patch_whose_client_has_gone_stops_and_stores_nothing() {
     assert_eq!(agent.ok("get_cv_source", json!({})).await["revision"], 0);
     let count = node.count("SELECT count(*) FROM cv_revisions").await;
     assert_eq!(count, 0);
-    let fine = agent
+
+    // The control: with its client there, the same source does store, and it does take this long.
+    let started = Instant::now();
+    let stored = agent
         .ok(
             "patch_cv",
-            json!({"expectedRevision": 0, "summary": "next",
-                "edits": [{"oldText": "Backend engineer", "newText": "Freight engineer"}]}),
+            json!({"expectedRevision": 0, "summary": "slow, with a client",
+                "edits": [{"oldText": source, "newText": new}]}),
         )
         .await;
-    assert_eq!(fine["revision"], 1);
+    assert_eq!(stored["revision"], 1);
+    assert!(
+        started.elapsed() > Duration::from_secs(1),
+        "too fast to prove anything: {:?}",
+        started.elapsed()
+    );
 }
 
 /// Finding 19: past a compile and two waiting, a call is refused at once and holds no slot of the
