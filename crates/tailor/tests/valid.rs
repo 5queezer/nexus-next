@@ -1,4 +1,5 @@
-//! Edits a person really dictates must pass: a false positive makes dictation useless.
+//! Edits a person really dictates must store: a false refusal makes dictation useless. They may still
+//! be listed for the owner, who approves them.
 
 mod common;
 
@@ -41,6 +42,7 @@ async fn a_generated_cv_is_one_page_with_a_pdf_and_a_png() {
             facts: facts.clone(),
             pdf: true,
             preview_pages: 1,
+            stamp: false,
         })
         .await
         .unwrap();
@@ -57,6 +59,7 @@ async fn rendering_is_deterministic() {
         facts: facts_de(),
         pdf: true,
         preview_pages: 0,
+        stamp: false,
     };
     let first = Renderer::InProcess.render(request.clone()).await.unwrap();
     let second = Renderer::InProcess.render(request).await.unwrap();
@@ -176,10 +179,7 @@ async fn honest_scripts_initials_and_roman_numerals_pass() {
         "CI and CD, Phase IV, Louis XIV, Type V, Mix, DC, Section III: I said so.",
         "IV drips, a CI job and a V model over many days.",
     ];
-    let facts = Facts {
-        allowed_tokens: vec!["5".to_owned()],
-        ..facts_en()
-    };
+    let facts = facts_en();
     for body in bodies {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;
@@ -188,11 +188,8 @@ async fn honest_scripts_initials_and_roman_numerals_pass() {
 }
 
 #[tokio::test]
-async fn owner_lists_free_other_numerals_and_a_fact_year_in_cjk() {
-    let facts = Facts {
-        allowed_tokens: vec!["Ⅷ".to_owned(), "VIII years".to_owned()],
-        ..facts_en()
-    };
+async fn other_numerals_are_not_refused() {
+    let facts = facts_en();
     for body in ["Since 二〇一五.", "Ⅷ of them.", "VIII years of it."] {
         let source = format!("{START}{body}\n");
         let report = render_and_check(&source, &facts).await;
@@ -236,32 +233,24 @@ async fn a_long_word_hyphenated_at_a_line_end_is_read_whole() {
     assert_eq!(report.violations[0].rule, Rule::BannedPhrases);
 }
 
+/// The owner's words are the owner's: on the line that states them they are no news.
 #[tokio::test]
-async fn owner_lists_free_exactly_what_they_name() {
-    let mut facts = facts_en();
-    let source = format!("{START}With eight years of Rust as Staff Engineer on EC2 for €900k.\n");
-    let rules = |report: &nexus_tailor::Report| {
-        let mut rules: Vec<Rule> = report.violations.iter().map(|v| v.rule).collect();
-        rules.dedup();
-        rules
+async fn a_claim_is_a_facts_own_only_beside_the_rest_of_it() {
+    let facts = facts_en();
+    let claims = |report: &nexus_tailor::Report| -> Vec<String> {
+        report
+            .review_items
+            .iter()
+            .filter(|i| i.rule == Rule::ClaimWords)
+            .map(|i| i.token.clone())
+            .collect()
     };
-    let report = render_and_check(&source, &facts).await;
-    assert_eq!(
-        rules(&report),
-        [Rule::Numbers, Rule::NumberWords, Rule::ClaimWords]
-    );
-    facts
-        .allowed_tokens
-        .extend(["eight years", "€900k"].map(str::to_owned));
-    facts
-        .vocabulary
-        .extend(["EC2", "Staff Engineer"].map(str::to_owned));
-    let report = render_and_check(&source, &facts).await;
-    assert_eq!(report.violations, []);
-    // The whole token, not its parts.
-    let source = format!("{START}900 years in EC2. A Staff of two.\n");
-    let report = render_and_check(&source, &facts).await;
-    assert_eq!(rules(&report), [Rule::Numbers]);
+    let own = format!("{START}#education(\"hochschule\")\nWorked as Scrum Master.\n");
+    let report = render_and_check(&own, &facts).await;
+    assert_eq!(claims(&report), Vec::<String>::new(), "{:?}", report.review_items);
+    let other = format!("{START}A Bachelor of Arts. A Master of Science.\n");
+    let report = render_and_check(&other, &facts).await;
+    assert_eq!(claims(&report), ["Bachelor", "Master"]);
 }
 
 #[tokio::test]
@@ -305,18 +294,136 @@ fn text(lines: &[&str]) -> RenderedText {
     }
 }
 
+fn tokens_of(report: &nexus_tailor::Report, rule: Rule) -> Vec<&str> {
+    report
+        .review_items
+        .iter()
+        .filter(|item| item.rule == rule)
+        .map(|item| item.token.as_str())
+        .collect()
+}
+
 #[test]
-fn review_tokens_are_new_capitalized_words() {
+fn new_words_compare_with_the_approved_text_in_any_case() {
     let facts = facts_en();
-    let previous = text(&["Worked at Globex on Kubernetes."]);
-    let current = text(&["Worked at Initech and Globex on Kubernetes, Hamburg. Initech again."]);
-    let report = check(&current, &facts, Some(&previous));
+    let previous = "Worked at Globex on Kubernetes.";
+    let current = text(&["Worked at Initech, google and Globex on Kubernetes, Hamburg. Initech again."]);
+    let report = check(&current, &facts, Some(previous));
     assert_eq!(report.violations, []);
-    assert_eq!(report.review_tokens, ["Initech"]);
+    assert_eq!(tokens_of(&report, Rule::NewWords), ["Initech", "google", "and", "again"]);
+    // Against nothing the whole text shows anyway, and only names stand out.
     let report = check(&current, &facts, None);
-    assert!(report.review_tokens.contains(&"Globex".to_owned()));
-    assert!(!report.review_tokens.contains(&"Kubernetes".to_owned()));
-    assert!(!report.review_tokens.contains(&"Hamburg".to_owned()));
+    let new = tokens_of(&report, Rule::NewWords);
+    assert!(new.contains(&"Globex"), "{new:?}");
+    assert!(!new.contains(&"google"), "{new:?}");
+    assert!(!new.contains(&"Kubernetes") && !new.contains(&"Hamburg"), "{new:?}");
+}
+
+#[test]
+fn only_changed_lines_are_listed_and_every_number_on_them() {
+    let facts = facts_en();
+    let previous = "Moved 12 services in 2020.\nCut errors by 40%.";
+    let report = check(&text(&["Moved 12 services in 2020.", "Cut errors by 40% across 12 depots."]), &facts, Some(previous));
+    assert_eq!(tokens_of(&report, Rule::Numbers), ["40%", "12"]);
+    assert_eq!(report.review_items.iter().find(|i| i.token == "40%").unwrap().line, Some(2));
+    // A line moved says something new, though no word of it did.
+    let moved = check(&text(&["Cut errors by 40%.", "Moved 12 services in 2020."]), &facts, Some(previous));
+    assert!(!moved.review_items.is_empty());
+    let same = check(&text(&["Moved 12 services in 2020.", "Cut errors by 40%."]), &facts, Some(previous));
+    assert_eq!(same.review_items, []);
+}
+
+#[test]
+fn a_fact_that_was_shown_and_is_gone_is_listed() {
+    let facts = facts_en();
+    let previous = "Brightpath Logistics · Software Engineer 03/2019 – 12/2022\nGerman (native) · English (C1)";
+    let report = check(&text(&["German (native)"]), &facts, Some(previous));
+    let missing = tokens_of(&report, Rule::MissingFact);
+    assert_eq!(missing, ["Brightpath Logistics", "English"]);
+    assert_eq!(report.review_items[0].line, None);
+    assert_eq!(report.review_items[0].rule, Rule::MissingFact);
+}
+
+#[test]
+fn most_serious_items_come_first() {
+    let report = check(&text(&["Brightpath Logistics in 2031 as PhD with Flowers."]), &facts_en(), None);
+    let rules: Vec<Rule> = report.review_items.iter().map(|i| i.rule).collect();
+    let mut sorted = rules.clone();
+    sorted.sort();
+    assert_eq!(rules, sorted);
+    assert_eq!(rules[0], Rule::EntityBinding);
+    assert!(rules.contains(&Rule::ClaimWords) && rules.contains(&Rule::NewWords));
+}
+
+/// Finding 14, with what it said was refused. They store as drafts now, and the owner reads them.
+const ENGLISH_BULLETS: [&str; 30] = [
+    "Presented the roadmap to senior management.",
+    "Mentored junior developers.",
+    "Reported directly to the CTO.",
+    "Worked closely with the Product Manager on planning.",
+    "Proficient in Python and Rust.",
+    "Built native iOS and Android apps in React Native.",
+    "Applied principal component analysis to shipment data.",
+    "Deployed services on AWS EC2 and S3 behind a load balancer.",
+    "Migrated to Python 3.12 and PostgreSQL 16.",
+    "Ran 24/7 on-call for B2B customers.",
+    "Achieved ISO 27001 certification.",
+    "Scaled Kubernetes (K8s) clusters across regions.",
+    "Introduced 2FA for every internal tool.",
+    "Built a Lead Generation pipeline for sales.",
+    "Improved reliability to a large degree.",
+    "Reduced p99 latency with Redis.",
+    "Ran a Fluent Bit log pipeline for all services.",
+    "Led a team of 6 engineers.",
+    "Saved 200k EUR a year in hosting.",
+    "Introduced OAuth2 and OIDC login.",
+    "Wrote ES6 modules and TypeScript types.",
+    "Gave 3 talks at internal conferences.",
+    "Ported the app to .NET 8.",
+    "Supervised 2 master's theses with the university.",
+    "Onboarded 40 new customers in Q3.",
+    "Worked in a team of 12 with a chief architect.",
+    "Coordinated with the head of sales.",
+    "Trained staff on the new tools.",
+    "Cut build times from 20 minutes to 4.",
+    "Served 1.2 million requests per day.",
+];
+const GERMAN_BULLETS: [&str; 20] = [
+    "Präsentation der Roadmap vor dem Vorstand.",
+    "Berichtete direkt an die Geschäftsführung.",
+    "Betreuung von Junior-Entwicklern.",
+    "Abstimmung mit der Projektleiterin und dem Abteilungsleiter.",
+    "Betreuung der Ausbildung von Werkstudenten.",
+    "Lehre und Forschung an der Hochschule begleitet.",
+    "Aufbau einer Promotion-Kampagne für den Vertrieb.",
+    "Einführung von ISO 9001 im Betrieb.",
+    "Migration auf Java 21 und Spring Boot 3.",
+    "Native Apps für iOS entwickelt.",
+    "Leitung von 4 Workshops mit Kunden.",
+    "Senkung der Kosten um 15 Prozent.",
+    "Einführung von 2FA für alle Konten.",
+    "Betrieb von über 300 Servern.",
+    "Zusammenarbeit mit dem Teamleiter Vertrieb.",
+    "Studium der Anforderungen mit den Fachbereichen.",
+    "Betreuung von Masterarbeiten im Unternehmen.",
+    "Schulung von 25 Mitarbeitenden pro Quartal.",
+    "Fließend in der Abstimmung mit Lieferanten.",
+    "Automatisierung der Rechnungsprüfung in SAP S/4HANA.",
+];
+
+#[tokio::test]
+async fn normal_bullets_are_never_refused_in_either_language() {
+    let mut facts_and_bullets: Vec<(Facts, &str, &[&str])> = vec![
+        (facts_en(), "#show: cv\n", &ENGLISH_BULLETS),
+        (facts_de(), "#show: cv.with(lang: \"de\")\n", &GERMAN_BULLETS),
+    ];
+    for (facts, setup, bullets) in facts_and_bullets.drain(..) {
+        for bullet in bullets {
+            let source = format!("#import \"/nexus.typ\": *\n{setup}#header()\n- {bullet}\n");
+            let report = render_and_check(&source, &facts).await;
+            assert_eq!(report.violations, [], "{bullet}");
+        }
+    }
 }
 
 #[test]
@@ -343,7 +450,8 @@ fn any_script_is_safe_and_the_check_is_fast() {
     let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 400).collect();
     let started = std::time::Instant::now();
     let report = check(&text(&lines), &facts, None);
-    assert_eq!(report.violations.len(), 1);
+    assert_eq!(report.violations, []);
+    assert!(!report.review_items.is_empty());
     assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
 }
 

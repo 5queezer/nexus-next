@@ -11,12 +11,14 @@ use base64::engine::general_purpose::STANDARD as ENCODER;
 use nexus_core::Timestamp;
 use nexus_core::blob::sha256_hex;
 use nexus_core::repo::cv as cv_repo;
+use nexus_core::repo::cv_approvals::{self as approvals, NewApproval, facts_sha256};
 use nexus_core::repo::cv_facts::{self, FactsState};
 use nexus_core::repo::cv_revisions::{self as repo, NewRevision, Revision, Variant};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
 use nexus_tailor::{
     CvContent, CvEmployment, CvProject, CvSkills, Facts, RenderError, RenderRequest, Rendered,
-    RenderedText, TEMPLATE_HELP, Violation, check, default_source, source_from_profile,
+    Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source, review_text,
+    source_from_profile,
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Value, json};
@@ -25,7 +27,7 @@ use sqlx::SqliteConnection;
 
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, req_str, str_arg};
-use crate::CvRevisionEvent;
+use crate::{CvRevisionEvent, Review};
 
 /// With a compile's 30 s, this stays inside the MCP route's 60 s deadline.
 const RENDER_QUEUE_WAIT: Duration = Duration::from_secs(20);
@@ -33,6 +35,7 @@ const RENDER_QUEUE_WAIT: Duration = Duration::from_secs(20);
 pub(crate) const MAX_RENDER_CALLS: usize = 3;
 /// What a refused call reports. The rest would only cost memory: the first ones tell what is wrong.
 const MAX_REPORTED_VIOLATIONS: usize = 50;
+const MAX_REPORTED_ITEMS: usize = 50;
 const MAX_VIOLATION_TEXT_CHARS: usize = 200;
 /// What one page of `list_cv_revisions` carries in diffs. A source can reach 256 KiB, so 50 full
 /// diffs would be 50 MB in the reply, and several times that in the transport.
@@ -69,6 +72,69 @@ pub(super) fn violation_error(violations: &[Violation]) -> CallToolResult {
     )
 }
 
+/// The first review items, most serious first, and how many were left out.
+pub(super) fn capped_items(items: &[ReviewItem]) -> (Vec<ReviewItem>, usize) {
+    let short = |text: &str| text.chars().take(MAX_VIOLATION_TEXT_CHARS).collect();
+    let reported: Vec<ReviewItem> = items
+        .iter()
+        .take(MAX_REPORTED_ITEMS)
+        .map(|item| ReviewItem {
+            rule: item.rule,
+            token: short(&item.token),
+            context: short(&item.context),
+            line: item.line,
+        })
+        .collect();
+    let truncated = items.len() - reported.len();
+    (reported, truncated)
+}
+
+/// Where the owner looks at this variant and approves it. Relative: the client knows the origin.
+pub(super) fn approval_path(variant: &str) -> String {
+    format!("/cv/variants/{variant}#cv-approval")
+}
+
+pub(super) fn approval_required(variant: &str, revision: i64) -> CallToolResult {
+    error_with(
+        "cv_approval_required",
+        json!({
+            "variant": variant,
+            "revision": revision,
+            "approvalPath": approval_path(variant),
+        }),
+    )
+}
+
+pub(super) fn state_name(approved: bool) -> &'static str {
+    if approved { "approved" } else { "draft" }
+}
+
+/// A source is approved when the owner has approved exactly it under exactly these facts, and the
+/// facts are locked. Computed each time: never stored on a revision, never passed by a caller.
+pub(super) async fn is_approved(
+    conn: &mut SqliteConnection,
+    state: &FactsState,
+    source_sha256: &str,
+) -> nexus_core::Result<bool> {
+    Ok(state.is_locked()
+        && approvals::is_approved(conn, source_sha256, &facts_sha256(&state.facts)).await?)
+}
+
+/// `state` and what comes with it, for a reply about a revision.
+fn add_standing(out: &mut Value, variant: &str, approved: bool, items: &[ReviewItem]) {
+    out["state"] = state_name(approved).into();
+    if approved {
+        out["reviewItems"] = json!([]);
+        out["truncated"] = 0.into();
+        out["approvalPath"] = Value::Null;
+    } else {
+        let (reported, truncated) = capped_items(items);
+        out["reviewItems"] = json!(reported);
+        out["truncated"] = truncated.into();
+        out["approvalPath"] = approval_path(variant).into();
+    }
+}
+
 fn render_error(error: RenderError) -> CallToolResult {
     match error {
         RenderError::Diagnostics(diagnostics) => {
@@ -95,15 +161,15 @@ fn render_busy() -> Box<CallToolResult> {
 }
 
 /// One compile, waiting its turn for a bounded time, and only if few calls wait already. It ends with
-/// the client's connection: the child dies with this future. `/facts.json` goes to the compile
-/// without the banned phrases: nothing a source could print needs them, and a source that printed
-/// them would read them back from the violation.
+/// the client's connection: the child dies with this future. `/facts.json` holds what a CV can
+/// render and no more: see [`Facts::renderable`].
 pub(super) async fn compile(
     ctx: &Ctx,
     source: &str,
     facts: &Facts,
     pdf: bool,
     preview_pages: u32,
+    stamp: bool,
 ) -> Result<Rendered, Box<CallToolResult>> {
     let Ok(_admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
         return Err(render_busy());
@@ -116,12 +182,10 @@ pub(super) async fn compile(
         };
         let request = RenderRequest {
             source: source.to_owned(),
-            facts: Facts {
-                banned_phrases: Vec::new(),
-                ..facts.clone()
-            },
+            facts: facts.renderable(),
             pdf,
             preview_pages,
+            stamp,
         };
         ctx.state
             .renderer
@@ -314,13 +378,15 @@ fn unified_diff(old: &str, new: &str, old_label: &str, new_label: &str) -> Strin
 }
 
 /// Call after commit: a page that hears of a revision reads it back at once.
-pub(super) fn publish(ctx: &Ctx, variant: &str, revision: &Revision, review_tokens: &[String]) {
+pub(super) fn publish(ctx: &Ctx, variant: &str, revision: &Revision, approved: bool, items: usize) {
     let _ = ctx.state.cv_events.send(CvRevisionEvent {
         variant: variant.to_owned(),
         revision: revision.number,
         origin: revision.origin.clone(),
         summary: revision.summary.clone(),
-        review_tokens: review_tokens.to_owned(),
+        state: state_name(approved).to_owned(),
+        review_items: items,
+        approval: false,
     });
 }
 
@@ -343,6 +409,7 @@ pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(base) => base,
         Err(missing) => return Ok(missing.error()),
     };
+    let approved = is_approved(&mut conn, &state, &sha256_hex(base.source.as_bytes())).await?;
     // The owner's banned phrases stay in the database: an agent only hears of one it has used.
     let mut facts = serde_json::to_value(&state.facts).expect("facts serialize");
     if let Some(facts) = facts.as_object_mut() {
@@ -353,6 +420,7 @@ pub async fn get(ctx: &Ctx, args: &Args) -> ToolResult {
             "variant": base.variant.name,
             "revision": base.number,
             "source": base.source,
+            "state": state_name(approved),
             "facts": facts,
             "factsVersion": state.version,
             "factsLocked": state.is_locked(),
@@ -393,29 +461,28 @@ async fn locked_facts(ctx: &Ctx) -> Result<Result<FactsState, CallToolResult>, s
     })
 }
 
-/// Compiles and checks a source about to become a revision. `previous` is compiled only once the
-/// new source has passed, for the review tokens: a refused edit costs one compile.
+/// Compiles and checks a source about to become a revision. `baseline` is the text last approved.
 async fn compile_and_check(
     ctx: &Ctx,
     source: &str,
-    previous: &str,
+    baseline: Option<&str>,
     facts: &Facts,
-) -> Result<(Rendered, Vec<String>), Box<CallToolResult>> {
-    let rendered = compile(ctx, source, facts, false, 0).await?;
-    let report = check(&rendered.text, facts, None);
+) -> Result<(Rendered, Report), Box<CallToolResult>> {
+    let rendered = compile(ctx, source, facts, false, 0, false).await?;
+    let report = check(&rendered.text, facts, baseline);
     if !report.violations.is_empty() {
         return Err(Box::new(violation_error(&report.violations)));
     }
-    let previous: Option<RenderedText> = compile(ctx, previous, facts, false, 0)
-        .await
-        .ok()
-        .map(|rendered| rendered.text);
-    // A failed compile of the old source only costs the comparison, unless the client went with it.
-    if ctx.client_gone.is_cancelled() {
-        return Err(client_gone_error());
-    }
-    let review_tokens = check(&rendered.text, facts, previous.as_ref()).review_tokens;
-    Ok((rendered, review_tokens))
+    Ok((rendered, report))
+}
+
+async fn baseline_of(
+    conn: &mut SqliteConnection,
+    variant: &Variant,
+) -> nexus_core::Result<Option<String>> {
+    Ok(approvals::last_approved(conn, variant)
+        .await?
+        .map(|(text, _)| text))
 }
 
 fn valid_new_variant_name(name: &str) -> bool {
@@ -427,6 +494,12 @@ fn valid_new_variant_name(name: &str) -> bool {
 }
 
 pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
+    patch_as(ctx, args, None).await
+}
+
+/// `approved_by` is for the owner's own edit, which they are looking at as they save it. Only the web
+/// handler passes it: no tool argument and no `origin` reaches it.
+pub(crate) async fn patch_as(ctx: &Ctx, args: &Args, approved_by: Option<&str>) -> ToolResult {
     let name = req_str(args, "variant");
     let expected = args["expectedRevision"].as_i64().unwrap_or_default();
     let create_from = str_arg(args, "createFrom");
@@ -437,7 +510,7 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let base = {
+    let (base, baseline) = {
         let mut conn = ctx.state.db.conn().await?;
         if create_from.is_some() {
             if !valid_new_variant_name(name) {
@@ -447,10 +520,17 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
                 return Ok(code_error("cv_variant_exists"));
             }
         }
-        match resolve(&mut conn, &state.facts, create_from.unwrap_or(name), None).await? {
+        let base = match resolve(&mut conn, &state.facts, create_from.unwrap_or(name), None).await? {
             Ok(base) => base,
             Err(missing) => return Ok(missing.error()),
-        }
+        };
+        // A variant made with `createFrom` has no approved text of its own yet.
+        let baseline = if create_from.is_some() {
+            None
+        } else {
+            baseline_of(&mut conn, &base.variant).await?
+        };
+        (base, baseline)
     };
     if base.number != expected {
         return Ok(conflict(expected, base.number));
@@ -459,11 +539,13 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(source) => source,
         Err(error) => return Ok(*error),
     };
-    if source == base.source && create_from.is_none() {
+    // The owner can store a variant's starting text as it stands: it is a change to the history.
+    let stores_start = approved_by.is_some() && base.number == 0;
+    if source == base.source && create_from.is_none() && !stores_start {
         return Ok(code_error("cv_no_change"));
     }
-    let (rendered, review_tokens) =
-        match compile_and_check(ctx, &source, &base.source, &state.facts).await {
+    let (rendered, report) =
+        match compile_and_check(ctx, &source, baseline.as_deref(), &state.facts).await {
             Ok(done) => done,
             Err(error) => return Ok(*error),
         };
@@ -493,19 +575,35 @@ pub async fn patch(ctx: &Ctx, args: &Args) -> ToolResult {
             facts_version: state.version,
             origin,
             summary,
-            warnings: &review_tokens,
+            warnings: &capped_items(&report.review_items).0,
         },
     )
     .await?;
+    if let Some(approved_by) = approved_by {
+        approvals::record(
+            &mut tx,
+            &NewApproval {
+                source_sha256: &revision.source_sha256,
+                facts_sha256: &facts_sha256(&state.facts),
+                rendered_text: &review_text(&rendered.text),
+                variant_id,
+                revision_number: revision.number,
+                approved_by,
+            },
+        )
+        .await?;
+    }
+    let approved = is_approved(&mut tx, &state, &revision.source_sha256).await?;
     tx.commit().await?;
-    publish(ctx, name, &revision, &review_tokens);
+    publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
         name,
         &revision,
         &base,
         &source,
         &rendered,
-        &review_tokens,
+        &report.review_items,
+        approved,
     ))
 }
 
@@ -515,13 +613,13 @@ fn written(
     base: &Base,
     source: &str,
     rendered: &Rendered,
-    review_tokens: &[String],
+    items: &[ReviewItem],
+    approved: bool,
 ) -> CallToolResult {
     let mut out = json!({
         "variant": name,
         "revision": revision.number,
         "pageCount": rendered.page_count,
-        "reviewTokens": review_tokens,
         "diff": unified_diff(
             &base.source,
             source,
@@ -529,6 +627,7 @@ fn written(
             &format!("revision {}", revision.number),
         ),
     });
+    add_standing(&mut out, name, approved, items);
     if !rendered.warnings.is_empty() {
         out["diagnostics"] = json!(rendered.warnings);
     }
@@ -543,7 +642,7 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let (head, target) = {
+    let (head, target, baseline) = {
         let mut conn = ctx.state.db.conn().await?;
         let head = match resolve(&mut conn, &state.facts, name, None).await? {
             Ok(head) => head,
@@ -552,13 +651,14 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
         if head.number != expected {
             return Ok(conflict(expected, head.number));
         }
+        let baseline = baseline_of(&mut conn, &head.variant).await?;
         match resolve(&mut conn, &state.facts, name, Some(to)).await? {
-            Ok(target) => (head, target),
+            Ok(target) => (head, target, baseline),
             Err(missing) => return Ok(missing.error()),
         }
     };
-    let (rendered, review_tokens) =
-        match compile_and_check(ctx, &target.source, &head.source, &state.facts).await {
+    let (rendered, report) =
+        match compile_and_check(ctx, &target.source, baseline.as_deref(), &state.facts).await {
             Ok(done) => done,
             Err(error) => return Ok(*error),
         };
@@ -580,19 +680,21 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
             facts_version: state.version,
             origin: "revert",
             summary: &format!("Revert to revision {to}"),
-            warnings: &review_tokens,
+            warnings: &capped_items(&report.review_items).0,
         },
     )
     .await?;
+    let approved = is_approved(&mut tx, &state, &revision.source_sha256).await?;
     tx.commit().await?;
-    publish(ctx, name, &revision, &review_tokens);
+    publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
         name,
         &revision,
         &head,
         &target.source,
         &rendered,
-        &review_tokens,
+        &report.review_items,
+        approved,
     ))
 }
 
@@ -604,6 +706,7 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
     let Some(variant) = repo::get_variant(&mut conn, req_str(args, "variant")).await? else {
         return Ok(code_error("cv_variant_not_found"));
     };
+    let facts = cv_facts::get(&mut conn).await?;
     let total = repo::count(&mut conn, variant.id).await?;
     let revisions = repo::list(&mut conn, variant.id, page_size, (page - 1) * page_size).await?;
     let mut items = Vec::with_capacity(revisions.len());
@@ -612,6 +715,7 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
         let mut item = json!({
             "revision": revision.number,
             "sourceSha256": revision.source_sha256,
+            "state": state_name(is_approved(&mut conn, &facts, &revision.source_sha256).await?),
             "factsVersion": revision.facts_version,
             "origin": revision.origin,
             "summary": revision.summary,
@@ -710,10 +814,16 @@ async fn save_pdf(
 }
 
 pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
+    render_as(ctx, args, false).await
+}
+
+/// `stamped_pdf` gives a draft's PDF, with the stamp, to the owner downloading it from the dashboard.
+/// No tool passes it: an agent gets no PDF of a draft at all.
+pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> ToolResult {
     let name = req_str(args, "variant");
     let number = args.get("revision").and_then(Value::as_i64);
     let preview_pages = args["previewPages"].as_u64().unwrap_or(1) as u32;
-    let (state, base, application) = {
+    let (state, base, application, approved, baseline) = {
         let mut conn = ctx.state.db.conn().await?;
         let application = match str_arg(args, "saveToApplicationId") {
             Some(id) => match find_application(&mut conn, id).await? {
@@ -725,7 +835,7 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
             None => None,
         };
         let state = cv_facts::get(&mut conn).await?;
-        // A stored CV is built on facts the owner confirmed.
+        // A stored CV is built on facts the owner confirmed, from text the owner approved.
         if application.is_some() && !state.is_locked() {
             return Ok(code_error("cv_facts_not_locked"));
         }
@@ -733,30 +843,60 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
             Ok(base) => base,
             Err(missing) => return Ok(missing.error()),
         };
-        (state, base, application)
+        let approved = is_approved(&mut conn, &state, &sha256_hex(base.source.as_bytes())).await?;
+        if application.is_some() && !approved {
+            return Ok(approval_required(&base.variant.name, base.number));
+        }
+        let baseline = baseline_of(&mut conn, &base.variant).await?;
+        (state, base, application, approved, baseline)
     };
-    let rendered = match compile(ctx, &base.source, &state.facts, true, preview_pages).await {
+    let wants_pdf = approved || stamped_pdf;
+    let rendered = match compile(
+        ctx,
+        &base.source,
+        &state.facts,
+        wants_pdf,
+        preview_pages,
+        !approved,
+    )
+    .await
+    {
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
-    let report = check(&rendered.text, &state.facts, None);
+    let report = check(&rendered.text, &state.facts, baseline.as_deref());
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
-    let pdf = rendered.pdf.unwrap_or_default();
+    // An approval holds for the facts it was given under, and a real PDF must not outlive them.
+    if approved {
+        let mut conn = ctx.state.db.conn().await?;
+        if facts_moved(&mut conn, state.version).await? {
+            return Ok(facts_changed_error());
+        }
+    }
     let mut summary = json!({
         "variant": base.variant.name,
         "revision": base.number,
         "pageCount": rendered.page_count,
-        "pdfBytes": pdf.len(),
         "previews": rendered.previews.len(),
         "factsVersion": state.version,
     });
+    add_standing(
+        &mut summary,
+        &base.variant.name,
+        approved,
+        &report.review_items,
+    );
     if !rendered.warnings.is_empty() {
         summary["diagnostics"] = json!(rendered.warnings);
     }
-    let blob = ENCODER.encode(&pdf);
-    if let Some(application) = application {
+    let pdf = rendered.pdf;
+    let blob = pdf.as_ref().map(|pdf| ENCODER.encode(pdf));
+    if let Some(pdf) = &pdf {
+        summary["pdfBytes"] = pdf.len().into();
+    }
+    if let (Some(application), Some(pdf)) = (application, pdf) {
         let original_name = format!("CV - {} - {}.pdf", application.company, application.role);
         let saved = save_pdf(ctx, pdf, application.id, original_name, state.version).await?;
         match saved {
@@ -766,15 +906,151 @@ pub async fn render(ctx: &Ctx, args: &Args) -> ToolResult {
     }
     let uri = format!("nexus://cv/{}/{}.pdf", base.variant.name, base.number);
     let mut result = json_result(summary, false);
-    result.content.push(ContentBlock::resource(
-        ResourceContents::blob(blob, uri).with_mime_type("application/pdf"),
-    ));
+    if let Some(blob) = blob {
+        result.content.push(ContentBlock::resource(
+            ResourceContents::blob(blob, uri).with_mime_type("application/pdf"),
+        ));
+    }
     for preview in &rendered.previews {
         result
             .content
             .push(ContentBlock::image(ENCODER.encode(preview), "image/png"));
     }
     Ok(result)
+}
+
+/// What the owner looks at before approving a variant's head. `Err` is why it can't be looked at.
+pub(crate) async fn review(ctx: &Ctx, name: &str) -> Result<Result<Review, CallToolResult>, super::Thrown> {
+    let mut conn = ctx.state.db.conn().await?;
+    let state = cv_facts::get(&mut conn).await?;
+    let base = match resolve(&mut conn, &state.facts, name, None).await? {
+        Ok(base) => base,
+        Err(missing) => return Ok(Err(missing.error())),
+    };
+    let source_sha256 = sha256_hex(base.source.as_bytes());
+    let approved = is_approved(&mut conn, &state, &source_sha256).await?;
+    let last = approvals::last_approved(&mut conn, &base.variant).await?;
+    let (baseline, baseline_revision) = last.map_or((None, None), |(text, at)| (Some(text), Some(at)));
+    let baseline_source = match baseline_revision {
+        Some(at) => repo::get_by_number(&mut conn, base.variant.id, at)
+            .await?
+            .map(|revision| revision.source),
+        None => None,
+    };
+    drop(conn);
+    let mut review = Review {
+        variant: base.variant.name.clone(),
+        revision: base.number,
+        approved,
+        locked: state.is_locked(),
+        source_sha256,
+        facts_sha256: facts_sha256(&state.facts),
+        rendered_text: String::new(),
+        baseline,
+        baseline_revision,
+        items: Vec::new(),
+        source_diff: unified_diff(
+            baseline_source.as_deref().unwrap_or(""),
+            &base.source,
+            &baseline_revision.map_or_else(|| "nothing approved yet".to_owned(), |at| format!("revision {at}")),
+            &format!("revision {}", base.number),
+        ),
+    };
+    // Nothing to read over: approved text is approved. It still shows if it no longer compiles.
+    if approved {
+        return Ok(Ok(review));
+    }
+    let rendered = match compile(ctx, &base.source, &state.facts, false, 0, false).await {
+        Ok(rendered) => rendered,
+        Err(error) => return Ok(Err(*error)),
+    };
+    let report = check(&rendered.text, &state.facts, review.baseline.as_deref());
+    if !report.violations.is_empty() {
+        return Ok(Err(violation_error(&report.violations)));
+    }
+    review.rendered_text = review_text(&rendered.text);
+    review.items = report.review_items;
+    Ok(Ok(review))
+}
+
+fn stale(current: i64) -> CallToolResult {
+    error_with("cv_approval_stale", json!({"currentRevision": current}))
+}
+
+/// The owner approves exactly this revision, with exactly these hashes, as `approved_by`. Needs locked
+/// facts, passes the hard rules again, and refuses if the head or the facts moved since the owner
+/// looked. Only `crate::owner` reaches this: it is no tool, and nothing in a tool call names it.
+pub(crate) async fn approve(
+    ctx: &Ctx,
+    name: &str,
+    number: i64,
+    source_sha256: &str,
+    facts_hash: &str,
+    approved_by: &str,
+) -> ToolResult {
+    let state = match locked_facts(ctx).await? {
+        Ok(state) => state,
+        Err(error) => return Ok(error),
+    };
+    let (variant, revision, head) = {
+        let mut conn = ctx.state.db.conn().await?;
+        let Some(variant) = repo::get_variant(&mut conn, name).await? else {
+            return Ok(code_error("cv_variant_not_found"));
+        };
+        let Some(revision) = repo::get_by_number(&mut conn, variant.id, number).await? else {
+            return Ok(code_error("cv_revision_not_found"));
+        };
+        let head = head_number(repo::head(&mut conn, variant.id).await?.as_ref());
+        (variant, revision, head)
+    };
+    if head != number
+        || revision.source_sha256 != source_sha256
+        || facts_sha256(&state.facts) != facts_hash
+    {
+        return Ok(stale(head));
+    }
+    let rendered = match compile(ctx, &revision.source, &state.facts, false, 0, false).await {
+        Ok(rendered) => rendered,
+        Err(error) => return Ok(*error),
+    };
+    let report = check(&rendered.text, &state.facts, None);
+    if !report.violations.is_empty() {
+        return Ok(violation_error(&report.violations));
+    }
+    let mut tx = ctx.state.db.begin_write().await?;
+    if facts_moved(&mut tx, state.version).await? {
+        return Ok(stale(head));
+    }
+    let current = head_number(repo::head(&mut tx, variant.id).await?.as_ref());
+    if current != number {
+        return Ok(stale(current));
+    }
+    approvals::record(
+        &mut tx,
+        &NewApproval {
+            source_sha256,
+            facts_sha256: facts_hash,
+            rendered_text: &review_text(&rendered.text),
+            variant_id: variant.id,
+            revision_number: number,
+            approved_by,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    let _ = ctx.state.cv_events.send(CvRevisionEvent {
+        variant: name.to_owned(),
+        revision: number,
+        origin: approved_by.to_owned(),
+        summary: "Approved".to_owned(),
+        state: state_name(true).to_owned(),
+        review_items: 0,
+        approval: true,
+    });
+    Ok(json_result(
+        json!({"variant": name, "revision": number, "state": state_name(true)}),
+        false,
+    ))
 }
 
 /// The name of the variant `generate_tailored_cv` keeps an application's revisions in.
@@ -812,7 +1088,7 @@ mod tests {
         };
         tokio::time::pause();
         let started = tokio::time::Instant::now();
-        let error = compile(&ctx, "= CV", &Facts::default(), false, 0)
+        let error = compile(&ctx, "= CV", &Facts::default(), false, 0, false)
             .await
             .unwrap_err();
         assert!(started.elapsed() >= RENDER_QUEUE_WAIT);
@@ -846,7 +1122,7 @@ mod tests {
         };
         tokio::time::pause();
         let started = tokio::time::Instant::now();
-        let error = compile(&ctx, "= CV", &Facts::default(), false, 0)
+        let error = compile(&ctx, "= CV", &Facts::default(), false, 0, false)
             .await
             .unwrap_err();
         assert_eq!(started.elapsed(), Duration::ZERO);

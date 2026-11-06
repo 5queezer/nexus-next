@@ -27,6 +27,7 @@ fn request() -> RenderRequest {
         facts: Facts::default(),
         pdf: false,
         preview_pages: 0,
+        stamp: false,
     }
 }
 

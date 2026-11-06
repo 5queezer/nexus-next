@@ -1,4 +1,5 @@
-//! Sources that try to get past the gate, with real compiles. Each must be refused or flagged.
+//! Sources that try to get past the gate, with real compiles. Each must be refused, or listed for the
+//! owner's review.
 
 mod common;
 
@@ -17,12 +18,12 @@ async fn flagged_sources() {
         ("literal year", Rule::Numbers, "Started in 2018."),
         (
             "show rewrite",
-            Rule::Numbers,
+            Rule::EntityBinding,
             "#show \"2019\": \"2018\"\n#employment(\"brightpath\")[- Work.]",
         ),
         (
             "show regex",
-            Rule::Numbers,
+            Rule::EntityBinding,
             "#show regex(\"20\\\\d\\\\d\"): \"2031\"\n#employment(\"brightpath\")[- Work.]",
         ),
         ("computed", Rule::Numbers, "#(\"20\" + \"18\")"),
@@ -475,6 +476,20 @@ async fn flagged_sources() {
     assert_flagged(&cases).await;
 }
 
+/// A hard rule's case must be refused. A review rule's must be listed, whatever else its source does.
+fn is_hard(rule: Rule) -> bool {
+    !matches!(
+        rule,
+        Rule::MissingFact
+            | Rule::EntityBinding
+            | Rule::LanguageLevel
+            | Rule::ClaimWords
+            | Rule::Numbers
+            | Rule::NumberWords
+            | Rule::NewWords
+    )
+}
+
 async fn assert_flagged(cases: &[(&str, Rule, &str)]) {
     assert_flagged_with(&facts_en(), cases).await;
 }
@@ -486,10 +501,15 @@ async fn assert_flagged_with(facts: &Facts, cases: &[(&str, Rule, &str)]) {
         match render(&source, facts).await {
             Ok(rendered) => {
                 let report = nexus_tailor::check(&rendered.text, facts, None);
-                if !report.violations.iter().any(|v| v.rule == *rule) {
+                let found = if is_hard(*rule) {
+                    report.violations.iter().any(|v| v.rule == *rule)
+                } else {
+                    report.review_items.iter().any(|i| i.rule == *rule)
+                };
+                if !found {
                     missed.push(format!(
-                        "{name}: wanted {rule:?}, got {:?}\n  lines: {:?}",
-                        report.violations, rendered.text.lines
+                        "{name}: wanted {rule:?}, got {:?}\n  items: {:?}\n  lines: {:?}",
+                        report.violations, report.review_items, rendered.text.lines
                     ));
                 }
             }
@@ -729,7 +749,7 @@ async fn math_is_refused_or_read() {
         Ok(rendered) => {
             let report = nexus_tailor::check(&rendered.text, &facts, None);
             assert!(
-                report.violations.iter().any(|v| v.rule == Rule::Numbers),
+                report.review_items.iter().any(|i| i.rule == Rule::Numbers),
                 "{:?}",
                 rendered.text
             );
@@ -749,6 +769,7 @@ async fn an_attachment_in_a_tiling_reaches_no_pdf() {
             facts: facts_en(),
             pdf: true,
             preview_pages: 0,
+            stamp: false,
         })
         .await
         .unwrap();
@@ -929,7 +950,7 @@ async fn squeezed_text_cannot_draw_numbers_the_check_reads_otherwise() {
         &no_twelve,
         &[
             (
-                "a tiny space between digits reads as what it draws",
+                "a tiny space between digits",
                 Rule::Numbers,
                 "Served 1#text(size: 1pt)[ ]2 clients.",
             ),
@@ -941,6 +962,14 @@ async fn squeezed_text_cannot_draw_numbers_the_check_reads_otherwise() {
         ],
     )
     .await;
+    // It reads as what it draws.
+    let source = format!("{START}Served 1#text(size: 1pt)[ ]2 clients.\n");
+    let report = render_and_check(&source, &no_twelve).await;
+    assert!(
+        report.review_items.iter().any(|i| i.token == "12"),
+        "{:?}",
+        report.review_items
+    );
 }
 
 /// The review's proof of finding 9: the bookmark says what the page doesn't.
@@ -1100,16 +1129,16 @@ async fn contact_details_only_from_the_facts() {
     .await;
 }
 
-/// Finding 22: a word only of digit lookalikes before `%` or a time unit reads as a number.
+/// Finding 22: a word only of digit lookalikes before `%` or a time unit reads as a number, so it is refused.
 #[tokio::test]
-async fn digit_lookalikes_before_a_unit_are_numbers() {
+async fn digit_lookalikes_before_a_unit_are_refused() {
     assert_flagged(&[
-        ("Latin", Rule::Numbers, "Cut errors by lOO%."),
-        ("Cyrillic", Rule::Numbers, "Cut errors by ЗО%."),
-        ("with a space", Rule::Numbers, "Cut errors by lO %."),
-        ("the word", Rule::Numbers, "Cut errors by lOO percent."),
-        ("years", Rule::Numbers, "With lO years in freight."),
-        ("German", Rule::Numbers, "Seit lO Jahren dabei."),
+        ("Latin", Rule::DigitLookalike, "Cut errors by lOO%."),
+        ("Cyrillic", Rule::DigitLookalike, "Cut errors by ЗО%."),
+        ("with a space", Rule::DigitLookalike, "Cut errors by lO %."),
+        ("the word", Rule::DigitLookalike, "Cut errors by lOO percent."),
+        ("years", Rule::DigitLookalike, "With lO years in freight."),
+        ("German", Rule::DigitLookalike, "Seit lO Jahren dabei."),
     ])
     .await;
 }
@@ -1163,6 +1192,7 @@ async fn a_result_over_its_limit_is_refused_in_the_worker() {
             facts: Facts::default(),
             pdf: true,
             preview_pages: 5,
+            stamp: false,
         })
         .await;
     assert_eq!(result.unwrap_err(), RenderError::ResultTooLarge);
@@ -1182,4 +1212,220 @@ async fn links_are_read_with_the_text_they_cover() {
         .unwrap();
     assert_eq!(link.text, "the link");
     assert_eq!(check(&rendered.text, &facts, None).violations, []);
+}
+
+async fn previews_of(source: &str, stamp: bool) -> Vec<Vec<u8>> {
+    Renderer::InProcess
+        .render(RenderRequest {
+            source: source.to_owned(),
+            facts: facts_en(),
+            pdf: true,
+            preview_pages: 3,
+            stamp,
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{source}: {e:?}"))
+        .previews
+}
+
+/// The stamp's red, in each of the four quarters of an image, as counts of pixels.
+fn red_by_quarter(png_bytes: &[u8]) -> [usize; 4] {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png_bytes))
+        .read_info()
+        .unwrap();
+    let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut buffer).unwrap();
+    let stride = info.line_size;
+    let channels = info.color_type.samples();
+    let mut quarters = [0; 4];
+    for y in 0..info.height as usize {
+        for x in 0..info.width as usize {
+            let pixel = &buffer[y * stride + x * channels..];
+            let (r, g, b) = (i32::from(pixel[0]), i32::from(pixel[1]), i32::from(pixel[2]));
+            if r - g > 60 && r - b > 60 {
+                let right = usize::from(x * 2 >= info.width as usize);
+                let lower = usize::from(y * 2 >= info.height as usize);
+                quarters[right + 2 * lower] += 1;
+            }
+        }
+    }
+    quarters
+}
+
+/// No source can remove or cover the stamp, on any page, because it is drawn after everything the
+/// source can reach, from a document of its own. Judged by looking at pixels.
+#[tokio::test]
+async fn nothing_in_a_source_removes_or_covers_the_stamp() {
+    let cover = "#place(top + left, dx: -3cm, dy: -3cm, rect(width: 40cm, height: 40cm, fill: white))";
+    let attacks = [
+        "Work.".to_owned(),
+        "#set page(background: none, foreground: none)\nWork.".to_owned(),
+        format!("#set page(foreground: {})\nWork.", &cover[1..]),
+        format!("#set page(background: {})\nWork.", &cover[1..]),
+        format!("Work.\n{cover}"),
+        "#set page(fill: white)\nWork.".to_owned(),
+        "#set page(fill: red)\nWork.".to_owned(),
+        "#show \"DRAFT\": none\n#show \"DRAFT, NOT APPROVED\": none\nWork.".to_owned(),
+        "#show regex(\".+\"): none\nWork.".to_owned(),
+        "#show text: none\nWork.".to_owned(),
+        "#set text(fill: white)\n#show: it => none\n".to_owned(),
+        "Page one.\n#pagebreak()\nPage two.\n#pagebreak()\nPage three.".to_owned(),
+        "#set page(width: 40pt, height: 40pt, margin: 1pt)\nx".to_owned(),
+        "#set page(width: 6000pt, height: 6000pt)\nWork.".to_owned(),
+    ];
+    for body in attacks {
+        let source = format!("#import \"/nexus.typ\": *\n#show: cv\n{body}\n");
+        let plain = previews_of(&source, false).await;
+        let stamped = previews_of(&source, true).await;
+        assert_eq!(plain.len(), stamped.len(), "{body}");
+        for (plain, stamped) in plain.iter().zip(&stamped) {
+            assert_ne!(plain, stamped, "{body}");
+            let quarters = red_by_quarter(stamped);
+            if !body.contains("fill: red") {
+                assert_eq!(red_by_quarter(plain), [0; 4], "{body}");
+                assert!(quarters.iter().all(|red| *red > 5), "{body}: {quarters:?}");
+            }
+        }
+    }
+}
+
+/// The stamp isn't CV text: the check reads what the source says, stamped or not.
+#[tokio::test]
+async fn the_stamp_is_not_read_as_cv_text() {
+    let source = format!("{START}Work.\n");
+    let facts = facts_en();
+    let read = |stamp| {
+        Renderer::InProcess.render(RenderRequest {
+            source: source.clone(),
+            facts: facts.clone(),
+            pdf: true,
+            preview_pages: 1,
+            stamp,
+        })
+    };
+    let (plain, stamped) = (read(false).await.unwrap(), read(true).await.unwrap());
+    assert_eq!(plain.text, stamped.text);
+    assert!(!stamped.text.lines.join(" ").contains("DRAFT"));
+    assert_ne!(plain.pdf, stamped.pdf);
+}
+
+/// What a source can print from `/facts.json` must be what an approval's hash covers.
+#[test]
+fn a_compile_sees_only_what_a_cv_can_render() {
+    let facts = facts_en().renderable();
+    assert!(facts.allowed_tokens.is_empty());
+    assert!(facts.banned_phrases.is_empty());
+    assert!(facts.vocabulary.is_empty());
+    assert_eq!(facts.name, facts_en().name);
+    assert_eq!(facts.employment, facts_en().employment);
+}
+
+/// The review's proofs: each must be listed where the owner reads, and none refused.
+#[tokio::test]
+async fn the_reviews_false_facts_are_listed_for_the_owner() {
+    let mut facts = facts_en();
+    facts.employment[0].company = "Brightpath Logistics GmbH".to_owned();
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "finding 1: a short name and false years",
+            "*Brightpath* · Software Engineer #h(1fr) 2015 – 2025",
+            &["Brightpath", "2015", "2025"],
+        ),
+        (
+            "finding 1: another job's dates and title",
+            "*Brightpath Logistics* · Backend Developer #h(1fr) Jan 2016 – Feb 2019",
+            &["Brightpath Logistics", "backend developer", "jan 2016 - feb 2019"],
+        ),
+        (
+            "finding 2: an allowed number in the wrong place",
+            "Cut invoice errors by 40% across 12 depots.",
+            &["40%", "12"],
+        ),
+        ("finding 2: tenure", "with 12 years in freight", &["12"]),
+        ("finding 2: patents", "6 patents granted.", &["6"]),
+        (
+            "finding 3: titles swapped",
+            "*Brightpath Logistics GmbH* · Backend Developer #h(1fr) 03/2019 – 12/2022\n\n*Quillon Systems* · Software Engineer #h(1fr) Jan 2016 – Feb 2019",
+            &["backend developer", "software engineer"],
+        ),
+        (
+            "finding 3: a false place",
+            "*Brightpath Logistics GmbH* · Software Engineer · Bremen #h(1fr) 03/2019 – 12/2022",
+            &["bremen"],
+        ),
+        (
+            "finding 3: language levels swapped",
+            "German (C1) · English (native)",
+            &["german (c1", "english (native"],
+        ),
+        (
+            "finding 4: a month without its pattern",
+            "Joined in Nov, 2019 and left in Feb, 2025.",
+            &["Nov, 2019", "Feb, 2025"],
+        ),
+        ("finding 4: of", "Started March of 2019", &["March of 2019"]),
+        ("finding 4: reversed", "2019 March start", &["2019 March"]),
+        (
+            "finding 5: lower-case degree",
+            "master of science in computer science",
+            &["master"],
+        ),
+        ("finding 5: small caps", "#smallcaps[master of science]", &["master"]),
+        ("finding 5: honors", "graduated summa cum laude", &["graduated", "cum laude"]),
+        ("finding 5: abbreviation", "holds a b.a. in philosophy", &["b.a"]),
+        ("finding 5: German degree", "habilitierte sich", &["habilitierte"]),
+        ("finding 5: seniority", "worked as lead engineer", &["lead"]),
+        ("finding 5: manager", "engineering manager", &["manager"]),
+        ("finding 5: German title", "Teamleitung und Projektleitung", &["Teamleitung", "Projektleitung"]),
+        ("finding 5: language", "fließendes Französisch", &["fließendes"]),
+        ("finding 5: German language", "Spanischkenntnisse", &["Spanischkenntnisse"]),
+        ("finding 10: filler", "with eight consecutive years in freight", &["eight"]),
+        ("finding 10: and a half", "with two and a half years in freight", &["two"]),
+        ("finding 10: plus", "with eight-plus years in freight", &["eight-plus"]),
+        ("finding 10: einhalb", "mit zweieinhalb Jahren Erfahrung", &["zweieinhalb"]),
+        ("finding 10: scale", "12 Tausend Nutzer.", &["12", "Tausend"]),
+        ("finding 10: bn", "12 bn EUR revenue.", &["12"]),
+        ("finding 12: names", "worked for Google at Stanford", &["Google", "Stanford"]),
+    ];
+    let mut missed = Vec::new();
+    for (name, body, tokens) in cases {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts).await;
+        if !report.violations.is_empty() {
+            missed.push(format!("{name}: refused: {:?}", report.violations));
+        }
+        let listed: Vec<String> = report
+            .review_items
+            .iter()
+            .map(|item| item.token.to_lowercase())
+            .collect();
+        for token in *tokens {
+            if !listed.iter().any(|t| t == &token.to_lowercase()) {
+                missed.push(format!("{name}: no {token}: {listed:?}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{}", missed.join("\n"));
+}
+
+/// A false phone number would otherwise only be a number in a list: a reply goes to whoever it names.
+#[tokio::test]
+async fn a_false_phone_number_is_refused_and_the_true_one_is_not() {
+    let facts = facts_en();
+    for body in [
+        "Call +49 170 5550199.",
+        "Call 0049 170 5550199.",
+        "Call +1 (555) 010-9999.",
+    ] {
+        let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
+        assert!(
+            report.violations.iter().any(|v| v.rule == Rule::ContactDetails),
+            "{body}: {:?}",
+            report.violations
+        );
+    }
+    for body in ["Call +49 170 5550137.", "Call 0049 170 5550137.", "#contact()"] {
+        let report = render_and_check(&format!("{START}{body}\n"), &facts).await;
+        assert_eq!(report.violations, [], "{body}");
+    }
 }

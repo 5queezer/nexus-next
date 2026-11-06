@@ -1,14 +1,17 @@
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use nexus_core::Db;
 use nexus_core::import::{self, ImportOptions};
 use nexus_core::repo::cv_facts::{self, OwnerFacts};
+use nexus_mcp::{McpState, Renderer, owner};
 use nexus_server::backup;
 use nexus_server::config::ServeArgs;
 use nexus_server::serve;
+use nexus_tailor::{LineChange, review_diff};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::Level;
 
@@ -140,19 +143,100 @@ enum CvFactsAction {
         #[arg(long)]
         file: PathBuf,
     },
-    /// Lock the facts. Prints every fact changed since the last lock and every number and URL taken
-    /// from the profile's wording, and writes nothing unless nothing changed or you pass --confirm.
+    /// Lock the facts. Prints every fact and piece of wording changed since the last lock and every URL
+    /// taken from the wording, and a hash of that list. Writes nothing unless nothing changed, or you
+    /// pass --confirm with that hash.
     Lock {
-        /// You have read the changes, and they are true.
-        #[arg(long)]
-        confirm: bool,
+        /// The hash the printed list ended with: you have read it, and it is true. If anything was
+        /// written since, it no longer matches, and nothing is locked.
+        #[arg(long, value_name = "HASH")]
+        confirm: Option<String>,
     },
     /// Unlock the facts, so that upsert_cv_profile can change them again.
     Unlock,
+    /// Read a CV variant's newest revision against the text last approved, and with --confirm approve
+    /// it. Only the owner, on this machine or on the dashboard, can do this: no tool can.
+    Approve {
+        #[arg(long)]
+        variant: String,
+        #[arg(long)]
+        revision: i64,
+        /// You have read the text, and it is true.
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 /// Who a change by this command is recorded as.
 const CV_FACTS_ACTOR: &str = "cli";
+
+/// The error a tool result says, in its own words.
+fn tool_failure(result: &nexus_mcp::CallToolResult) -> anyhow::Error {
+    let said = result.content.first().and_then(|block| serde_json::to_value(block).ok());
+    let text = said.as_ref().and_then(|block| block["text"].as_str());
+    anyhow::anyhow!("{}", text.unwrap_or("it failed"))
+}
+
+async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> anyhow::Result<()> {
+    let state = Arc::new(McpState::new(
+        db.clone(),
+        String::new(),
+        String::new(),
+        Renderer::current_exe(),
+    ));
+    let review = owner::review(state.clone(), variant)
+        .await
+        .map_err(|refused| tool_failure(&refused))?;
+    if review.revision != revision {
+        bail!(
+            "nothing was approved: revision {revision} isn't the newest, {} is. Read that one: \
+             `nexus cv-facts approve --variant {variant} --revision {}`",
+            review.revision,
+            review.revision
+        );
+    }
+    if review.approved {
+        println!("revision {revision} of {variant} is already approved");
+        return Ok(());
+    }
+    if !review.locked {
+        bail!("nothing was approved: the facts aren't locked. Check them, then `nexus cv-facts lock`");
+    }
+    match review.baseline_revision {
+        Some(at) => println!("compared with revision {at}, the last you approved:"),
+        None => println!("nothing is approved yet, so this is the whole CV:"),
+    }
+    for line in review_diff(review.baseline.as_deref(), &review.rendered_text) {
+        match line.change {
+            LineChange::Added => println!("+ {}", line.text),
+            LineChange::Removed => println!("- {}", line.text),
+            LineChange::Same => {}
+        }
+    }
+    for item in &review.items {
+        println!("check {:?}: {}", item.rule, item.token);
+    }
+    if !confirm {
+        bail!(
+            "nothing was written. Approving says all of the above is true: if it is, run \
+             `nexus cv-facts approve --variant {variant} --revision {revision} --confirm`"
+        );
+    }
+    let result = owner::approve(
+        state,
+        variant,
+        revision,
+        &review.source_sha256,
+        &review.facts_sha256,
+        CV_FACTS_ACTOR,
+    )
+    .await;
+    if result.is_error == Some(true) {
+        return Err(tool_failure(&result));
+    }
+    println!("revision {revision} of {variant} approved");
+    Ok(())
+}
 
 async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
     if let CvFactsAction::Show = action {
@@ -160,9 +244,17 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&state)?);
         return Ok(());
     }
+    if let CvFactsAction::Approve {
+        variant,
+        revision,
+        confirm,
+    } = &action
+    {
+        return run_approve(db, variant, *revision, *confirm).await;
+    }
     let mut tx = db.begin_write().await?;
     let state = match action {
-        CvFactsAction::Show => unreachable!("handled above"),
+        CvFactsAction::Show | CvFactsAction::Approve { .. } => unreachable!("handled above"),
         CvFactsAction::Set { file } => {
             let bytes =
                 std::fs::read(&file).with_context(|| format!("cannot read {}", file.display()))?;
@@ -175,13 +267,26 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
             for change in &preview.changes {
                 println!("changed {}: {} -> {}", change.field, change.old, change.new);
             }
+            for change in &preview.wording {
+                println!(
+                    "wording changed {}: {} -> {}",
+                    change.field, change.old, change.new
+                );
+            }
             for token in &preview.added {
                 println!("added to allowed tokens: {token}");
             }
-            if preview.needs_confirmation() && !confirm {
+            let hash = preview.hash();
+            if preview.needs_confirmation() && confirm.as_deref() != Some(hash.as_str()) {
+                let moved = if confirm.is_some() {
+                    "something changed since that hash was printed, and "
+                } else {
+                    ""
+                };
                 anyhow::bail!(
-                    "nothing was written. Locking confirms all of the above as true: if it is, \
-                     run `nexus cv-facts lock --confirm`"
+                    "{moved}nothing was written. Locking confirms all of the above as true, and a \
+                     CV generated from this wording needs no further approval: if it is true, run \
+                     `nexus cv-facts lock --confirm {hash}`"
                 );
             }
             cv_facts::lock(&mut tx, CV_FACTS_ACTOR).await?.0

@@ -12,6 +12,9 @@ CREATE TABLE cv_facts (
     allowed_tokens TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(allowed_tokens)),
     banned_phrases TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(banned_phrases)),
     vocabulary TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(vocabulary)),
+    -- The profile's wording as the last lock confirmed it, as `[field, text]` pairs. A CV generated
+    -- from just this wording is what the owner has already approved by locking.
+    locked_wording TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(locked_wording)),
     version INTEGER NOT NULL DEFAULT 1,
     locked_at TEXT CHECK (locked_at IS NULL OR locked_at GLOB '????-??-??T??:??:??.???Z'),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (updated_at GLOB '????-??-??T??:??:??.???Z')
@@ -152,4 +155,29 @@ CREATE TRIGGER cv_variants_no_delete BEFORE DELETE ON cv_variants
 WHEN OLD.application_id IS NULL OR EXISTS (SELECT 1 FROM applications WHERE id = OLD.application_id)
 BEGIN
     SELECT RAISE(ABORT, 'a cv_variant goes only with its application');
+END;
+
+-- The owner's approvals: exactly this source, rendered from exactly these facts. A revision's state
+-- is computed from here and is stored nowhere else. No foreign key: an approval outlives a variant
+-- that goes with its application, since identical text stays approved.
+CREATE TABLE cv_approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_sha256 TEXT NOT NULL,
+    facts_sha256 TEXT NOT NULL,
+    rendered_text TEXT NOT NULL,
+    variant_id INTEGER NOT NULL,
+    revision_number INTEGER NOT NULL,
+    approved_by TEXT NOT NULL CHECK (approved_by IN ('cli', 'dashboard', 'lock')),
+    approved_at TEXT NOT NULL CHECK (approved_at GLOB '????-??-??T??:??:??.???Z'),
+    UNIQUE (source_sha256, facts_sha256)
+) STRICT;
+
+CREATE TRIGGER cv_approvals_no_update BEFORE UPDATE ON cv_approvals
+BEGIN
+    SELECT RAISE(ABORT, 'cv_approvals is append-only');
+END;
+
+CREATE TRIGGER cv_approvals_no_delete BEFORE DELETE ON cv_approvals
+BEGIN
+    SELECT RAISE(ABORT, 'cv_approvals is append-only');
 END;

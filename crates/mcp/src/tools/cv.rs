@@ -3,15 +3,16 @@ use std::sync::Arc;
 use nexus_core::Error;
 use nexus_core::blob::sha256_hex;
 use nexus_core::repo::cv::{self as repo, CvPatchInput, CvProfile, CvProfileInput};
+use nexus_core::repo::cv_approvals::{self as approvals, NewApproval, facts_sha256};
 use nexus_core::repo::cv_facts;
 use nexus_core::repo::cv_revisions::{self as revisions, NewRevision};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
-use nexus_tailor::{RenderedText, check, source_from_profile};
+use nexus_tailor::{check, review_text, source_from_profile};
 use serde_json::{Value, json};
 
 use super::cv_source::{
-    application_variant, compile, content_of, error_with, facts_changed_error, facts_moved,
-    publish, violation_error,
+    application_variant, approval_required, capped_items, compile, content_of, error_with,
+    facts_changed_error, facts_moved, is_approved, publish, violation_error,
 };
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{
@@ -23,6 +24,35 @@ fn profile_json(ctx: &Ctx, profile: &CvProfile) -> Value {
     let mut value = serde_json::to_value(profile).expect("profile serializes");
     ctx.with_owner(&mut value);
     value
+}
+
+/// The application's variant, with this source as its head: running a generate again changes nothing
+/// in the history, and an agent's retries don't fill the owner's list. Whether it added one is last.
+async fn store_revision(
+    conn: &mut sqlx::SqliteConnection,
+    name: &str,
+    application_id: i64,
+    new: &NewRevision<'_>,
+) -> nexus_core::Result<(i64, revisions::Revision, bool)> {
+    let variant = match revisions::get_variant(&mut *conn, name).await? {
+        Some(variant) => variant,
+        None => revisions::create_variant(&mut *conn, name, Some(application_id)).await?,
+    };
+    if let Some(head) = revisions::head(&mut *conn, variant.id).await?
+        && head.source == new.source
+    {
+        return Ok((variant.id, head, false));
+    }
+    let revision = revisions::append(
+        conn,
+        variant.id,
+        &NewRevision {
+            parent_id: variant.head_revision_id,
+            ..new.clone()
+        },
+    )
+    .await?;
+    Ok((variant.id, revision, true))
 }
 
 pub async fn get_profile(ctx: &Ctx) -> ToolResult {
@@ -51,10 +81,9 @@ pub async fn upsert_profile(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     Ok(match upserted.await {
         Ok(profile) => json_result(profile_json(ctx, &profile), false),
-        Err(Error::CvFactsLocked { fields, tokens }) => error_with(
-            "cv_facts_locked",
-            json!({"fields": fields, "tokens": tokens}),
-        ),
+        Err(Error::CvFactsLocked { fields }) => {
+            error_with("cv_facts_locked", json!({"fields": fields}))
+        }
         Err(_) => text_error("Failed to upsert CV profile"),
     })
 }
@@ -71,31 +100,25 @@ fn strings(args: &Args, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Everything the master profile says, for telling what a tailored CV adds to it.
-fn profile_as_text(profile: &CvProfile) -> RenderedText {
-    fn collect(value: &Value, out: &mut Vec<String>) {
-        match value {
-            Value::String(text) => out.push(text.clone()),
-            Value::Array(items) => items.iter().for_each(|item| collect(item, out)),
-            Value::Object(map) => map.values().for_each(|item| collect(item, out)),
-            _ => {}
-        }
-    }
-    let mut lines = vec![profile.profile.clone()];
-    for value in [&profile.skills, &profile.experience, &profile.projects] {
-        collect(&value.0, &mut lines);
-    }
-    RenderedText {
-        lines,
-        ..RenderedText::default()
-    }
+/// How a generated source stands with the owner, under locked facts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Generated {
+    /// The owner approved this text.
+    Approved,
+    /// This text comes from just the wording the last lock confirmed, so the lock approved it.
+    ApprovedByLock,
+    /// An agent's wording: a revision to approve, and no document.
+    Draft,
+    /// As old Nexus, for parity, with a PDF that says it is no final CV.
+    Unlocked,
 }
 
 /// Port of `generateAndStoreCv`, with Typst for react-pdf and the integrity check before anything
 /// is stored. Replaces the document the patch last tracked, unless that one was submitted. Unlike old
 /// Nexus, a document also linked to another application stays for that one, and only loses this link.
 pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
-    let (application, profile, state) = {
+    let profile_override = str_arg(args, "profileOverride");
+    let (application, profile, state, locked_wording) = {
         let mut conn = ctx.state.db.conn().await?;
         let Some(application) = find_application(&mut conn, req_str(args, "applicationId")).await?
         else {
@@ -106,13 +129,14 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
                 "No CV profile found. Use upsert_cv_profile first.",
             ));
         };
-        (application, profile, cv_facts::get(&mut conn).await?)
+        let state = cv_facts::get(&mut conn).await?;
+        let locked_wording = cv_facts::locked_wording(&mut conn).await?;
+        (application, profile, state, locked_wording)
     };
     let experience_ids = strings(args, "experienceIds");
     let skill_categories = strings(args, "skillCategories");
     let include_projects = bool_arg(args, "includeProjects").unwrap_or(false);
     let include_education = bool_arg(args, "includeEducation").unwrap_or(true);
-    let profile_override = str_arg(args, "profileOverride");
 
     let unmatched = |ids: &[String], list: &Value, key: &str| -> Vec<String> {
         let known = list.as_array().map_or(&[][..], Vec::as_slice);
@@ -146,20 +170,78 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         include_projects,
         include_education,
     ));
-    let rendered = match compile(ctx, &source, &state.facts, true, 0).await {
+    let name = application_variant(application.id);
+    let source_sha256 = sha256_hex(source.as_bytes());
+    let (standing, baseline) = {
+        let mut conn = ctx.state.db.conn().await?;
+        let baseline = match revisions::get_variant(&mut conn, &name).await? {
+            Some(variant) => approvals::last_approved(&mut conn, &variant).await?,
+            None => None,
+        };
+        let standing = if !state.is_locked() {
+            Generated::Unlocked
+        } else if is_approved(&mut conn, &state, &source_sha256).await? {
+            Generated::Approved
+        } else if profile_override.is_none() && repo::wording_of(&profile) == locked_wording {
+            Generated::ApprovedByLock
+        } else {
+            Generated::Draft
+        };
+        (standing, baseline.map(|(text, _)| text))
+    };
+    let rendered = match compile(
+        ctx,
+        &source,
+        &state.facts,
+        standing != Generated::Draft,
+        0,
+        standing == Generated::Unlocked,
+    )
+    .await
+    {
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };
-    let report = check(
-        &rendered.text,
-        &state.facts,
-        Some(&profile_as_text(&profile)),
-    );
+    let report = check(&rendered.text, &state.facts, baseline.as_deref());
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
-    let bytes = Arc::new(rendered.pdf.unwrap_or_default());
+    let review_items = capped_items(&report.review_items).0;
+    let new_revision = NewRevision {
+        parent_id: None,
+        source: &source,
+        facts_version: state.version,
+        origin: "generate",
+        summary: "Generated by generate_tailored_cv",
+        warnings: &review_items,
+    };
     let db = &ctx.state.db;
+    if standing == Generated::Draft {
+        let stored = async {
+            let mut tx = db.begin_write().await?;
+            if facts_moved(&mut tx, state.version).await? {
+                return Ok::<_, Error>(None);
+            }
+            let (_, revision, added) =
+                store_revision(&mut tx, &name, application.id, &new_revision).await?;
+            tx.commit().await?;
+            Ok(Some((revision, added)))
+        };
+        return Ok(match stored.await {
+            Ok(Some((revision, added))) => {
+                if added {
+                    publish(ctx, &name, &revision, false, report.review_items.len());
+                }
+                approval_required(&name, revision.number)
+            }
+            Ok(None) => facts_changed_error(),
+            Err(error) => {
+                let message = super::Thrown::from(error).0;
+                text_error(&format!("Failed to generate CV: {message}"))
+            }
+        });
+    }
+    let bytes = Arc::new(rendered.pdf.unwrap_or_default());
     let Ok(sha256) = put_blob(db, bytes.clone()).await else {
         return Ok(text_error("Failed to generate CV: unknown error"));
     };
@@ -187,25 +269,22 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         if facts_moved(&mut tx, state.version).await? {
             return Ok::<_, Error>(None);
         }
-        let name = application_variant(application.id);
-        let variant = match revisions::get_variant(&mut tx, &name).await? {
-            Some(variant) => variant,
-            None => revisions::create_variant(&mut tx, &name, Some(application.id)).await?,
-        };
-        let parent_id = variant.head_revision_id;
-        let revision = revisions::append(
-            &mut tx,
-            variant.id,
-            &NewRevision {
-                parent_id,
-                source: &source,
-                facts_version: state.version,
-                origin: "generate",
-                summary: "Generated by generate_tailored_cv",
-                warnings: &report.review_tokens,
-            },
-        )
-        .await?;
+        let (variant_id, revision, added) =
+            store_revision(&mut tx, &name, application.id, &new_revision).await?;
+        if standing == Generated::ApprovedByLock {
+            approvals::record(
+                &mut tx,
+                &NewApproval {
+                    source_sha256: &source_sha256,
+                    facts_sha256: &facts_sha256(&state.facts),
+                    rendered_text: &review_text(&rendered.text),
+                    variant_id,
+                    revision_number: revision.number,
+                    approved_by: "lock",
+                },
+            )
+            .await?;
+        }
         let tracked = repo::upsert_patch(&mut tx, application.id, &patch).await?;
         let mut replaced_blob = None;
         if let Some(previous_id) = tracked.document_id
@@ -233,9 +312,9 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         let document = documents_repo::create(&mut tx, &new).await?;
         repo::set_patch_document_id(&mut tx, tracked.id, Some(document.id)).await?;
         tx.commit().await?;
-        Ok(Some((document, replaced_blob, name, revision)))
+        Ok(Some((document, replaced_blob, revision, added)))
     };
-    let (document, replaced_blob, variant, revision) = match stored.await {
+    let (document, replaced_blob, revision, added) = match stored.await {
         Ok(Some(done)) => done,
         Ok(None) => {
             let _ = remove_blob_if_unreferenced(db, sha256).await;
@@ -247,7 +326,10 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             return Ok(text_error(&format!("Failed to generate CV: {message}")));
         }
     };
-    publish(ctx, &variant, &revision, &report.review_tokens);
+    if added {
+        let approved = standing != Generated::Unlocked;
+        publish(ctx, &name, &revision, approved, report.review_items.len());
+    }
     if let Some(replaced) = replaced_blob {
         let _ = remove_blob_if_unreferenced(db, replaced).await;
     }

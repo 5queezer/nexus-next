@@ -2,6 +2,7 @@
 
 mod http;
 mod js;
+pub mod owner;
 mod tools;
 mod zod;
 
@@ -22,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use http::router;
 pub use nexus_tailor::Renderer;
+pub use owner::Review;
 pub use rmcp::model::CallToolResult;
 
 /// Runs one tool for a caller inside this process: the same validation, handlers and error codes
@@ -83,7 +85,8 @@ pub fn all_tools() -> &'static [Value] {
     &ALL_TOOLS
 }
 
-/// A revision that has just been committed. Live pages hear of it from whichever writer stored it.
+/// A revision that has just been committed, or just been approved. Live pages hear of it from
+/// whichever writer stored it, and an open preview then drops its stamp in place.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CvRevisionEvent {
@@ -91,7 +94,10 @@ pub struct CvRevisionEvent {
     pub revision: i64,
     pub origin: String,
     pub summary: String,
-    pub review_tokens: Vec<String>,
+    pub state: String,
+    pub review_items: usize,
+    /// This is the owner's approval of a revision the page knows, not a new one.
+    pub approval: bool,
 }
 
 /// A page that misses more than this reads the head again.

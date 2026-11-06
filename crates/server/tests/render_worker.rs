@@ -47,6 +47,7 @@ fn request(source: String) -> RenderRequest {
         facts: facts(),
         pdf: true,
         preview_pages: 1,
+        stamp: false,
     }
 }
 

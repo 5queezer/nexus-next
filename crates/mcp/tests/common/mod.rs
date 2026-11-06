@@ -2,6 +2,7 @@
 //! Runs the server on a loopback port with synthetic data, and talks to it over real HTTP.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::Request;
@@ -44,6 +45,8 @@ async fn test_auth(mut request: Request, next: Next) -> Response {
 pub struct Server {
     pub addr: SocketAddr,
     pub db: Db,
+    /// The same state the route uses, for what only the owner's paths reach.
+    pub state: Arc<McpState>,
     pub dir: tempfile::TempDir,
     http: reqwest::Client,
     token: &'static str,
@@ -89,12 +92,14 @@ impl Server {
     pub async fn start_with(renderer: Renderer) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).await.unwrap();
-        let mcp = router(McpState::new(
+        let state = McpState::new(
             db.clone(),
             OWNER_ID.to_owned(),
             OWNER_EMAIL.to_owned(),
             renderer,
-        ));
+        );
+        let mcp = router(state.clone());
+        let state = Arc::new(state);
         let app = Router::new()
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp)
@@ -105,6 +110,7 @@ impl Server {
         Self {
             addr,
             db,
+            state,
             dir,
             http: reqwest::Client::new(),
             token: FULL,

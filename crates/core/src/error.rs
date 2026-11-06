@@ -21,10 +21,7 @@ pub enum Error {
     #[error("document_already_submitted")]
     DocumentAlreadySubmitted,
     #[error("cv_facts_locked")]
-    CvFactsLocked {
-        fields: Vec<String>,
-        tokens: Vec<String>,
-    },
+    CvFactsLocked { fields: Vec<String> },
     /// An owner's `cv-facts` command that doesn't apply to the facts' current state.
     #[error("{0}")]
     CvFacts(&'static str),

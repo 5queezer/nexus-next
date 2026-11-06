@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub use check::{Report, Rule, Violation, check, unverified_numbers, unverified_urls};
+pub use check::{
+    DiffLine, LineChange, Report, ReviewItem, Rule, Violation, check, review_diff, review_lines,
+    review_text, unverified_urls,
+};
 pub use template::{
     CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, default_source,
     source_from_profile,
@@ -36,7 +39,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// between two polls must fit below it.
 pub const DEFAULT_RSS_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 
-/// The locked facts. Serialized as `/facts.json` for the template library.
+/// The locked facts. [`Facts::renderable`] is served as `/facts.json` for the template library.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Facts {
@@ -49,6 +52,21 @@ pub struct Facts {
     pub allowed_tokens: Vec<String>,
     pub banned_phrases: Vec<String>,
     pub vocabulary: Vec<String>,
+}
+
+impl Facts {
+    /// What a CV can render, and all a compile gets. A source could print the rest, which would then
+    /// change under an approved revision, and a banned phrase it printed would come back in the
+    /// violation that names it.
+    #[must_use]
+    pub fn renderable(&self) -> Self {
+        Self {
+            allowed_tokens: Vec::new(),
+            banned_phrases: Vec::new(),
+            vocabulary: Vec::new(),
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -103,6 +121,8 @@ pub struct RenderRequest {
     pub facts: Facts,
     pub pdf: bool,
     pub preview_pages: u32,
+    /// Draw `DRAFT, NOT APPROVED` across every page of the PDF and the previews.
+    pub stamp: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

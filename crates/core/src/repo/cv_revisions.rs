@@ -1,5 +1,6 @@
 //! CV variants and their immutable revisions. See SPEC section 9a.
 
+use nexus_tailor::ReviewItem;
 use serde_json::Value;
 use sqlx::SqliteConnection;
 use sqlx::types::Json;
@@ -142,7 +143,8 @@ pub struct NewRevision<'a> {
     pub facts_version: i64,
     pub origin: &'a str,
     pub summary: &'a str,
-    pub warnings: &'a [String],
+    /// What the check listed for review when this was written.
+    pub warnings: &'a [ReviewItem],
 }
 
 /// Adds a revision after the variant's head and moves the head to it. Run inside `Db::begin_write`.

@@ -191,25 +191,21 @@ async fn an_m1_database_splits_the_same_way_when_migrated() {
 }
 
 #[tokio::test]
-async fn locking_confirms_the_numbers_in_the_wording_and_records_who() {
+async fn locking_records_the_wording_and_who() {
     let (_dir, db) = open().await;
     let mut wordy = input();
     wordy.profile = "Eight years of backend work, Q3 2024 included, on S3.".into();
     upsert(&db, &wordy).await.unwrap();
     let added = lock(&db).await;
-    for token in ["40%", "3", "eight years", "S3"] {
-        assert!(added.iter().any(|a| a == token), "{token} in {added:?}");
-    }
+    assert_eq!(added, Vec::<String>::new(), "no number is the lock's to allow");
+    let locked = cv_facts::locked_wording(&mut db.conn().await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(locked, cv::stored_wording(&mut db.conn().await.unwrap()).await.unwrap());
+    assert!(locked.iter().any(|(field, text)| field == "profile" && text.contains("S3")));
     let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
     assert!(state.is_locked());
     assert_eq!(state.facts.allowed_tokens, added);
-    for text in ["40% and 3", "Eight years", "S3"] {
-        assert_eq!(
-            nexus_tailor::unverified_numbers(text, &state.facts),
-            Vec::<String>::new(),
-            "{text}"
-        );
-    }
     let (change, by, version): (String, String, i64) = sqlx::query_as(
         "SELECT change, changed_by, version FROM cv_facts_history WHERE change = 'lock'",
     )
@@ -477,7 +473,7 @@ async fn locked_facts_refuse_every_change_and_write_nothing() {
     let before = tables(&db).await;
 
     type Change = (&'static str, fn(&mut CvProfileInput));
-    let changes: [Change; 10] = [
+    let changes: [Change; 8] = [
         ("name", |i| i.name = "Mara Prime".into()),
         ("contact", |i| i.contact["phone"] = "+1 555".into()),
         ("education", |i| {
@@ -496,10 +492,6 @@ async fn locked_facts_refuse_every_change_and_write_nothing() {
         ("experience.new-job", |i| {
             i.experience[1]["id"] = "new-job".into()
         }),
-        ("profile", |i| i.profile = "Eight years of work.".into()),
-        ("experience.brightpath.bullets", |i| {
-            i.experience[0]["bullets"] = json!(["Cut invoice errors by 90%."])
-        }),
     ];
     for (expected, change) in changes {
         let mut changed = input();
@@ -513,12 +505,13 @@ async fn locked_facts_refuse_every_change_and_write_nothing() {
         assert_eq!(tables(&db).await, before, "{expected}");
     }
 
+    // Wording is free, numbers included: it reaches no output before the owner approves it.
     let mut wording = input();
-    wording.profile = "Backend engineer, freight.".into();
-    wording.experience[0]["bullets"] = json!(["Reduced invoice errors by 40%."]);
+    wording.profile = "Backend engineer, freight, for eight years on S3.".into();
+    wording.experience[0]["bullets"] = json!(["Reduced invoice errors by 90%."]);
     wording.experience[0]["tier"] = 2.into();
     let saved = upsert(&db, &wording).await.unwrap();
-    assert_eq!(saved.profile, "Backend engineer, freight.");
+    assert_eq!(saved.profile, "Backend engineer, freight, for eight years on S3.");
     assert_eq!(saved.experience.0[0]["tier"], 2);
     assert_eq!(saved.experience.0[0]["company"], "Brightpath Logistics");
     let after = tables(&db).await;
@@ -552,7 +545,12 @@ async fn revision_on(db: &Db, variant_id: i64, parent_id: Option<i64>) -> i64 {
             facts_version: 1,
             origin: "test",
             summary: "s",
-            warnings: &["Word".to_owned()],
+            warnings: &[nexus_tailor::ReviewItem {
+                rule: nexus_tailor::Rule::NewWords,
+                token: "Word".to_owned(),
+                context: "Word".to_owned(),
+                line: Some(1),
+            }],
         },
     )
     .await
@@ -627,4 +625,98 @@ async fn revisions_and_history_cannot_change_and_a_deleted_application_takes_its
             .await
             .unwrap();
     assert!(violations.is_empty(), "{violations:?}");
+}
+
+/// An unlocked write to the wording shows at the lock, because the lock approves a CV generated from it.
+#[tokio::test]
+async fn a_lock_shows_changed_wording_and_its_hash_names_the_list() {
+    let (_dir, db) = open().await;
+    upsert(&db, &input()).await.unwrap();
+    let mut tx = db.begin_write().await.unwrap();
+    let first = cv_facts::lock_preview(&mut tx).await.unwrap();
+    assert!(first.wording.iter().any(|c| c.field == "profile" && c.old == "(none)"));
+    cv_facts::lock(&mut tx, "cli").await.unwrap();
+    cv_facts::unlock(&mut tx, "cli").await.unwrap();
+    let unchanged = cv_facts::lock_preview(&mut tx).await.unwrap();
+    assert!(!unchanged.needs_confirmation());
+    tx.commit().await.unwrap();
+
+    let mut laundered = input();
+    laundered.profile = "Harvard alumnus and Google veteran.".into();
+    upsert(&db, &laundered).await.unwrap();
+    let mut tx = db.begin_write().await.unwrap();
+    let preview = cv_facts::lock_preview(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(preview.needs_confirmation());
+    let change = preview.wording.iter().find(|c| c.field == "profile").unwrap();
+    assert!(change.new.contains("Harvard"), "{change:?}");
+    assert_ne!(preview.hash(), unchanged.hash());
+
+    laundered.profile = "Stanford alumnus.".into();
+    upsert(&db, &laundered).await.unwrap();
+    let mut tx = db.begin_write().await.unwrap();
+    let moved = cv_facts::lock_preview(&mut tx).await.unwrap();
+    assert_ne!(moved.hash(), preview.hash(), "a write after the page loaded");
+}
+
+/// A hash of what can be rendered: nothing else moves it, and any fact does.
+#[tokio::test]
+async fn the_facts_hash_covers_what_a_cv_can_render_and_no_more() {
+    use nexus_core::repo::cv_approvals::facts_sha256;
+    let (_dir, db) = open().await;
+    upsert(&db, &input()).await.unwrap();
+    let state = cv_facts::get(&mut db.conn().await.unwrap()).await.unwrap();
+    let hash = facts_sha256(&state.facts);
+    let mut same = state.facts.clone();
+    same.vocabulary.push("Kubernetes".into());
+    same.allowed_tokens.push("example.org".into());
+    same.banned_phrases.push("team player".into());
+    assert_eq!(facts_sha256(&same), hash);
+    let mut name = state.facts.clone();
+    name.name = "Mara Prime".into();
+    assert_ne!(facts_sha256(&name), hash);
+    let mut title = state.facts.clone();
+    title.employment[0].title = "Principal Engineer".into();
+    assert_ne!(facts_sha256(&title), hash);
+    let mut language = state.facts.clone();
+    language.languages.push(nexus_tailor::Language {
+        name: "French".into(),
+        level: "A1".into(),
+    });
+    assert_ne!(facts_sha256(&language), hash);
+    let mut metric = state.facts.clone();
+    metric.metrics.push(nexus_tailor::Metric {
+        key: "k".into(),
+        text: "12 depots".into(),
+    });
+    assert_ne!(facts_sha256(&metric), hash);
+    let mut phone = state.facts;
+    phone.contact.phone = "+49 170 5550199".into();
+    assert_ne!(facts_sha256(&phone), hash);
+}
+
+#[tokio::test]
+async fn approvals_are_append_only() {
+    let (_dir, db) = open().await;
+    let row = "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
+         revision_number, approved_by, approved_at)
+         VALUES ('s', 'f', 't', 1, 1, 'cli', '2026-11-06T00:00:00.000Z')";
+    sqlx::query(row).execute(db.pool()).await.unwrap();
+    for (sql, wanted) in [
+        ("UPDATE cv_approvals SET rendered_text = 'x'", "append-only"),
+        ("DELETE FROM cv_approvals", "append-only"),
+        (row, "UNIQUE"),
+        (
+            "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
+             revision_number, approved_by, approved_at)
+             VALUES ('s2', 'f', 't', 1, 1, 'mcp', '2026-11-06T00:00:00.000Z')",
+            "CHECK",
+        ),
+    ] {
+        let error = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(db.pool())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(wanted), "{sql}: {error}");
+    }
 }

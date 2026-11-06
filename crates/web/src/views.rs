@@ -25,18 +25,36 @@ pub enum Nav {
     None,
 }
 
-pub fn page(title: &str, nav: Nav, overdue: usize, body: impl IntoView) -> String {
-    page_with_scripts(title, nav, overdue, body, &[])
+/// The small numbers in the top nav.
+#[derive(Clone, Copy, Default)]
+pub struct NavCounts {
+    pub overdue: usize,
+    /// CV variants whose newest revision waits for the owner's approval.
+    pub awaiting: usize,
+}
+
+impl From<usize> for NavCounts {
+    fn from(overdue: usize) -> Self {
+        Self {
+            overdue,
+            awaiting: 0,
+        }
+    }
+}
+
+pub fn page(title: &str, nav: Nav, counts: impl Into<NavCounts>, body: impl IntoView) -> String {
+    page_with_scripts(title, nav, counts, body, &[])
 }
 
 /// `scripts` are further files under `/assets/`, for the page that needs them.
 pub fn page_with_scripts(
     title: &str,
     nav: Nav,
-    overdue: usize,
+    counts: impl Into<NavCounts>,
     body: impl IntoView,
     scripts: &[&str],
 ) -> String {
+    let NavCounts { overdue, awaiting } = counts.into();
     let scripts: Vec<_> = scripts
         .iter()
         .map(|name| view! { <script src=format!("/assets/{name}?v={}", *VERSION) defer></script> })
@@ -68,7 +86,12 @@ pub fn page_with_scripts(
                                 "Follow-ups"
                                 {(overdue > 0).then(|| view! { <span class="count">{overdue}</span> })}
                             </a>
-                            <a href="/cv" aria-current=current(Nav::Cv)>"CV"</a>
+                            <a href="/cv" aria-current=current(Nav::Cv)>
+                                "CV"
+                                {(awaiting > 0).then(|| view! {
+                                    <span class="count" title="CV revisions waiting for your approval">{awaiting}</span>
+                                })}
+                            </a>
                         </nav>
                     </div>
                 </header>

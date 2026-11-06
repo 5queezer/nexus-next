@@ -3176,10 +3176,12 @@ dependencies = [
 name = "nexus-tailor"
 version = "0.1.0"
 dependencies = [
+ "png",
  "regex",
  "rustix",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

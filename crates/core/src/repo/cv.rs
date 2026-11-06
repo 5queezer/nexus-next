@@ -199,8 +199,20 @@ fn wording_pieces(
     pieces
 }
 
+/// A read profile's wording, as [`stored_wording`] has it. Experience there is merged with its facts,
+/// and only `bullets` of it is wording.
+#[must_use]
+pub fn wording_of(profile: &CvProfile) -> Vec<(String, String)> {
+    wording_pieces(
+        &profile.profile,
+        &profile.skills.0,
+        &profile.experience.0,
+        &profile.projects.0,
+    )
+}
+
 /// The wording of the stored profile, if any: what locking the facts confirms.
-pub(crate) async fn stored_wording(conn: &mut SqliteConnection) -> Result<Vec<(String, String)>> {
+pub async fn stored_wording(conn: &mut SqliteConnection) -> Result<Vec<(String, String)>> {
     #[derive(sqlx::FromRow)]
     struct Wording {
         profile: String,
@@ -222,15 +234,15 @@ pub(crate) async fn stored_wording(conn: &mut SqliteConnection) -> Result<Vec<(S
     }))
 }
 
-/// Why a profile can't be written over locked facts, per SPEC section 9a.
+/// The fact fields a profile would change over locked facts, per SPEC section 9a. Wording is free: an
+/// agent's text reaches no output before the owner approves it.
 async fn locked_changes(
     conn: &mut SqliteConnection,
     state: &cv_facts::FactsState,
     input: &CvProfileInput,
     employment: &Value,
-    wording: &Value,
     education: &Value,
-) -> Result<(Vec<String>, Vec<String>)> {
+) -> Result<Vec<String>> {
     let (contact, stored_education): (Json<Value>, Json<Value>) =
         sqlx::query_as("SELECT contact, education FROM cv_facts")
             .fetch_one(conn)
@@ -268,26 +280,7 @@ async fn locked_changes(
             }
         }
     }
-    let empty = Value::Array(Vec::new());
-    let mut tokens = Vec::new();
-    let pieces = wording_pieces(
-        &input.profile,
-        &input.skills,
-        wording,
-        input.projects.as_ref().unwrap_or(&empty),
-    );
-    for (field, text) in pieces {
-        let found = nexus_tailor::unverified_numbers(&text, &state.facts);
-        if !found.is_empty() && !fields.contains(&field) {
-            fields.push(field);
-        }
-        for token in found {
-            if !tokens.contains(&token) {
-                tokens.push(token);
-            }
-        }
-    }
-    Ok((fields, tokens))
+    Ok(fields)
 }
 
 /// While the facts are unlocked, writes facts and wording as old Nexus's `upsertCvProfile` did, and
@@ -304,10 +297,9 @@ pub async fn upsert_profile(
     let education = split_education(input.education.as_ref().unwrap_or(&empty));
     let state = cv_facts::get(&mut *conn).await?;
     if state.is_locked() {
-        let (fields, tokens) =
-            locked_changes(&mut *conn, &state, input, &employment, &wording, &education).await?;
+        let fields = locked_changes(&mut *conn, &state, input, &employment, &education).await?;
         if !fields.is_empty() {
-            return Err(Error::CvFactsLocked { fields, tokens });
+            return Err(Error::CvFactsLocked { fields });
         }
     } else {
         let moves: bool = sqlx::query_scalar(

@@ -1,15 +1,16 @@
 //! The hard facts of a CV. MCP can write them only through `upsert_cv_profile`, and only while they
-//! are unlocked. The functions here are the owner's paths: `nexus cv-facts` now, the dashboard later.
+//! are unlocked. The functions here are the owner's paths: `nexus cv-facts` and the dashboard.
 
 use std::collections::BTreeMap;
 
 use nexus_tailor::{Contact, Education, Employment, Facts, Language, Metric};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::SqliteConnection;
 use sqlx::types::Json;
 
 use super::cv;
+use crate::blob::sha256_hex;
 use crate::error::{Error, Result};
 use crate::time::Timestamp;
 
@@ -131,7 +132,7 @@ pub async fn set_owner_facts(
     get(conn).await
 }
 
-/// One fact field that differs from the last locked state. `old` and `new` are quoted and escaped, so
+/// One fact field or piece of wording that differs from the last locked state. `old` and `new` are quoted and escaped, so
 /// that an agent's text can't rewrite the owner's terminal, and `(none)` when there is no value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactChange {
@@ -144,13 +145,28 @@ pub struct FactChange {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LockPreview {
     pub changes: Vec<FactChange>,
-    /// Tokens the profile's wording would add to `allowed_tokens`.
+    /// The profile's wording compared with the last lock's. A lock approves a CV generated from it,
+    /// so an agent's text written while unlocked must show here too.
+    pub wording: Vec<FactChange>,
+    /// URLs the profile's wording would add to `allowed_tokens`.
     pub added: Vec<String>,
 }
 
 impl LockPreview {
     pub fn needs_confirmation(&self) -> bool {
-        !self.changes.is_empty() || !self.added.is_empty()
+        !self.changes.is_empty() || !self.wording.is_empty() || !self.added.is_empty()
+    }
+
+    /// Names exactly this list. A lock confirmed with it refuses if anything was written since it was
+    /// shown, which is how an agent's write can't slip in behind a page or a printout already read.
+    pub fn hash(&self) -> String {
+        let change = |change: &FactChange| json!([change.field, change.old, change.new]);
+        let shown = json!({
+            "changes": self.changes.iter().map(change).collect::<Vec<_>>(),
+            "wording": self.wording.iter().map(change).collect::<Vec<_>>(),
+            "added": self.added,
+        });
+        sha256_hex(shown.to_string().as_bytes())
     }
 }
 
@@ -224,7 +240,44 @@ async fn last_locked(conn: &mut SqliteConnection) -> Result<Facts> {
     Ok(state.map_or_else(Facts::default, |state| state.0))
 }
 
-/// Refuses what can't be locked, and moves tokens from the profile's wording into `facts`.
+fn wording_changes(old: &[(String, String)], new: &[(String, String)]) -> Vec<FactChange> {
+    let by_field = |pieces: &[(String, String)]| {
+        let mut fields: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (field, text) in pieces {
+            fields.entry(field.clone()).or_default().push(text.clone());
+        }
+        fields
+            .into_iter()
+            .map(|(field, texts)| (field, format!("{texts:?}")))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (old, new) = (by_field(old), by_field(new));
+    let none = "(none)".to_owned();
+    let mut fields: Vec<&String> = old.keys().chain(new.keys()).collect();
+    fields.sort_unstable();
+    fields.dedup();
+    fields
+        .into_iter()
+        .filter(|field| old.get(*field) != new.get(*field))
+        .map(|field| FactChange {
+            field: field.clone(),
+            old: old.get(field).unwrap_or(&none).clone(),
+            new: new.get(field).unwrap_or(&none).clone(),
+        })
+        .collect()
+}
+
+/// The wording the last lock confirmed.
+pub async fn locked_wording(conn: &mut SqliteConnection) -> Result<Vec<(String, String)>> {
+    let wording: Json<Vec<(String, String)>> =
+        sqlx::query_scalar("SELECT locked_wording FROM cv_facts")
+            .fetch_one(conn)
+            .await?;
+    Ok(wording.0)
+}
+
+/// Refuses what can't be locked, and moves URLs from the profile's wording into `facts`, because the
+/// contact check would refuse them otherwise.
 async fn derive_tokens(
     conn: &mut SqliteConnection,
     state: &FactsState,
@@ -240,10 +293,6 @@ async fn derive_tokens(
     let mut facts = state.facts.clone();
     let mut added = Vec::new();
     for (_, text) in cv::stored_wording(conn).await? {
-        for token in nexus_tailor::unverified_numbers(&text, &facts) {
-            facts.allowed_tokens.push(token.clone());
-            added.push(token);
-        }
         for url in nexus_tailor::unverified_urls(&text, &facts) {
             facts.allowed_tokens.push(url.clone());
             added.push(url);
@@ -256,25 +305,36 @@ async fn derive_tokens(
 pub async fn lock_preview(conn: &mut SqliteConnection) -> Result<LockPreview> {
     let state = get(&mut *conn).await?;
     let (_, added) = derive_tokens(&mut *conn, &state).await?;
-    let changes = fact_changes(&last_locked(conn).await?, &state.facts);
-    Ok(LockPreview { changes, added })
+    let changes = fact_changes(&last_locked(&mut *conn).await?, &state.facts);
+    let wording = wording_changes(
+        &locked_wording(&mut *conn).await?,
+        &cv::stored_wording(conn).await?,
+    );
+    Ok(LockPreview {
+        changes,
+        wording,
+        added,
+    })
 }
 
-/// Locks the facts. Numbers and URLs in the profile's wording join `allowed_tokens`: locking is the
-/// owner confirming them, so show them [`lock_preview`] first. Run inside `Db::begin_write`.
+/// Locks the facts, and with them the profile's wording, which a generated CV then needs no further
+/// approval for. URLs in the wording join `allowed_tokens`: locking is the owner confirming them, so
+/// show them [`lock_preview`] first. Run inside `Db::begin_write`.
 pub async fn lock(
     conn: &mut SqliteConnection,
     changed_by: &str,
 ) -> Result<(FactsState, Vec<String>)> {
     let state = get(&mut *conn).await?;
     let (facts, added) = derive_tokens(&mut *conn, &state).await?;
+    let wording = cv::stored_wording(&mut *conn).await?;
     let now = Timestamp::now();
     record_history(&mut *conn, "lock", changed_by, &now).await?;
     sqlx::query(
-        "UPDATE cv_facts SET allowed_tokens = ?, locked_at = ?, version = version + 1,
-             updated_at = ?",
+        "UPDATE cv_facts SET allowed_tokens = ?, locked_wording = ?, locked_at = ?,
+             version = version + 1, updated_at = ?",
     )
     .bind(Json(&facts.allowed_tokens))
+    .bind(Json(&wording))
     .bind(&now)
     .bind(&now)
     .execute(&mut *conn)

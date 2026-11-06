@@ -1,4 +1,4 @@
-//! `GET /api/cv/{variant}/events`: new revisions as Server-Sent Events, for a live preview. Mounted
+//! `GET /api/cv/{variant}/events`: new revisions and approvals as Server-Sent Events, for a live preview. Mounted
 //! outside the owner pool, so an open stream holds neither a request slot nor its deadline, and
 //! behind the session check.
 
@@ -129,7 +129,8 @@ impl Live {
             };
             match received {
                 Ok(event) if event.variant == self.variant => {
-                    return Event::default().event("revision").json_data(&event).ok();
+                    let name = if event.approval { "approved" } else { "revision" };
+                    return Event::default().event(name).json_data(&event).ok();
                 }
                 Ok(_) => {}
                 // Too far behind to replay: the page re-reads from the head.

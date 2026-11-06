@@ -5,13 +5,14 @@ use std::sync::LazyLock;
 use typst::diag::{FileError, FileResult, Severity as TypstSeverity, SourceDiagnostic, bail};
 use typst::foundations::{Bytes, Datetime, Duration, NativeElement, Target};
 use typst::introspection::Introspector;
-use typst::layout::HideElem;
+use typst::model::Document;
+use typst::layout::{Abs, Frame, FrameItem, GroupItem, HideElem, Point, Ratio, Transform};
 use typst::pdf::AttachElem;
 use typst::syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
-use typst_layout::PagedDocument;
+use typst_layout::{Page, PagedDocument};
 use typst_pdf::PdfOptions;
 use typst_render::RenderOptions;
 
@@ -93,11 +94,10 @@ struct CvWorld {
 }
 
 impl CvWorld {
-    fn new(req: &RenderRequest) -> Result<Self, RenderError> {
-        let facts =
-            serde_json::to_vec(&req.facts).map_err(|e| RenderError::Worker(e.to_string()))?;
+    fn new(source: &str, facts: &crate::Facts) -> Result<Self, RenderError> {
+        let facts = serde_json::to_vec(facts).map_err(|e| RenderError::Worker(e.to_string()))?;
         Ok(Self {
-            main: Source::new(project_file("/main.typ"), req.source.clone()),
+            main: Source::new(project_file("/main.typ"), source.to_owned()),
             nexus: Source::new(project_file("/nexus.typ"), NEXUS_TYP.to_owned()),
             facts_id: project_file("/facts.json"),
             facts: Bytes::new(facts),
@@ -214,8 +214,60 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
     result
 }
 
+/// One stamp, translucent so that the CV stays readable beneath it. Its own document, so that nothing
+/// in a source can reach it: not a show rule, a `set`, or a font it can't name.
+const STAMP_SOURCE: &str = r##"#set page(width: 320pt, height: 180pt, margin: 0pt, fill: none)
+#set text(font: "Libertinus Serif", size: 25pt, weight: "bold", fill: rgb(200, 16, 16, 120))
+#align(center + horizon, rotate(-28deg, reflow: true)[DRAFT, NOT APPROVED])
+"##;
+const STAMP_WIDTH: f64 = 320.0;
+const STAMP_HEIGHT: f64 = 180.0;
+/// A source sets the page's size, so stamps grow with a large page instead of multiplying without end.
+const MAX_STAMPS_PER_SIDE: f64 = 8.0;
+
+/// Tiles the stamp over `page`, as the last thing drawn, so that nothing on the page can cover it.
+fn stamp_page(page: &mut Page, stamp: &Frame) {
+    let (width, height) = (page.frame.width().to_pt(), page.frame.height().to_pt());
+    let fit = (width / STAMP_WIDTH).min(height / STAMP_HEIGHT).min(1.0);
+    let cap = width.max(height) / (STAMP_WIDTH.max(STAMP_HEIGHT) * MAX_STAMPS_PER_SIDE);
+    let scale = fit.max(cap).max(f64::MIN_POSITIVE);
+    let columns = (width / (STAMP_WIDTH * scale)).ceil().max(1.0) as u32;
+    let rows = (height / (STAMP_HEIGHT * scale)).ceil().max(1.0) as u32;
+    let ratio = Ratio::new(scale);
+    for row in 0..rows {
+        for column in 0..columns {
+            let mut group = GroupItem::new(stamp.clone());
+            group.transform = Transform::scale(ratio, ratio);
+            let at = Point::new(
+                Abs::pt(f64::from(column) * STAMP_WIDTH * scale),
+                Abs::pt(f64::from(row) * STAMP_HEIGHT * scale),
+            );
+            page.frame.push(at, FrameItem::Group(group));
+        }
+    }
+}
+
+/// `document` with every page stamped. Call after reading its text: the stamp is not the CV's.
+fn stamped(document: &PagedDocument) -> Result<PagedDocument, RenderError> {
+    let world = CvWorld::new(STAMP_SOURCE, &crate::Facts::default())?;
+    let stamp = typst::compile::<PagedDocument>(&world)
+        .output
+        .map_err(|_| RenderError::Worker("the stamp does not compile".to_owned()))?;
+    let stamp = &stamp
+        .pages()
+        .first()
+        .ok_or_else(|| RenderError::Worker("the stamp has no page".to_owned()))?
+        .frame;
+    let pages = document.pages().iter().map(|page| {
+        let mut page = page.clone();
+        stamp_page(&mut page, stamp);
+        page
+    });
+    Ok(PagedDocument::new(pages.collect(), document.info().clone()))
+}
+
 pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
-    let world = CvWorld::new(req)?;
+    let world = CvWorld::new(&req.source, &req.facts)?;
     let compiled = typst::compile::<PagedDocument>(&world);
     let warnings: Vec<_> = compiled
         .warnings
@@ -229,12 +281,17 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     };
     let document = compiled.output.map_err(|errors| bounded_errors(&errors))?;
     refuse_attachments(&world, &document)?;
-    let pages = document.pages();
-    let page_count = u32::try_from(pages.len()).unwrap_or(u32::MAX);
+    let page_count = u32::try_from(document.pages().len()).unwrap_or(u32::MAX);
     if page_count > MAX_PAGES {
         return Err(RenderError::TooManyPages);
     }
     let text = crate::extract::rendered_text(&document)?;
+    let document = if req.stamp {
+        stamped(&document)?
+    } else {
+        document
+    };
+    let pages = document.pages();
     let pdf = if req.pdf {
         // Untagged: a tagged PDF carries alt texts no page shows. No timestamp: a revision always
         // renders to the same bytes.

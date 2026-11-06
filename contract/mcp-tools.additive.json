@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "get_cv_source",
-      "description": "Read a CV variant's Typst source with its revision number, the hard facts it renders by id, and help on the template library. Revision 0 means the variant has no stored revision yet: the source is its starting point, and patch_cv with expectedRevision 0 stores the first revision.",
+      "description": "Read a CV variant's Typst source with its revision number, its state (draft or approved), the hard facts it renders by id, and help on the template library. Revision 0 means the variant has no stored revision yet: the source is its starting point, and patch_cv with expectedRevision 0 stores the first revision.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -30,7 +30,7 @@
     },
     {
       "name": "patch_cv",
-      "description": "Edit a CV variant's Typst source by exact text replacement. Needs locked facts. All edits apply, compile and pass the integrity check, or nothing is stored. Compile errors come back as diagnostics to fix and retry. A cv_fact_violation is final: report the token to the user and never reword around it. Hard facts can't be changed here.",
+      "description": "Edit a CV variant's Typst source by exact text replacement. Needs locked facts. All edits apply and compile, or nothing is stored. Wording is free, and every change is a draft until the owner approves it on their dashboard: no tool can approve. The reply says state, the reviewItems the owner will check, and approvalPath. Compile errors come back as diagnostics to fix and retry. A cv_fact_violation is final and means a reader would see something else than the owner reviews: report the token to the user and never reword around it. Hard facts can't be changed here.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -102,7 +102,7 @@
     },
     {
       "name": "render_cv_pdf",
-      "description": "Render a CV variant to a PDF and PNG previews. The revision is checked against today's facts, so one that no longer passes returns cv_fact_violation instead of a stale PDF. Can save the PDF as a document linked to an application.",
+      "description": "Render a CV variant. A draft gives PNG previews stamped DRAFT, NOT APPROVED, no PDF, its reviewItems and approvalPath, and saving it returns cv_approval_required. A revision the owner approved gives the real PDF and clean previews, and can be saved as a document linked to an application. Never call a CV final unless state is approved.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -139,7 +139,7 @@
     },
     {
       "name": "list_cv_revisions",
-      "description": "List a CV variant's revisions, newest first.",
+      "description": "List a CV variant's revisions, newest first, each with its state: draft or approved.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -176,7 +176,7 @@
     },
     {
       "name": "revert_cv",
-      "description": "Add a new revision holding an older revision's source. History never shrinks. Needs locked facts, and the old source must pass today's integrity check.",
+      "description": "Add a new revision holding an older revision's source. History never shrinks. Needs locked facts, and the old source must compile and pass the hard rules. It is approved at once only if the owner approved that same text under today's facts, and otherwise a draft.",
       "inputSchema": {
         "type": "object",
         "properties": {

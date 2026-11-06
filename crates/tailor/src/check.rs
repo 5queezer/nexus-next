@@ -1,26 +1,37 @@
 //! The integrity check. Reads the rendered output, not the source, because Typst can compute and
-//! rewrite text. See SPEC section 9a for the rules.
+//! rewrite text. Two tiers, see SPEC section 9a: what a reader would see otherwise than the owner
+//! reviews is refused, and everything else the owner should look at is listed for approval.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use unicode_normalization::UnicodeNormalization;
 use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use crate::{Facts, RenderedText};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// In this order a list of review items is read: most serious first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Rule {
+    /// A fact the last approved text showed and this one doesn't.
+    MissingFact,
+    /// A fact's company or institution outside its own entry, or with another's date, title or place.
+    EntityBinding,
+    /// A fact's language with a level other than its own.
+    LanguageLevel,
+    ClaimWords,
     Numbers,
     NumberWords,
-    EntityBinding,
-    ClaimWords,
+    /// A word in neither the facts, `vocabulary` nor the last approved text.
+    NewWords,
     BannedPhrases,
     Images,
-    /// Text the pages hold but no reader can see. It could satisfy the other rules unseen.
+    /// Text the pages hold but no reader can see.
     HiddenText,
     /// One word mixing Latin with Cyrillic or Greek lookalikes, which has no honest use on a CV.
     MixedScript,
@@ -29,10 +40,15 @@ pub enum Rule {
     /// Text rotated, mirrored, skewed, stretched or squeezed: it can draw as something else, like 6
     /// as 9.
     Transform,
-    /// An email, URL or link target the contact facts don't back. A reply goes to whoever it names.
+    /// An email, URL, phone number or link target the contact facts don't back. A reply goes to
+    /// whoever it names.
     ContactDetails,
+    /// A word of letters that read as digits, directly before `%` or a time unit: `lOO%`.
+    DigitLookalike,
 }
 
+/// A hard refusal: a reader of the PDF would see something other than what the owner reviews, so no
+/// approval can override it, and nothing is stored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Violation {
@@ -43,17 +59,28 @@ pub struct Violation {
     pub context: String,
 }
 
+/// Something for the owner to look at before approving. It blocks nothing: no list of words can tell
+/// a true sentence from a false one, and a person can.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewItem {
+    pub rule: Rule,
+    pub token: String,
+    pub context: String,
+    /// Which line of [`review_text`] it stands on, from 1. None for what is no longer there.
+    pub line: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub violations: Vec<Violation>,
-    /// New capitalized words. Not refused: the gate cannot judge them, a person can.
-    pub review_tokens: Vec<String>,
+    pub review_items: Vec<ReviewItem>,
 }
 
 const CONTEXT_CHARS: usize = 40;
 
-/// Time units that make a spelled-out count a claim. A filler may stand between them.
+/// Time units that make an ASCII Roman numeral a count. Elsewhere `CI` or `IV` are ordinary text.
 const TIME_UNITS: &[&str] = &[
     "year",
     "years",
@@ -86,19 +113,6 @@ const TIME_UNITS: &[&str] = &[
     "tagen",
     "stunde",
     "stunden",
-];
-const COUNT_FILLERS: &[&str] = &[
-    "plus",
-    "full",
-    "long",
-    "more",
-    "additional",
-    "volle",
-    "vollen",
-    "lange",
-    "langen",
-    "weitere",
-    "weiteren",
 ];
 // No `one` and no German `ein*`: they read as articles far more often than as counts.
 const COUNTS: &[&str] = &[
@@ -158,13 +172,33 @@ const COUNTS: &[&str] = &[
     "neunzig",
     "hundert",
     "dutzend",
+    "half",
+    "thousand",
+    "tausend",
+    "million",
+    "millionen",
+    "billion",
+    "billionen",
+    "milliarde",
+    "milliarden",
+    "trillion",
+    "mio",
+    "mrd",
+    "tsd",
+    "bn",
+    "mn",
 ];
+/// German counts that hold their number inside a longer word.
+const COUNT_PARTS: &[&str] = &["einhalb", "anderthalb"];
 
-/// Words that claim a degree, a seniority or a language level, compared in lower case.
+/// Words that may claim a degree, a seniority or a language level, compared in lower case. Generous,
+/// since they only highlight: `lead` is also a verb, and the owner can tell.
 const CLAIMS: &[&str] = &[
     // Degrees, English.
     "bachelor",
     "bachelors",
+    "master",
+    "masters",
     "master's",
     "mba",
     "msc",
@@ -173,6 +207,9 @@ const CLAIMS: &[&str] = &[
     "dphil",
     "doctorate",
     "doctoral",
+    "graduated",
+    "honors",
+    "honours",
     "postdoc",
     "postgraduate",
     "undergraduate",
@@ -189,13 +226,17 @@ const CLAIMS: &[&str] = &[
     "doktor",
     "doktorand",
     "doktorarbeit",
+    "promotion",
     "promoviert",
+    "promovierte",
     "habilitation",
+    "habilitierte",
     "abitur",
     "fachabitur",
     "staatsexamen",
     "studium",
     "studiert",
+    "studierte",
     "absolvent",
     "absolventin",
     "ausbildung",
@@ -209,6 +250,17 @@ const CLAIMS: &[&str] = &[
     "jr",
     "principal",
     "chief",
+    "lead",
+    "manager",
+    "head",
+    "staff",
+    "distinguished",
+    "leitender",
+    "leitende",
+    "inhaber",
+    "inhaberin",
+    "mitinhaber",
+    "mitinhaberin",
     "vp",
     "svp",
     "evp",
@@ -269,8 +321,8 @@ const CLAIMS: &[&str] = &[
     "toefl",
     "ielts",
 ];
-/// As `CLAIMS`, but only when capitalized: in lower case they are everyday words.
-const CAPITALIZED_CLAIMS: &[&str] = &["Master", "Masters", "Promotion", "Lead", "Manager"];
+/// Degrees written with dots. Without them they are everyday letters: `ms`, `ma`.
+const DOTTED_CLAIMS: &[&str] = &["ms", "ma", "ba", "bs", "llm", "meng", "beng"];
 /// A compound holding one of these still claims it: `Masterstudium`, `Seniorentwickler`.
 const CLAIM_PREFIXES: &[&str] = &[
     "bachelor",
@@ -284,12 +336,22 @@ const CLAIM_PREFIXES: &[&str] = &[
     "muttersprach",
     "diplomingenieur",
     "diplominformatik",
+    "chef",
+    "fließend",
+    "fliessend",
+    "fluent",
+    "verhandlungssicher",
+    "konversationssicher",
 ];
 const CLAIM_SUFFIXES: &[&str] = &[
     "studium",
     "studiengang",
     "studienabschluss",
     "hochschulabschluss",
+    "kenntnisse",
+    "leitung",
+    "leiter",
+    "leiterin",
 ];
 const CLAIM_PHRASES: &[&str] = &[
     "head of",
@@ -298,6 +360,10 @@ const CLAIM_PHRASES: &[&str] = &[
     "business fluent",
     "staff engineer",
     "first language",
+    "cum laude",
+    "native level",
+    "native-level",
+    "business level",
     "ein jahrzehnt",
     "a decade",
 ];
@@ -317,7 +383,8 @@ static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
         \b(?P<d1>[0-9]{{1,2}})\.\s?(?P<m1>[0-9]{{1,2}})\.\s?(?P<y1>{YEAR})\b
         | \b(?P<y2>{YEAR})-(?P<m2>0[1-9]|1[0-2])-(?P<d2>[0-3][0-9])\b
         | \b(?P<d3>[0-9]{{1,2}})\.?\s(?P<n3>{MONTH})\.?\s(?P<y3>{YEAR})\b
-        | \b(?P<n4>{MONTH})\.?\s(?P<y4>{YEAR})\b
+        | \b(?P<n4>{MONTH})[.,]?\s(?:of\s|des\sJahres\s)?(?P<y4>{YEAR})\b
+        | \b(?P<y7>{YEAR})\s(?P<n7>{MONTH})\b
         | \b(?P<m5>0?[1-9]|1[0-2])[/.](?P<y5>{YEAR})\b
         | \b(?P<y6>{YEAR})-(?P<m6>0[1-9]|1[0-2])\b
         | \b(?P<lit>[0-9]{{1,4}}/[0-9]{{1,4}}|[0-9]+(?:\.[0-9]+){{2,}})\b
@@ -346,7 +413,7 @@ fn digit_value(c: char) -> u32 {
 }
 
 /// The value of a CJK numeral with a digit's meaning. `二〇一五` then reads `2015`, a number like any
-/// other, so a word holding one is a number token too and must be allowed.
+/// other, so a word holding one is a number token too.
 fn cjk_digit(c: char) -> Option<char> {
     Some(match c {
         '〇' | '零' => '0',
@@ -586,6 +653,8 @@ fn tokens(text: &str) -> Vec<Token> {
                 format!("{y}-{}-{d:0>2}", month_number(n))
             } else if let (Some(y), Some(n)) = (get("y4"), get("n4")) {
                 format!("{y}-{}", month_number(n))
+            } else if let (Some(y), Some(n)) = (get("y7"), get("n7")) {
+                format!("{y}-{}", month_number(n))
             } else if let (Some(y), Some(m)) = (get("y5"), get("m5")) {
                 format!("{y}-{m:0>2}")
             } else if let (Some(y), Some(m)) = (get("y6"), get("m6")) {
@@ -663,12 +732,12 @@ fn word_key(word: &str) -> String {
 
 /// What the check compares against. Built once per call.
 struct Known {
-    tokens: HashSet<String>,
     words: HashSet<String>,
-    /// Multi-word vocabulary entries, whose words are not free on their own.
-    vocabulary_phrases: Option<Regex>,
-    /// All fact wording and allowed tokens in lower case.
+    /// All fact wording and allowed tokens in lower case, which a URL can be vouched for by.
     phrases: String,
+    /// Each fact's wording and vocabulary entry, in lower case. A claim word is the fact's own only
+    /// beside the rest of it: a true `Senior Engineer` frees no `Senior Director`.
+    fact_phrases: Vec<String>,
     /// Contact values, each allowed only whole, so that a postcode frees no small number.
     whole: Vec<String>,
 }
@@ -707,43 +776,28 @@ impl Known {
         for m in &facts.metrics {
             fact_texts.push(&m.text);
         }
-        let mut tokens_known = HashSet::new();
         let mut known_words = HashSet::new();
         let mut phrases = String::new();
-        let mut add_fact = |text: &str, is_wording: bool| {
+        let mut fact_phrases = Vec::new();
+        for text in fact_texts {
             let text = normalize(text);
-            if is_wording {
-                add_words(&mut known_words, &text);
+            add_words(&mut known_words, &text);
+            let lower = fold_case(&prepare_for_words(&text));
+            if !lower.is_empty() {
+                fact_phrases.push(lower);
             }
             phrases.push_str(&text.to_lowercase());
             phrases.push('\n');
-            for token in tokens(&text) {
-                tokens_known.extend(date_parts(&token.canon).into_iter().map(str::to_owned));
-            }
-        };
-        for text in fact_texts {
-            add_fact(text, true);
         }
         for allowed in &facts.allowed_tokens {
-            add_fact(allowed, false);
+            phrases.push_str(&normalize(allowed).to_lowercase());
+            phrases.push('\n');
         }
-        let mut alternatives = Vec::new();
         for entry in &facts.vocabulary {
             let entry = normalize(entry);
-            if entry.trim().contains(' ') {
-                alternatives.push(regex::escape(entry.trim()));
-            } else {
-                add_words(&mut known_words, &entry);
-            }
-            for token in tokens(&entry) {
-                if token.canon.chars().any(char::is_alphabetic) {
-                    tokens_known.insert(token.canon);
-                }
-            }
+            add_words(&mut known_words, &entry);
+            fact_phrases.push(fold_case(&prepare_for_words(entry.trim())));
         }
-        let vocabulary_phrases = (!alternatives.is_empty())
-            .then(|| Regex::new(&format!("(?i){}", alternatives.join("|"))).ok())
-            .flatten();
         let c = &facts.contact;
         let mut whole: Vec<String> = [&c.email, &c.phone, &c.linkedin, &c.github, &c.location]
             .into_iter()
@@ -755,10 +809,9 @@ impl Known {
             whole.push(format!("tel:{}", normalize(&c.phone).replace(' ', "")));
         }
         Self {
-            tokens: tokens_known,
             words: known_words,
-            vocabulary_phrases,
             phrases,
+            fact_phrases,
             whole,
         }
     }
@@ -776,7 +829,6 @@ impl Known {
 
 /// The rendered text normalized and joined, so that checks see across line breaks.
 struct Document {
-    lines: Vec<String>,
     /// Line-end hyphenation undone.
     body: String,
     /// As `body`, but a hyphen at a line end stays, for a phrase that holds it.
@@ -813,7 +865,6 @@ impl Document {
             .map(|item| normalize(item))
             .collect();
         Self {
-            lines,
             body,
             body_with_hyphens,
             metadata: metadata.join(" | "),
@@ -851,22 +902,37 @@ impl Findings {
     }
 }
 
-fn check_numbers(masked: &str, known: &Known, findings: &mut Findings) {
-    for token in tokens(masked) {
-        if !known.tokens.contains(&token.canon) {
-            let raw = &masked[token.start..token.end];
-            findings.add(Rule::Numbers, raw, context(masked, token.start, token.end));
+#[derive(Default)]
+struct Items {
+    seen: HashSet<(String, Option<usize>)>,
+    list: Vec<ReviewItem>,
+}
+
+impl Items {
+    /// One item per word and line. The first rule to name it says most.
+    fn add(&mut self, rule: Rule, token: &str, context: &str, at: Option<usize>) {
+        if self.seen.insert((token.to_lowercase(), at)) {
+            self.list.push(ReviewItem {
+                rule,
+                token: token.to_owned(),
+                context: context.to_owned(),
+                line: at.map(|at| at as u32 + 1),
+            });
         }
     }
 }
 
 fn is_count(word: &str) -> bool {
-    let last = word.rsplit('-').next().unwrap_or(word);
     let contains = |w: &str| COUNTS.contains(&w);
-    contains(last)
-        || last
+    contains(word)
+        || COUNT_PARTS.iter().any(|part| word.contains(part))
+        || word
             .split_once("und")
             .is_some_and(|(_, tens)| contains(tens))
+        || word
+            .split_once("jähr")
+            .or_else(|| word.split_once("jaehr"))
+            .is_some_and(|(count, _)| contains(count))
 }
 
 /// An upper-case Roman numeral, which counts only next to a time unit: `CI` and `IV` are ordinary
@@ -879,37 +945,28 @@ fn is_ascii_roman(word: &str) -> bool {
     !word.is_empty() && word != "I" && ROMAN.is_match(word)
 }
 
-fn check_number_words(body: &str, known: &Known, findings: &mut Findings) {
-    let originals: Vec<&str> = words(body).collect();
-    let lower: Vec<String> = originals.iter().map(|word| word.to_lowercase()).collect();
-    for (i, word) in lower.iter().enumerate() {
-        let mut phrase = None;
-        let parts: Vec<&str> = word.split('-').collect();
-        let original_parts: Vec<&str> = originals[i].split('-').collect();
-        if parts.windows(2).zip(&original_parts).any(|(p, original)| {
-            (is_count(p[0]) || is_ascii_roman(original)) && TIME_UNITS.contains(&p[1])
-        }) {
-            phrase = Some(word.clone());
-        } else if let Some((count, _)) =
-            word.split_once("jähr").or_else(|| word.split_once("jaehr"))
-            && is_count(count)
-        {
-            phrase = Some(word.clone());
-        } else if is_count(word) || is_ascii_roman(originals[i]) {
-            let next = lower.get(i + 1).map(String::as_str);
-            let after = lower.get(i + 2).map(String::as_str);
-            if next.is_some_and(|w| TIME_UNITS.contains(&w)) {
-                phrase = Some(lower[i..=i + 1].join(" "));
-            } else if next.is_some_and(|w| COUNT_FILLERS.contains(&w))
-                && after.is_some_and(|w| TIME_UNITS.contains(&w))
-            {
-                phrase = Some(lower[i..=i + 2].join(" "));
-            }
-        }
-        if let Some(phrase) = phrase
-            && !known.phrases.contains(&phrase)
-        {
-            findings.add(Rule::NumberWords, &phrase, phrase.clone());
+/// How far ahead a time unit still makes a Roman numeral a count: `XII long years`.
+const ROMAN_UNIT_WORDS: usize = 3;
+
+fn check_number_words(line: &str, at: usize, items: &mut Items) {
+    let originals: Vec<&str> = words(line).collect();
+    for (i, original) in originals.iter().enumerate() {
+        let lower = original.to_lowercase();
+        let parts: Vec<&str> = lower.split('-').collect();
+        let original_parts: Vec<&str> = original.split('-').collect();
+        let is_unit = |word: &str| TIME_UNITS.contains(&word.to_lowercase().as_str());
+        let hit = parts.iter().copied().any(is_count)
+            || parts
+                .windows(2)
+                .zip(&original_parts)
+                .any(|(pair, part)| is_ascii_roman(part) && TIME_UNITS.contains(&pair[1]))
+            || is_ascii_roman(original)
+                && originals[i + 1..]
+                    .iter()
+                    .take(ROMAN_UNIT_WORDS)
+                    .any(|word| is_unit(word));
+        if hit {
+            items.add(Rule::NumberWords, original, line, Some(at));
         }
     }
 }
@@ -921,43 +978,38 @@ fn is_claim(key: &str) -> bool {
         || CLAIM_SUFFIXES.iter().any(|suffix| key.ends_with(suffix))
 }
 
-fn check_claims(text: &str, known: &Known, findings: &mut Findings) {
-    let without_phrases;
-    let text = match &known.vocabulary_phrases {
-        Some(phrases) => {
-            without_phrases = phrases.replace_all(text, " ");
-            without_phrases.as_ref()
-        }
-        None => text,
+/// `line` is prepared for words. A claim word that is part of a fact standing whole on this line is
+/// that fact, and says nothing new.
+fn check_claims(line: &str, at: usize, known: &Known, items: &mut Items) {
+    let folded = fold_case(line);
+    let on_line: Vec<&String> = known
+        .fact_phrases
+        .iter()
+        .filter(|phrase| contains_word(&folded, phrase))
+        .collect();
+    let is_own = |key: &str| {
+        let key = fold_case(key);
+        on_line.iter().any(|phrase| {
+            phrase.contains(&key)
+                || words(phrase).any(|word| fold_case(&word_key(word)) == key)
+        })
     };
-    for word in words(text) {
+    for word in words(line) {
         let key = word_key(word);
-        if known.words.contains(&key) {
-            continue;
-        }
-        let hit = is_claim(&key)
+        let dotted = word.contains('.') && DOTTED_CLAIMS.contains(&key.as_str());
+        let hit = dotted
+            || is_claim(&key)
             || key.split('-').count() > 1
-                && key.split('-').any(|part| {
-                    is_claim(part)
-                        && !WHOLE_WORD_CLAIMS.contains(&part)
-                        && !known.words.contains(part)
-                });
-        let capitalized = word.split('-').any(|part| {
-            CAPITALIZED_CLAIMS.contains(&part) && !known.words.contains(&part.to_lowercase())
-        });
-        if hit || capitalized {
-            let start = word.as_ptr() as usize - text.as_ptr() as usize;
-            findings.add(
-                Rule::ClaimWords,
-                word,
-                context(text, start, start + word.len()),
-            );
+                && key
+                    .split('-')
+                    .any(|part| is_claim(part) && !WHOLE_WORD_CLAIMS.contains(&part));
+        if hit && !is_own(&key) {
+            items.add(Rule::ClaimWords, word, line, Some(at));
         }
     }
-    let lower = text.to_lowercase();
     for phrase in CLAIM_PHRASES {
-        if contains_word(&lower, phrase) && !known.phrases.contains(phrase) {
-            findings.add(Rule::ClaimWords, phrase, (*phrase).to_owned());
+        if contains_word(&folded, phrase) && !is_own(phrase) {
+            items.add(Rule::ClaimWords, phrase, line, Some(at));
         }
     }
 }
@@ -982,28 +1034,58 @@ fn check_banned(document: &Document, facts: &Facts, findings: &mut Findings) {
     }
 }
 
-/// A company or institution, the details that must render with it, and the entry's date tokens.
+/// A company or institution, and what belongs with it.
 struct Anchor {
     name: String,
     lower: String,
+    /// The name without its legal form, and its first word: `Brightpath Logistics GmbH` is also
+    /// `Brightpath Logistics`, and `Brightpath`. Dropping a legal form is how people write a company.
+    short: Vec<String>,
     detail: String,
     date: String,
+    location: String,
     date_tokens: HashSet<String>,
+}
+
+const LEGAL_FORMS: &[&str] = &[
+    "gmbh", "mbh", "ag", "se", "kg", "ug", "ohg", "ev", "ltd", "llc", "inc", "plc", "corp", "bv",
+    "co", "&",
+];
+/// So that a first word binds a name and not a sentence: `The` binds nothing.
+const MIN_FIRST_WORD_CHARS: usize = 4;
+
+fn short_names(name: &str) -> Vec<String> {
+    let mut parts: Vec<&str> = name.split_whitespace().collect();
+    while parts.len() > 1
+        && parts.last().is_some_and(|last| {
+            LEGAL_FORMS.contains(&last.trim_matches(['.', ',']).replace('.', "").to_lowercase().as_str())
+        })
+    {
+        parts.pop();
+    }
+    let mut short = Vec::new();
+    if parts.join(" ") != name {
+        short.push(parts.join(" "));
+    }
+    if parts.len() > 1 && parts[0].chars().count() >= MIN_FIRST_WORD_CHARS {
+        short.push(parts[0].trim_matches(',').to_owned());
+    }
+    short
 }
 
 fn anchors(facts: &Facts) -> Vec<Anchor> {
     let employment = facts
         .employment
         .iter()
-        .map(|e| (&e.company, &e.title, &e.date));
+        .map(|e| (&e.company, &e.title, &e.date, &e.location));
     let education = facts
         .education
         .iter()
-        .map(|e| (&e.institution, &e.qualification, &e.date));
+        .map(|e| (&e.institution, &e.qualification, &e.date, &e.location));
     employment
         .chain(education)
-        .filter(|(name, _, _)| !name.trim().is_empty())
-        .map(|(name, detail, date)| {
+        .filter(|(name, _, _, _)| !name.trim().is_empty())
+        .map(|(name, detail, date, location)| {
             let name = normalize(name.trim());
             let date = normalize(date.trim());
             let mut date_tokens = HashSet::new();
@@ -1012,125 +1094,176 @@ fn anchors(facts: &Facts) -> Vec<Anchor> {
             }
             Anchor {
                 lower: name.to_lowercase(),
+                short: short_names(&name),
                 name,
                 detail: normalize(detail.trim()).to_lowercase(),
                 date: date.to_lowercase(),
+                location: normalize(location.trim()).to_lowercase(),
                 date_tokens,
             }
         })
         .collect()
 }
 
-/// How many lines after a company or institution its date may stand.
+impl Anchor {
+    /// How this one is named on `line`, if it is. Its first word only as written, or in capitals:
+    /// a company called Data must not bind every "data".
+    fn named_on(&self, line: &str, lower: &str) -> Option<String> {
+        if contains_word(lower, &self.lower) {
+            return Some(self.name.clone());
+        }
+        self.short.iter().enumerate().find_map(|(index, short)| {
+            let is_first_word = index + 1 == self.short.len() && !short.contains(' ');
+            let found = if is_first_word {
+                contains_word(line, short) || contains_word(line, &short.to_uppercase())
+            } else {
+                contains_word(lower, &short.to_lowercase())
+            };
+            found.then(|| short.clone())
+        })
+    }
+}
+
+/// How many lines after a company or institution what belongs to it may stand, or be read as its.
 const DATE_WINDOW_LINES: usize = 2;
 
-fn check_binding(document: &Document, facts: &Facts, findings: &mut Findings) {
-    let anchors = anchors(facts);
-    let lower_lines: Vec<String> = document.lines.iter().map(|l| l.to_lowercase()).collect();
-    let on_lines: Vec<Vec<&Anchor>> = lower_lines
+/// Lists a fact's name wherever it stands outside its own entry, and whatever a reader would take
+/// for its date, title or place that isn't. Only where a line of it changed.
+fn check_binding(lines: &[String], changed: &[bool], anchors: &[Anchor], items: &mut Items) {
+    let lower_lines: Vec<String> = lines.iter().map(|l| l.to_lowercase()).collect();
+    let on_lines: Vec<Vec<(&Anchor, String)>> = lines
         .iter()
-        .map(|lower| {
+        .zip(&lower_lines)
+        .map(|(line, lower)| {
             anchors
                 .iter()
-                .filter(|a| contains_word(lower, &a.lower))
+                .filter_map(|a| a.named_on(line, lower).map(|named| (a, named)))
                 .collect()
         })
         .collect();
-    // Names whose own date stands where a reader would take it for theirs.
-    let mut dated: HashSet<&str> = HashSet::new();
     for (i, on_line) in on_lines.iter().enumerate() {
         if on_line.is_empty() {
             continue;
-        }
-        let line = &document.lines[i];
-        let names: Vec<&str> = on_line.iter().map(|a| a.name.as_str()).collect();
-        let names = names.join(", ");
-        for token in tokens(line) {
-            if token_year(&token.canon).is_some()
-                && !on_line.iter().any(|a| a.date_tokens.contains(&token.canon))
-            {
-                findings.add(
-                    Rule::EntityBinding,
-                    &format!("{names}: {}", &line[token.start..token.end]),
-                    line.clone(),
-                );
-            }
         }
         // Everything up to the next company or institution reads as this one's.
         let end = (i + 1..on_lines.len())
             .find(|&next| !on_lines[next].is_empty())
             .unwrap_or(on_lines.len());
-        let window = lower_lines[i..end.min(i + DATE_WINDOW_LINES + 1)].join(" ");
-        for anchor in on_line {
-            if contains_word(&window, &anchor.date) {
-                dated.insert(&anchor.lower);
-            }
+        if !changed[i..end].iter().any(|changed| *changed) {
+            continue;
         }
+        let window_end = end.min(i + DATE_WINDOW_LINES + 1);
+        let window = lower_lines[i..window_end].join(" ");
         let region = lower_lines[i..end].join(" ");
-        for other in &anchors {
-            // A bare year stays free: "since 2019" in a bullet is normal.
-            let bare_year = other.date.chars().all(|c| c.is_ascii_digit());
-            let its_own = on_line
-                .iter()
-                .any(|a| a.lower == other.lower || a.date == other.date);
-            if !bare_year && !its_own && contains_word(&region, &other.date) {
-                findings.add(
-                    Rule::EntityBinding,
-                    &format!("{names}: {}", other.date),
-                    format!("below {names} stands the date of {}", other.name),
-                );
+        let is_on_line = |other: &Anchor| on_line.iter().any(|(a, _)| a.lower == other.lower);
+        let line = &lines[i];
+        for (anchor, named) in on_line {
+            let is_entry = contains_word(&lower_lines[i], &anchor.lower)
+                && anchors.iter().filter(|a| a.lower == anchor.lower).any(|a| {
+                    (a.date.is_empty() || contains_word(&window, &a.date))
+                        && (a.detail.is_empty() || contains_word(&window, &a.detail))
+                });
+            if !is_entry {
+                items.add(Rule::EntityBinding, named, line, Some(i));
             }
         }
-    }
-    let lower_body = document.body.to_lowercase();
-    let lower_kept = document.body_with_hyphens.to_lowercase();
-    let present =
-        |needle: &str| contains_word(&lower_body, needle) || contains_word(&lower_kept, needle);
-    for anchor in &anchors {
-        // Lower case is prose: a company called Data must not bind every "data".
-        let rendered = contains_word(&document.body, &anchor.name)
-            || contains_word(&document.body, &anchor.name.to_uppercase());
-        let same_name = anchors.iter().filter(|a| a.lower == anchor.lower);
-        if rendered
-            && !same_name.clone().any(|a| {
-                (a.detail.is_empty() || present(&a.detail))
-                    && (a.date.is_empty() || present(&a.date))
-            })
-        {
-            findings.add(
-                Rule::EntityBinding,
-                &anchor.name,
-                format!(
-                    "rendered without its exact details and date: {}",
-                    anchor.name
-                ),
-            );
+        for at in i..window_end {
+            for token in tokens(&lines[at]) {
+                let own = anchors
+                    .iter()
+                    .any(|a| is_on_line(a) && a.date_tokens.contains(&token.canon));
+                if token_year(&token.canon).is_some() && !own {
+                    let raw = &lines[at][token.start..token.end];
+                    items.add(Rule::EntityBinding, raw, &lines[at], Some(at));
+                }
+            }
         }
-        if rendered && !anchor.date.is_empty() && !dated.contains(anchor.lower.as_str()) {
-            findings.add(
-                Rule::EntityBinding,
-                &format!("{}: no date", anchor.name),
-                format!(
-                    "its date must stand on its line or within the next {DATE_WINDOW_LINES}: {}",
-                    anchor.name
-                ),
-            );
+        for other in anchors.iter().filter(|other| !is_on_line(other)) {
+            // A bare year stays out of this: the token above lists one near the name.
+            let bare_year = other.date.chars().all(|c| c.is_ascii_digit());
+            let own = |pick: fn(&Anchor) -> &str, value: &str| {
+                anchors
+                    .iter()
+                    .any(|a| is_on_line(a) && pick(a).contains(value))
+            };
+            if !bare_year && !own(|a| &a.date, &other.date) && contains_word(&region, &other.date) {
+                items.add(Rule::EntityBinding, &other.date, line, Some(i));
+            }
+            if !own(|a| &a.detail, &other.detail) && contains_word(&window, &other.detail) {
+                items.add(Rule::EntityBinding, &other.detail, line, Some(i));
+            }
+            if !own(|a| &a.location, &other.location) && contains_word(&window, &other.location) {
+                items.add(Rule::EntityBinding, &other.location, line, Some(i));
+            }
         }
     }
 }
 
-/// The numbers and spelled-out counts in `text` that the facts don't vouch for, as written there.
-/// Each one, added to `allowed_tokens`, passes the check.
-pub fn unverified_numbers(text: &str, facts: &Facts) -> Vec<String> {
-    let known = Known::new(facts);
-    let masked = known.mask_contact(&normalize(text));
-    let mut findings = Findings {
-        seen: HashSet::new(),
-        violations: Vec::new(),
-    };
-    check_numbers(&masked, &known, &mut findings);
-    check_number_words(&prepare_for_words(&masked), &known, &mut findings);
-    findings.violations.into_iter().map(|v| v.token).collect()
+/// A level after a fact's language name, up to the next such name, must be that language's own.
+fn check_languages(lines: &[String], changed: &[bool], facts: &Facts, items: &mut Items) {
+    static LEVEL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"\b(?:[abc][12]|native|fluent|bilingual|proficient|business|basic|muttersprach\w*|fließend\w*|fliessend\w*|verhandlungssicher\w*|konversationssicher\w*|grundkenntnisse)\b",
+        )
+        .expect("the language level pattern is valid")
+    });
+    let names: Vec<(String, String)> = facts
+        .languages
+        .iter()
+        .map(|l| (normalize(&l.name).to_lowercase(), normalize(&l.level).to_lowercase()))
+        .filter(|(name, _)| !name.is_empty())
+        .collect();
+    for (at, line) in lines.iter().enumerate().filter(|(at, _)| changed[*at]) {
+        let lower = line.to_lowercase();
+        let mut found: Vec<(usize, usize, &str)> = names
+            .iter()
+            .flat_map(|(name, level)| {
+                lower.match_indices(name.as_str()).filter_map(|(start, _)| {
+                    let end = start + name.len();
+                    contains_word(&lower[start..], name)
+                        .then_some((start, end, level.as_str()))
+                })
+            })
+            .collect();
+        found.sort_unstable();
+        for (index, (_, end, level)) in found.iter().enumerate() {
+            let until = found.get(index + 1).map_or(lower.len(), |next| next.0);
+            if let Some(said) = LEVEL.find(&lower[*end..until])
+                && !level.contains(said.as_str())
+            {
+                let token = lower[found[index].0..*end + said.end()].to_owned();
+                items.add(Rule::LanguageLevel, &token, line, Some(at));
+            }
+        }
+    }
+}
+
+/// Facts the last approved text showed and this one doesn't. A tailored CV may leave out a job, and
+/// the owner should still hear of it.
+fn check_missing(previous: &str, current: &str, facts: &Facts, items: &mut Items) {
+    let (previous, current) = (normalize(previous).to_lowercase(), normalize(current).to_lowercase());
+    let contact = &facts.contact;
+    let names = facts
+        .employment
+        .iter()
+        .map(|e| &e.company)
+        .chain(facts.education.iter().map(|e| &e.institution))
+        .chain(facts.languages.iter().map(|l| &l.name))
+        .chain(facts.metrics.iter().map(|m| &m.text))
+        .chain([
+            &facts.name,
+            &contact.email,
+            &contact.phone,
+            &contact.linkedin,
+            &contact.github,
+        ]);
+    for name in names {
+        let needle = normalize(name.trim()).to_lowercase();
+        if contains_word(&previous, &needle) && !contains_word(&current, &needle) {
+            let context = format!("On the last approved CV, and not on this one: {}", name.trim());
+            items.add(Rule::MissingFact, name.trim(), &context, None);
+        }
+    }
 }
 
 fn is_bidi_control(c: char) -> bool {
@@ -1171,7 +1304,7 @@ fn check_digit_lookalikes(masked: &str, known: &Known, findings: &mut Findings) 
         let word = caps.get(1).expect("group 1 always exists");
         if is_unit && !known.words.contains(&word.as_str().to_lowercase()) {
             findings.add(
-                Rule::Numbers,
+                Rule::DigitLookalike,
                 word.as_str(),
                 context(masked, word.start(), word.end()),
             );
@@ -1231,6 +1364,22 @@ fn addresses(text: &str) -> (Vec<String>, Vec<String>) {
     (emails, urls)
 }
 
+/// A phone number with its country code: `+49 170 5550137`, `0049 170 5550137`. A local form can't be
+/// told from a date range, so it is only listed for review, as every number is.
+static PHONE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\+|\b00)[0-9][0-9 ()/.-]{6,}[0-9]").expect("the phone pattern is valid")
+});
+
+fn check_phones(said: &str, facts: &Facts, findings: &mut Findings) {
+    let digits = |text: &str| digits_of(text).trim_start_matches('0').to_owned();
+    let own = digits(&facts.contact.phone);
+    for found in PHONE.find_iter(said) {
+        if own.is_empty() || digits(found.as_str()) != own {
+            findings.add(Rule::ContactDetails, found.as_str(), found.as_str().to_owned());
+        }
+    }
+}
+
 /// The URLs a CV may show: the owner's profiles and pages under them, what the owner listed, and what
 /// a fact holds.
 fn url_allowed(url: &str, facts: &Facts, known: &Known) -> bool {
@@ -1288,6 +1437,7 @@ fn check_contact(
     let email = facts.contact.email.trim().to_lowercase();
     let metadata = text.metadata.iter().map(|item| normalize(item));
     for said in std::iter::once(document.body.clone()).chain(metadata) {
+        check_phones(&said, facts, findings);
         let (emails, urls) = addresses(&said);
         for found in emails {
             let key: String = found.split_whitespace().collect::<String>().to_lowercase();
@@ -1314,9 +1464,136 @@ pub fn unverified_urls(text: &str, facts: &Facts) -> Vec<String> {
         .collect()
 }
 
-/// Judges a rendered document against the facts. `previous` is the parent revision's text, for
-/// `review_tokens`. Linear in the text, for facts of a fixed size.
-pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>) -> Report {
+const LINK_LABEL: &str = "Link: ";
+const PDF_INFO_LABEL: &str = "PDF info: ";
+/// What the template and these lines write themselves, which is no one's new word.
+const TEMPLATE_WORDS: &str = "Summary Skills Experience Projects Education Languages Profil Kenntnisse Berufserfahrung Projekte Ausbildung Sprachen https http mailto tel www";
+
+/// What the owner reviews and approves, one line each: the pages as a reader sees them, then what the
+/// PDF says beyond them. Control characters draw nothing, and could rewrite a terminal.
+pub fn review_lines(text: &RenderedText) -> Vec<String> {
+    let one_line = |item: String| -> String {
+        item.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    };
+    let links = text
+        .links
+        .iter()
+        .map(|link| format!("{LINK_LABEL}{} ({})", link.target, link.text));
+    let metadata = text.metadata.iter().map(|m| format!("{PDF_INFO_LABEL}{m}"));
+    text.lines
+        .iter()
+        .cloned()
+        .chain(links)
+        .chain(metadata)
+        .map(one_line)
+        .collect()
+}
+
+/// [`review_lines`] as one text, as an approval stores it.
+pub fn review_text(text: &RenderedText) -> String {
+    review_lines(text).join("\n")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineChange {
+    Same,
+    Added,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLine {
+    pub change: LineChange,
+    pub text: String,
+    /// Its line in the new text, from 1, as [`ReviewItem::line`] counts them.
+    pub line: Option<u32>,
+}
+
+/// Past this a diff gets coarser, which shows more as changed, never less.
+const DIFF_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// `current` against what was last approved, or against nothing, so that a first approval shows all
+/// of it. A line moved elsewhere counts as changed: a bullet moved to another job says something new.
+pub fn review_diff(previous: Option<&str>, current: &str) -> Vec<DiffLine> {
+    let old: Vec<&str> = previous.map_or_else(Vec::new, |text| text.split('\n').collect());
+    let new: Vec<&str> = current.split('\n').collect();
+    TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_slices(&old, &new)
+        .iter_all_changes()
+        .map(|change| DiffLine {
+            change: match change.tag() {
+                ChangeTag::Equal => LineChange::Same,
+                ChangeTag::Insert => LineChange::Added,
+                ChangeTag::Delete => LineChange::Removed,
+            },
+            text: change.value().to_owned(),
+            line: change.new_index().map(|index| index as u32 + 1),
+        })
+        .collect()
+}
+
+fn strip_label(line: &str) -> &str {
+    line.strip_prefix(LINK_LABEL)
+        .or_else(|| line.strip_prefix(PDF_INFO_LABEL))
+        .unwrap_or(line)
+}
+
+fn review(text: &RenderedText, facts: &Facts, known: &Known, previous: Option<&str>) -> Vec<ReviewItem> {
+    let raw = review_lines(text);
+    let current = raw.join("\n");
+    let mut changed = vec![false; raw.len()];
+    for line in review_diff(previous, &current) {
+        if let (LineChange::Added, Some(at)) = (line.change, line.line) {
+            changed[at as usize - 1] = true;
+        }
+    }
+    let lines: Vec<String> = raw.iter().map(|line| normalize(strip_label(line))).collect();
+    let mut items = Items::default();
+    let masked: Vec<String> = lines.iter().map(|line| known.mask_contact(line)).collect();
+    check_binding(&masked, &changed, &anchors(facts), &mut items);
+    check_languages(&masked, &changed, facts, &mut items);
+    let mut familiar = known.words.clone();
+    add_words(&mut familiar, &known.whole.join(" "));
+    add_words(&mut familiar, TEMPLATE_WORDS);
+    if let Some(previous) = previous {
+        add_words(&mut familiar, &normalize(&previous.replace('\n', " ")));
+    }
+    for (at, line) in masked.iter().enumerate().filter(|(at, _)| changed[*at]) {
+        let prepared = prepare_for_words(line);
+        check_claims(&prepared, at, known, &mut items);
+        for token in tokens(line) {
+            items.add(Rule::Numbers, &line[token.start..token.end], line, Some(at));
+        }
+        check_number_words(&prepared, at, &mut items);
+        for word in words(line) {
+            let key = word_key(word);
+            // Against nothing, every word is new and the whole text shows anyway: names stand out.
+            let is_listed = previous.is_some() || word.chars().next().is_some_and(char::is_uppercase);
+            let new = is_listed
+                && !word.chars().any(|c| c.is_ascii_digit())
+                && !familiar.contains(&key)
+                && !key.split('-').all(|part| familiar.contains(part));
+            if new && familiar.insert(key) {
+                items.add(Rule::NewWords, word, line, Some(at));
+            }
+        }
+    }
+    if let Some(previous) = previous {
+        check_missing(previous, &current, facts, &mut items);
+    }
+    items.list.sort_by_key(|item| item.rule);
+    items.list
+}
+
+/// Judges a rendered document. Hard refusals look at all of it. Review items look at the lines that
+/// differ from `previous`, the text last approved, because a line the owner has approved needs no
+/// second look. Linear in the text, for facts of a fixed size.
+pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&str>) -> Report {
     let known = Known::new(facts);
     let document = Document::new(text);
     let mut findings = Findings {
@@ -1328,15 +1605,10 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
     check_bidi(text, &mut findings);
     check_contact(text, &document, facts, &known, &mut findings);
     for masked in [&body, &metadata] {
-        check_numbers(masked, &known, &mut findings);
         check_digit_lookalikes(masked, &known, &mut findings);
         check_mixed_script(masked, &known, &mut findings);
-        let prepared = prepare_for_words(masked);
-        check_number_words(&prepared, &known, &mut findings);
-        check_claims(&prepared, &known, &mut findings);
     }
     check_banned(&document, facts, &mut findings);
-    check_binding(&document, facts, &mut findings);
     if text.image_count > 0 {
         findings.add(
             Rule::Images,
@@ -1360,38 +1632,8 @@ pub fn check(text: &RenderedText, facts: &Facts, previous: Option<&RenderedText>
                 .to_owned(),
         );
     }
-
-    let mut familiar = known.words.clone();
-    add_words(&mut familiar, &known.whole.join(" "));
-    for allowed in &facts.allowed_tokens {
-        add_words(&mut familiar, &normalize(allowed));
-    }
-    if let Some(entry) = facts
-        .vocabulary
-        .iter()
-        .map(|v| normalize(v))
-        .reduce(|a, b| a + " " + &b)
-    {
-        add_words(&mut familiar, &entry);
-    }
-    if let Some(previous) = previous {
-        let previous = Document::new(previous);
-        add_words(&mut familiar, &previous.body);
-        add_words(&mut familiar, &previous.metadata);
-    }
-    let mut review_tokens = Vec::new();
-    for word in words(&body).chain(words(&metadata)) {
-        let key = word_key(word);
-        let new = word.chars().next().is_some_and(char::is_uppercase)
-            && !word.chars().any(|c| c.is_ascii_digit())
-            && !familiar.contains(&key)
-            && !key.split('-').all(|part| familiar.contains(part));
-        if new && familiar.insert(key) {
-            review_tokens.push(word.to_owned());
-        }
-    }
     Report {
         violations: findings.violations,
-        review_tokens,
+        review_items: review(text, facts, &known, previous),
     }
 }

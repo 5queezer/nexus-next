@@ -1,6 +1,8 @@
-//! The CV workspace, `/cv`: variants, source editor, preview, revisions and the facts page. A save
-//! or revert runs `patch_cv` or `revert_cv` through `nexus_mcp::call_tool`, so the integrity check
-//! and the revision rules are the tools' own, whoever is editing. Nothing here needs JavaScript
+//! The CV workspace, `/cv`: variants, source editor, preview, approval, revisions and the facts page.
+//! A revert runs `revert_cv` through `nexus_mcp::call_tool`, and a save the same code as `patch_cv`,
+//! so the integrity check and the revision rules are the tools' own, whoever is editing. What only
+//! the owner may do goes through `nexus_mcp::owner`, from these handlers, behind the session and the
+//! CSRF token: a save stored here is approved, an agent's never is. Nothing here needs JavaScript
 //! except the live preview and voice.
 
 use std::path::Path as FilePath;
@@ -18,11 +20,12 @@ use chrono_tz::Tz;
 use leptos::prelude::*;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
 use nexus_core::blob::sha256_hex;
-use nexus_core::repo::cv_facts::{self, FactsState, OwnerFacts};
+use nexus_core::repo::cv_approvals;
+use nexus_core::repo::cv_facts::{self, FactChange, FactsState, LockPreview, OwnerFacts};
 use nexus_core::repo::cv_revisions;
 use nexus_core::{Db, Error, Timestamp};
-use nexus_mcp::{CallToolResult, McpState};
-use nexus_tailor::{Language, Metric};
+use nexus_mcp::{CallToolResult, McpState, Review, owner};
+use nexus_tailor::{LineChange, Language, Metric, ReviewItem, Rule, review_diff};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -32,7 +35,7 @@ use crate::dashboard::{PageError, with_form_token};
 use crate::format;
 use crate::forms::{Flash, Typed, csrf_ok, notice_page};
 use crate::render_cache::RenderCache;
-use crate::views::{self, Nav};
+use crate::views::{self, Nav, NavCounts};
 use crate::voice::{self, MAX_SESSION_BODY_BYTES, MAX_TOOL_BODY_BYTES, Voice, VoiceConfig};
 
 /// A source of 256 KiB percent-encoded, with the small fields around it.
@@ -40,6 +43,10 @@ const SAVE_BODY_LIMIT: usize = 1024 * 1024;
 const REVISIONS_PER_PAGE: i64 = 20;
 const PREVIEW_PAGES: u32 = 3;
 const FACTS_ACTOR: &str = "dashboard";
+/// How many review items a page lists. Past that the diff still marks them where they stand.
+const MAX_LISTED_ITEMS: usize = 200;
+/// Unchanged lines kept around a change in the diff, so that it reads in place.
+const DIFF_CONTEXT_LINES: usize = 1;
 
 #[derive(Clone)]
 pub(crate) struct Cv {
@@ -68,6 +75,7 @@ pub fn cv_router(
             .route("/cv/facts/unlock", post(facts_unlock))
             .route("/cv/variants/{variant}", get(variant_page))
             .route("/cv/variants/{variant}/save", post(save))
+            .route("/cv/variants/{variant}/approve", post(approve))
             .route("/cv/variants/{variant}/revert", post(revert))
             .route("/cv/variants/{variant}/preview.png", get(preview_png))
             .route("/cv/variants/{variant}/preview.json", get(preview_json))
@@ -107,15 +115,28 @@ impl Told {
     }
 }
 
-async fn call(cv: &Cv, name: &str, args: Value) -> Told {
-    let result =
-        nexus_mcp::call_tool(cv.mcp.clone(), &[SCOPE_TOOLS], "dashboard", name, args).await;
+fn told(result: CallToolResult) -> Told {
     let value = result.structured_content.clone().unwrap_or(Value::Null);
     Told {
         value,
         is_error: result.is_error == Some(true),
         result,
     }
+}
+
+async fn call(cv: &Cv, name: &str, args: Value) -> Told {
+    told(nexus_mcp::call_tool(cv.mcp.clone(), &[SCOPE_TOOLS], "dashboard", name, args).await)
+}
+
+/// For the top nav. With unlocked facts nothing can be approved, so nothing is waiting.
+pub(crate) async fn awaiting_count(db: &Db) -> nexus_core::Result<usize> {
+    let mut conn = db.conn().await?;
+    let state = cv_facts::get(&mut conn).await?;
+    if !state.is_locked() {
+        return Ok(0);
+    }
+    let hash = cv_approvals::facts_sha256(&state.facts);
+    Ok(cv_approvals::awaiting(&mut conn, &hash).await?.len())
 }
 
 /// Why a tool refused, in words. Raw codes and JSON never reach the page.
@@ -132,6 +153,9 @@ fn explain(code: &str) -> &'static str {
         }
         "cv_fact_violation" => {
             "The integrity check refused this, so nothing was stored. See what it found below."
+        }
+        "cv_approval_stale" => {
+            "This changed since you opened the page, so nothing was approved. Read it again below."
         }
         "cv_facts_changed" => {
             "The facts changed while this was compiling. Nothing was stored: try again."
@@ -151,17 +175,26 @@ fn explain(code: &str) -> &'static str {
     }
 }
 
-/// How a violation's rule reads to the person whose CV it is.
+/// How a refusal or a review item reads to the person whose CV it is.
 fn rule_text(rule: &str) -> &'static str {
     match rule {
-        "numbers" => "A number, year or date that isn't in your facts",
-        "numberWords" => "A spelled-out count that isn't in your facts",
-        "entityBinding" => "A date or title that doesn't belong to this company or institution",
-        "claimWords" => "A degree, seniority or language-level word that isn't in your facts",
+        "missingFact" => "Was on the last approved CV, and isn't on this one",
+        "entityBinding" => {
+            "A company or institution outside its own entry, or with a date, title or place that isn't its own"
+        }
+        "languageLevel" => "A language level that differs from your facts",
+        "claimWords" => "A degree, title or language claim. Is it true here?",
+        "numbers" => "A number or date. Is it the right one, in the right place?",
+        "numberWords" => "A spelled-out count. Is it right?",
+        "newWords" => "A new word. Is it true?",
         "bannedPhrases" => "A phrase you have banned",
         "images" => "An image, which the check can't read",
         "hiddenText" => "Text a reader can't see",
         "mixedScript" => "A word mixing Latin with lookalike letters",
+        "bidiControl" => "A control character that draws text in another order",
+        "transform" => "Text drawn rotated, stretched or squeezed, so it can read as something else",
+        "contactDetails" => "An address, phone number or link that isn't in your contact details",
+        "digitLookalike" => "Letters that read as digits",
         _ => "Something the check refuses",
     }
 }
@@ -232,15 +265,6 @@ fn diagnostics_view(diagnostics: &[Value]) -> impl IntoView + use<> {
     view! { <ul class="problems">{items}</ul> }
 }
 
-fn tokens_view(tokens: &[Value]) -> impl IntoView + use<> {
-    let items: Vec<_> = tokens
-        .iter()
-        .filter_map(Value::as_str)
-        .map(|token| view! { <mark>{token.to_owned()}</mark>" " })
-        .collect();
-    view! { <span class="tokens">{items}</span> }
-}
-
 fn flash_view(flash: Option<&Flash>) -> impl IntoView + use<> {
     flash.map(|flash| {
         view! {
@@ -265,6 +289,37 @@ async fn list_page(State(cv): State<Cv>) -> Result<Html<String>, PageError> {
     let mut conn = cv.db.conn().await?;
     let variants = cv_revisions::list_variants(&mut conn).await?;
     let facts = cv_facts::get(&mut conn).await?;
+    let awaiting = if facts.is_locked() {
+        let hash = cv_approvals::facts_sha256(&facts.facts);
+        cv_approvals::awaiting(&mut conn, &hash).await?
+    } else {
+        Vec::new()
+    };
+    let awaiting_rows: Vec<_> = awaiting
+        .iter()
+        .map(|variant| {
+            let detail = format!(
+                "Revision {}, by {}, {}: {}",
+                variant.number,
+                variant.origin,
+                format::moment(&variant.created_at, cv.tz),
+                variant.summary
+            );
+            view! {
+                <li>
+                    <span>
+                        <a class="dl" href=format!("{}#cv-approval", variant_url(&variant.name))>{variant.name.clone()}</a>
+                        <small>{detail}</small>
+                    </span>
+                    <span class="tag draft">"Draft"</span>
+                </li>
+            }
+        })
+        .collect();
+    let counts = NavCounts {
+        overdue: 0,
+        awaiting: awaiting.len(),
+    };
     let rows: Vec<_> = variants
         .iter()
         .map(|variant| {
@@ -299,6 +354,10 @@ async fn list_page(State(cv): State<Cv>) -> Result<Html<String>, PageError> {
                 <a href="/cv/facts">"Check and lock them"</a>
             </p>
         })}
+        {(!awaiting_rows.is_empty()).then(|| view! {
+            <h2>"Waiting for your approval"</h2>
+            <div class="card"><ul class="items">{awaiting_rows}</ul></div>
+        })}
         <h2>"Variants"</h2>
         <div class="card"><ul class="items">{rows}</ul></div>
         <h2>"Facts"</h2>
@@ -311,7 +370,7 @@ async fn list_page(State(cv): State<Cv>) -> Result<Html<String>, PageError> {
             </li></ul>
         </div>
     };
-    Ok(Html(views::page("CV", Nav::Cv, 0, body)))
+    Ok(Html(views::page("CV", Nav::Cv, counts, body)))
 }
 
 fn facts_state_text(state: &FactsState) -> String {
@@ -369,8 +428,9 @@ async fn variant_page(
 
 fn done_notice(done: &str) -> Option<Flash> {
     let text = match done {
-        "saved" => "Saved as a new revision.",
+        "saved" => "Saved and approved: you wrote this, and you are looking at it.",
         "reverted" => "Reverted: the old text is now a new revision.",
+        "approved" => "Approved. The PDF of this revision now has no stamp.",
         _ => return None,
     };
     Some(Flash {
@@ -391,6 +451,7 @@ async fn render_variant(
     if source.is_error {
         return Err(PageError(StatusCode::NOT_FOUND));
     }
+    let review = owner::review(cv.mcp.clone(), variant).await.map_err(|error| told(error));
     let revisions = call(
         cv,
         "list_cv_revisions",
@@ -400,6 +461,11 @@ async fn render_variant(
     .value;
     let head = source.value["revision"].as_i64().unwrap_or(0);
     let locked = source.value["factsLocked"].as_bool().unwrap_or(false);
+    let approved = source.value["state"].as_str() == Some("approved");
+    let counts = NavCounts {
+        overdue: 0,
+        awaiting: awaiting_count(&cv.db).await?,
+    };
     let text = outcome.typed_source.clone().unwrap_or_else(|| {
         source.value["source"]
             .as_str()
@@ -411,19 +477,6 @@ async fn render_variant(
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let head_tokens = (page == 1)
-        .then(|| items.first())
-        .flatten()
-        .and_then(|revision| revision["warnings"].as_array())
-        .filter(|tokens| !tokens.is_empty())
-        .map(|tokens| {
-            view! {
-                <div class="banner review">
-                    "New words in this revision that the check can't judge. They were saved. Are they true? "
-                    {tokens_view(tokens)}
-                </div>
-            }
-        });
     let voice_config = cv.voice.config();
     let body = view! {
         <p><a class="crumb" href="/cv">"\u{2190} CV"</a></p>
@@ -432,11 +485,13 @@ async fn render_variant(
             <span class="id" id="cv-revision">
                 {if head == 0 { "nothing stored yet".to_owned() } else { format!("revision {head}") }}
             </span>
+            {state_badge(approved)}
         </div>
         <div
             id="cv-workspace"
             data-variant=variant.to_owned()
             data-revision=head.to_string()
+            data-state=if approved { "approved" } else { "draft" }
         >
             {(!locked).then(|| view! {
                 <p class="banner warn" role="status">
@@ -446,10 +501,10 @@ async fn render_variant(
             })}
             {outcome.typed_source.is_none().then(|| flash_view(outcome.flash.as_ref()))}
             <p class="banner" id="cv-live-note" role="status" hidden></p>
-            <div id="cv-head-tokens">{head_tokens}</div>
+            {approval_view(variant, token, &review)}
             <div class="cv-grid">
                 <div class="cv-side">
-                    {preview_view(variant, head)}
+                    {preview_view(variant, head, approved)}
                     {voice_view(variant, voice_config, token)}
                 </div>
                 {editor_view(variant, token, &text, expected, &outcome)}
@@ -462,7 +517,7 @@ async fn render_variant(
     } else {
         &["cv.js"]
     };
-    let html = views::page_with_scripts(variant, Nav::Cv, 0, body, scripts);
+    let html = views::page_with_scripts(variant, Nav::Cv, counts, body, scripts);
     let mut response = Html(html).into_response();
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(&csp(voice_config)) {
@@ -477,20 +532,213 @@ async fn render_variant(
     Ok(response)
 }
 
-fn preview_view(variant: &str, head: i64) -> impl IntoView + use<> {
+fn state_badge(approved: bool) -> impl IntoView + use<> {
+    if approved {
+        view! { <span class="tag approved" id="cv-state">"Approved"</span> }.into_any()
+    } else {
+        view! { <span class="tag draft" id="cv-state">"Draft, not approved"</span> }.into_any()
+    }
+}
+
+/// `line`'s text with these tokens marked, wherever they stand exactly as listed, in any case.
+fn highlighted(line: &str, tokens: &[&str]) -> impl IntoView + use<> {
+    let lower = line.to_ascii_lowercase();
+    let mut spots: Vec<(usize, usize)> = tokens
+        .iter()
+        .filter(|token| !token.is_empty())
+        .flat_map(|token| {
+            let token = token.to_ascii_lowercase();
+            let found: Vec<(usize, usize)> = lower
+                .match_indices(&token)
+                .map(|(at, found)| (at, at + found.len()))
+                .collect();
+            found
+        })
+        .collect();
+    spots.sort_unstable();
+    let mut parts = Vec::new();
+    let mut from = 0;
+    for (start, end) in spots {
+        if start < from || !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+            continue;
+        }
+        parts.push(view! { {line[from..start].to_owned()}<mark>{line[start..end].to_owned()}</mark> });
+        from = end;
+    }
+    let tail = line[from..].to_owned();
+    view! { {parts}{tail} }
+}
+
+/// The rendered text against the last approved text: changed lines with their highlights, and an
+/// unchanged line around them so that they read in place.
+fn rendered_diff_view(review: &Review) -> impl IntoView + use<> {
+    let lines = review_diff(review.baseline.as_deref(), &review.rendered_text);
+    let changed: Vec<bool> = lines
+        .iter()
+        .map(|line| line.change != LineChange::Same)
+        .collect();
+    let near = |at: usize| {
+        let from = at.saturating_sub(DIFF_CONTEXT_LINES);
+        let to = (at + DIFF_CONTEXT_LINES + 1).min(changed.len());
+        changed[from..to].iter().any(|changed| *changed)
+    };
+    let mut rows = Vec::new();
+    let mut skipped = false;
+    for (at, line) in lines.iter().enumerate() {
+        if !near(at) {
+            skipped = true;
+            continue;
+        }
+        if std::mem::take(&mut skipped) {
+            rows.push(view! { <span class="gap">"\u{2026}"</span> }.into_any());
+        }
+        let tokens: Vec<&str> = review
+            .items
+            .iter()
+            .filter(|item| line.line.is_some() && item.line == line.line)
+            .map(|item| item.token.as_str())
+            .collect();
+        let (class, sign) = match line.change {
+            LineChange::Added => ("da", "+ "),
+            LineChange::Removed => ("dd", "- "),
+            LineChange::Same => ("dc", "  "),
+        };
+        rows.push(view! { <span class=class>{sign}{highlighted(&line.text, &tokens)}</span> }.into_any());
+    }
+    view! { <pre class="rendered" id="cv-rendered-diff">{rows}</pre> }
+}
+
+fn rule_of(item: &ReviewItem) -> String {
+    serde_json::to_value(item.rule)
+        .ok()
+        .and_then(|rule| rule.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Most serious first, as the check orders them, a rule's items together.
+fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
+    let listed: Vec<_> = items
+        .iter()
+        .take(MAX_LISTED_ITEMS)
+        .map(|item| {
+            let serious = matches!(item.rule, Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel);
+            let context = item.context.clone();
+            view! {
+                <li class=serious.then_some("serious")>
+                    <b>{rule_text(&rule_of(item))}</b>
+                    ": " <mark>{item.token.clone()}</mark>
+                    {(!context.is_empty()).then(|| view! {
+                        <small class="context">{marked(&context, &item.token)}</small>
+                    })}
+                </li>
+            }
+        })
+        .collect();
+    let more = items.len().saturating_sub(MAX_LISTED_ITEMS);
+    view! {
+        <ul class="problems" id="cv-review-items">{listed}</ul>
+        {(more > 0).then(|| view! {
+            <p class="hint">{format!("And {more} more. The text below marks them where they stand.")}</p>
+        })}
+    }
+}
+
+/// The owner's reading of what they are about to approve: above the editor, since it comes first.
+fn approval_view(variant: &str, token: &str, review: &Result<Review, Told>) -> impl IntoView + use<> {
+    let inner = match review {
+        Err(refused) => {
+            let violations = refused.value["error"]["violations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let diagnostics = refused.value["error"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            view! {
+                <p class="banner warn" role="status">{explain(refused.code())}" It can't be approved like this."</p>
+                {(!violations.is_empty()).then(|| violations_view(&violations))}
+                {(!diagnostics.is_empty()).then(|| diagnostics_view(&diagnostics))}
+            }
+            .into_any()
+        }
+        Ok(review) if review.approved => view! {
+            <p>"You approved this text. The PDF of this revision has no stamp, and an agent can store it for an application."</p>
+        }
+        .into_any(),
+        Ok(review) => {
+            let against = review.baseline_revision.map_or_else(
+                || "Nothing is approved yet, so this is the whole CV. Every number and date is marked.".to_owned(),
+                |at| format!("Compared with revision {at}, the last you approved, however many drafts came between."),
+            );
+            let action = if review.revision == 0 {
+                view! { <p class="hint">"This is the starting text, not stored yet. Saving it below stores and approves it."</p> }.into_any()
+            } else if !review.locked {
+                view! {
+                    <p class="hint">"You can approve once the facts are locked. " <a href="/cv/facts">"Check and lock them"</a></p>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <form method="post" action=format!("{}/approve#cv-approval", variant_url(variant)) class="approve-form">
+                        <input type="hidden" name="csrf" value=token.to_owned() />
+                        <input type="hidden" name="revision" value=review.revision.to_string() />
+                        <input type="hidden" name="sourceSha256" value=review.source_sha256.clone() />
+                        <input type="hidden" name="factsSha256" value=review.facts_sha256.clone() />
+                        <button type="submit">{format!("Approve revision {}", review.revision)}</button>
+                    </form>
+                }
+                .into_any()
+            };
+            view! {
+                <p>"An agent wrote or changed this. Nothing leaves here as a final CV until you approve exactly this text."</p>
+                {(!review.items.is_empty()).then(|| view! {
+                    <h3>"Check these first"</h3>
+                    {review_items_view(&review.items)}
+                })}
+                <h3>"What a reader sees"</h3>
+                <p class="hint">{against}</p>
+                {rendered_diff_view(review)}
+                {action}
+                <details>
+                    <summary>"Source changes"</summary>
+                    {diff_view(&review.source_diff)}
+                </details>
+            }
+            .into_any()
+        }
+    };
+    view! {
+        <section id="cv-approval">
+            <h2>"Approval"</h2>
+            <div class="card approval">{inner}</div>
+        </section>
+    }
+}
+
+fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use<> {
     let base = variant_url(variant);
+    let state = if approved { "approved" } else { "draft" };
+    let label = if approved {
+        "Download PDF"
+    } else {
+        "Download draft PDF, stamped"
+    };
     view! {
         <section id="cv-preview">
             <h2>"Preview"</h2>
             <div class="preview-pages" id="cv-preview-pages">
                 <img
-                    src=format!("{base}/preview.png?revision={head}&page=1")
+                    src=format!("{base}/preview.png?revision={head}&page=1&state={state}")
                     alt=format!("Preview of revision {head}, page 1. It can't be shown if this revision no longer passes the check.")
                 />
             </div>
+            <p class="hint preview-caption" id="cv-preview-caption" hidden=approved>
+                "Stamped until you approve it. The stamp is no part of the CV."
+            </p>
             <p class="banner warn" id="cv-preview-note" role="status" hidden></p>
-            <div class="buttons preview-actions">
-                <a class="button secondary" href=format!("{base}/cv.pdf?revision={head}") id="cv-pdf">"Download PDF"</a>
+            <div class="buttons preview-actions" id="cv-preview-actions">
+                <a class="button secondary" href=format!("{base}/cv.pdf?revision={head}") id="cv-pdf">{label}</a>
             </div>
         </section>
     }
@@ -577,7 +825,7 @@ fn editor_view(
                         placeholder="Edited by hand"
                     />
                 </label>
-                <button type="submit">"Save as a new revision"</button>
+                <button type="submit">"Save and approve as a new revision"</button>
             </form>
         </section>
     }
@@ -622,7 +870,7 @@ fn revisions_view(
                 .and_then(|at| Timestamp::parse(at).ok())
                 .map(|at| format::moment(&at, tz))
                 .unwrap_or_default();
-            let warnings = revision["warnings"].as_array().cloned().unwrap_or_default();
+            let is_approved = revision["state"].as_str() == Some("approved");
             let diff = revision["diff"].as_str().unwrap_or_default().to_owned();
             let revert = (number != head).then(|| {
                 view! {
@@ -640,17 +888,15 @@ fn revisions_view(
                         <span>
                             <b>{format!("Revision {number}")}</b>
                             " " <span class="tag">{revision["origin"].as_str().unwrap_or_default().to_owned()}</span>
+                            " " <span class=if is_approved { "tag approved" } else { "tag draft" }>{if is_approved { "Approved" } else { "Draft" }}</span>
                             <small>{when}</small>
                             <small>{revision["summary"].as_str().unwrap_or_default().to_owned()}</small>
                         </span>
                         <span class="buttons">
-                            <a class="button quiet" href=format!("{base}/cv.pdf?revision={number}")>"PDF"</a>
+                            <a class="button quiet" href=format!("{base}/cv.pdf?revision={number}")>{if is_approved { "PDF" } else { "Stamped PDF" }}</a>
                             {revert}
                         </span>
                     </div>
-                    {(!warnings.is_empty()).then(|| view! {
-                        <p class="hint">"To check: " {tokens_view(&warnings)}</p>
-                    })}
                     <details>
                         <summary>"Changes"</summary>
                         {diff_view(&diff)}
@@ -679,7 +925,7 @@ fn revisions_view(
     }
 }
 
-/// What a human save is sent as: one edit replacing the whole source, the same call an agent makes.
+/// What a human save is sent as: one edit replacing the whole source, the same arguments an agent sends.
 fn whole_source_edit(
     variant: &str,
     expected: i64,
@@ -773,12 +1019,15 @@ async fn save(
         ));
     }
     let base_source = base.value["source"].as_str().unwrap_or_default();
-    let told = call(
-        &cv,
-        "patch_cv",
-        whole_source_edit(&variant, expected, base_source, &source, &summary),
-    )
-    .await;
+    // The caller is what grants this: the owner's session, in this handler. Not `origin`, which is
+    // text any caller can send.
+    let told = told(
+        owner::save_as_approved(
+            cv.mcp.clone(),
+            &whole_source_edit(&variant, expected, base_source, &source, &summary),
+        )
+        .await,
+    );
     if !told.is_error {
         return Ok(Redirect::to(&format!(
             "{}?done=saved#cv-workspace",
@@ -787,6 +1036,59 @@ async fn save(
         .into_response());
     }
     let (status, outcome) = refused(&told, kept);
+    Ok(with_status(
+        status,
+        render_variant(&cv, &variant, 1, &token, outcome).await?,
+    ))
+}
+
+/// The owner's tap. Bound by the form to the exact revision and hashes on the page they read, so that
+/// a revision or a fact landing in between can't be approved by accident.
+async fn approve(
+    State(cv): State<Cv>,
+    Path(variant): Path<String>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    Form(form): Form<Typed>,
+) -> Result<Response, PageError> {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
+        return Ok(expired_form());
+    }
+    let text = |name: &str| form.get(name).map_or("", String::as_str);
+    let Ok(revision) = text("revision").parse::<i64>() else {
+        return Err(PageError(StatusCode::BAD_REQUEST));
+    };
+    let told = told(
+        owner::approve(
+            cv.mcp.clone(),
+            &variant,
+            revision,
+            text("sourceSha256"),
+            text("factsSha256"),
+            FACTS_ACTOR,
+        )
+        .await,
+    );
+    if !told.is_error {
+        return Ok(Redirect::to(&format!(
+            "{}?done=approved#cv-approval",
+            variant_url(&variant)
+        ))
+        .into_response());
+    }
+    if told.code() == "cv_variant_not_found" {
+        return Err(PageError(StatusCode::NOT_FOUND));
+    }
+    let (status, mut outcome) = refused(&told, Outcome::default());
+    if told.code() == "cv_approval_stale" {
+        outcome.flash = Some(Flash {
+            ok: false,
+            text: explain(told.code()).to_owned(),
+        });
+        return Ok(with_status(
+            StatusCode::CONFLICT,
+            render_variant(&cv, &variant, 1, &token, outcome).await?,
+        ));
+    }
     Ok(with_status(
         status,
         render_variant(&cv, &variant, 1, &token, outcome).await?,
@@ -840,7 +1142,11 @@ struct RevisionQuery {
 
 /// A rendered preview, or why there is none.
 enum Preview {
-    Ready { revision: i64, pages: Vec<Vec<u8>> },
+    Ready {
+        revision: i64,
+        state: String,
+        pages: Vec<Vec<u8>>,
+    },
     Refused(Box<Told>),
 }
 
@@ -853,8 +1159,9 @@ fn revision_args(variant: &str, revision: Option<i64>) -> Value {
     args
 }
 
-/// From the cache, or through `render_cv_pdf`, which checks the revision against today's facts. The
-/// key's facts version comes from that same render, and a failure is never cached.
+/// From the cache, or through `render_cv_pdf`, which checks the revision against today's facts and
+/// stamps a draft. The key's state and facts version come from that same render, and a failure is
+/// never cached, so a stamp can't fall off a draft or stay on what the owner approved.
 async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
     let read = call(cv, "get_cv_source", revision_args(variant, revision)).await;
     if read.is_error {
@@ -863,13 +1170,15 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
     let number = read.value["revision"].as_i64().unwrap_or(0);
     let hash = sha256_hex(read.value["source"].as_str().unwrap_or_default().as_bytes());
     let version = read.value["factsVersion"].as_i64().unwrap_or(0);
+    let state = read.value["state"].as_str().unwrap_or("draft").to_owned();
     let cached = || {
-        let (cache, key) = (cv.cache.clone(), hash.clone());
+        let (cache, key) = (cv.cache.clone(), format!("{hash}-{state}"));
         tokio::task::spawn_blocking(move || cache.get(&key, version))
     };
     if let Ok(Some(pages)) = cached().await {
         return Preview::Ready {
             revision: number,
+            state,
             pages,
         };
     }
@@ -877,6 +1186,7 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
     if let Ok(Some(pages)) = cached().await {
         return Preview::Ready {
             revision: number,
+            state,
             pages,
         };
     }
@@ -889,14 +1199,16 @@ async fn preview(cv: &Cv, variant: &str, revision: Option<i64>) -> Preview {
     let pages = blocks_of(&told.result, |block| {
         (block["type"] == "image").then(|| block["data"].clone())
     });
+    let state = told.value["state"].as_str().unwrap_or("draft").to_owned();
     // A variant with nothing stored can gain a head between the read and the render.
     if told.value["revision"].as_i64() == Some(number) {
         let version = told.value["factsVersion"].as_i64().unwrap_or(version);
-        let (cache, stored) = (cv.cache.clone(), pages.clone());
-        let _ = tokio::task::spawn_blocking(move || cache.put(&hash, version, &stored)).await;
+        let (cache, stored, key) = (cv.cache.clone(), pages.clone(), format!("{hash}-{state}"));
+        let _ = tokio::task::spawn_blocking(move || cache.put(&key, version, &stored)).await;
     }
     Preview::Ready {
         revision: number,
+        state,
         pages,
     }
 }
@@ -938,9 +1250,12 @@ async fn preview_json(
     Query(query): Query<RevisionQuery>,
 ) -> Response {
     match preview(&cv, &variant, query.revision).await {
-        Preview::Ready { revision, pages } => {
-            Json(json!({"revision": revision, "pages": pages.len()})).into_response()
-        }
+        Preview::Ready {
+            revision,
+            state,
+            pages,
+        } => Json(json!({"revision": revision, "state": state, "pages": pages.len()}))
+            .into_response(),
         Preview::Refused(told) => {
             let tokens: Vec<_> = told.value["error"]["violations"]
                 .as_array()
@@ -962,9 +1277,8 @@ async fn pdf(
     Path(variant): Path<String>,
     Query(query): Query<RevisionQuery>,
 ) -> Result<Response, PageError> {
-    let mut args = revision_args(&variant, query.revision);
-    args["previewPages"] = 0.into();
-    let told = call(&cv, "render_cv_pdf", args).await;
+    let revision = query.revision.filter(|number| *number > 0);
+    let told = told(owner::download_pdf(cv.mcp.clone(), &variant, revision).await);
     if told.is_error {
         return match told.code() {
             "cv_variant_not_found" | "cv_revision_not_found" => {
@@ -988,12 +1302,17 @@ async fn pdf(
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
         .collect();
+    let label = if told.value["state"].as_str() == Some("approved") {
+        ""
+    } else {
+        "-DRAFT-NOT-APPROVED"
+    };
     Ok((
         [
             (header::CONTENT_TYPE, "application/pdf".to_owned()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"cv-{safe}-{number}.pdf\""),
+                format!("attachment; filename=\"cv-{safe}-{number}{label}.pdf\""),
             ),
         ],
         Body::from(document),
@@ -1003,10 +1322,12 @@ async fn pdf(
 
 /// The fallback when a stream can't stay open: a page asks this every so often.
 async fn head(State(cv): State<Cv>, Path(variant): Path<String>) -> Result<Response, PageError> {
-    match head_number(&cv.db, &variant).await? {
-        Some(revision) => Ok(Json(json!({"revision": revision})).into_response()),
-        None => Err(PageError(StatusCode::NOT_FOUND)),
-    }
+    let Some(revision) = head_number(&cv.db, &variant).await? else {
+        return Err(PageError(StatusCode::NOT_FOUND));
+    };
+    let read = call(&cv, "get_cv_source", json!({"variant": variant})).await;
+    let state = read.value["state"].as_str().unwrap_or("draft").to_owned();
+    Ok(Json(json!({"revision": revision, "state": state})).into_response())
 }
 
 fn lines_of<T>(items: &[T], text: impl Fn(&T) -> String) -> String {
@@ -1064,6 +1385,55 @@ struct FactsOutcome {
     typed: Option<Typed>,
 }
 
+fn changes_view(title: &str, changes: &[FactChange]) -> impl IntoView + use<> {
+    let items: Vec<_> = changes
+        .iter()
+        .map(|change| {
+            view! {
+                <li>
+                    <b>{change.field.clone()}</b>": "
+                    <del>{change.old.clone()}</del>" \u{2192} "<ins>{change.new.clone()}</ins>
+                </li>
+            }
+        })
+        .collect();
+    (!items.is_empty()).then(|| {
+        view! {
+            <h3>{title.to_owned()}</h3>
+            <ul class="lock-list">{items}</ul>
+        }
+    })
+}
+
+/// Every change a lock would confirm, and the form that names exactly this list. Written after the
+/// page loaded, anything else makes the lock refuse and this list show it.
+fn lock_form(token: &str, preview: &LockPreview) -> impl IntoView + use<> {
+    let added: Vec<_> = preview
+        .added
+        .iter()
+        .map(|url| view! { <li>{url.clone()}</li> })
+        .collect();
+    view! {
+        {(!preview.needs_confirmation()).then(|| view! {
+            <p class="hint">"Nothing changed since the last lock."</p>
+        })}
+        {preview.needs_confirmation().then(|| view! {
+            <p>"Locking confirms all of this as true, and anything an agent wrote is in it. A CV generated from this wording needs no further approval."</p>
+        })}
+        {changes_view("Facts changed", &preview.changes)}
+        {changes_view("Wording changed", &preview.wording)}
+        {(!added.is_empty()).then(|| view! {
+            <h3>"URLs from your wording, added to what a CV may show"</h3>
+            <ul class="lock-list">{added}</ul>
+        })}
+        <form method="post" action="/cv/facts/lock" class="act">
+            <input type="hidden" name="csrf" value=token.to_owned() />
+            <input type="hidden" name="hash" value=preview.hash() />
+            <button type="submit">"Lock the facts"</button>
+        </form>
+    }
+}
+
 async fn facts_page(
     State(cv): State<Cv>,
     Extension(FormToken(token)): Extension<FormToken>,
@@ -1074,7 +1444,19 @@ async fn facts_page(
 }
 
 async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<String, PageError> {
-    let state = cv_facts::get(&mut *cv.db.conn().await?).await?;
+    let mut conn = cv.db.conn().await?;
+    let state = cv_facts::get(&mut conn).await?;
+    let preview = if state.is_locked() {
+        None
+    } else {
+        // Nothing to lock yet is not a failure of this page: the lock's own answer says so.
+        cv_facts::lock_preview(&mut conn).await.ok()
+    };
+    drop(conn);
+    let counts = NavCounts {
+        overdue: 0,
+        awaiting: awaiting_count(&cv.db).await?,
+    };
     let facts = &state.facts;
     let typed = |name: &str, saved: String| -> String {
         let value = outcome
@@ -1086,7 +1468,7 @@ async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<Str
     };
     let lock_state = match &state.locked_at {
         Some(at) => format!(
-            "Locked since {}. Agents and voice can't change the facts. CV edits are checked against them.",
+            "Locked since {}. Agents and voice can't change the facts, and what they write to a CV stays a draft until you approve it.",
             format::moment(at, cv.tz)
         ),
         None => "Not locked. Agents can still change these through upsert_cv_profile, and no CV edit can be stored until you lock them.".to_owned(),
@@ -1141,11 +1523,11 @@ async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<Str
             <h1>"Facts"</h1>
             <span class="id">{format!("version {}", state.version)}</span>
         </div>
-        <p class="lede">"The numbers, names and dates a CV may claim. Only you can change them here, or with nexus cv-facts on the server. Voice and agents can't."</p>
+        <p class="lede">"The names, jobs and dates a CV renders by id. Only you can change them here, or with nexus cv-facts on the server. Voice and agents can't."</p>
         {flash_view(outcome.flash.as_ref())}
         {(!outcome.added.is_empty()).then(|| view! {
             <div class="banner review">
-                "Locking confirmed these numbers from your profile's wording, and added them to the allowed tokens. Change them below if any is wrong: "
+                "Locking confirmed these URLs from your profile's wording, and added them to the allowed URLs. Change them below if any is wrong: "
                 <span class="tokens">{added}</span>
             </div>
         })}
@@ -1159,13 +1541,10 @@ async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<Str
                         <button type="submit" class="danger">"Unlock\u{2026}"</button>
                     </form>
                 }.into_any()
+            } else if let Some(preview) = &preview {
+                lock_form(token, preview).into_any()
             } else {
-                view! {
-                    <form method="post" action="/cv/facts/lock" class="act">
-                        <input type="hidden" name="csrf" value=token.to_owned() />
-                        <button type="submit">"Lock the facts"</button>
-                    </form>
-                }.into_any()
+                view! { <p class="hint">"There is nothing to lock yet: no profile has set the name."</p> }.into_any()
             }}
         </div>
         <h2>"From the profile"</h2>
@@ -1192,10 +1571,10 @@ async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<Str
             <label>"Metrics, one per line: key: text"
                 <textarea name="metrics" rows="4">{typed("metrics", lines_of(&facts.metrics, |m| format!("{}: {}", m.key, m.text)))}</textarea>
             </label>
-            <label>"Allowed tokens, one per line: numbers and dates a CV may show"
+            <label>"Allowed URLs and emails, one per line: ones a CV may show beyond your contact details"
                 <textarea name="allowedTokens" rows="4">{typed("allowedTokens", facts.allowed_tokens.join("\n"))}</textarea>
             </label>
-            <label>"Vocabulary, one per line: words the check should accept"
+            <label>"Vocabulary, one per line: words review doesn't need to list"
                 <textarea name="vocabulary" rows="4">{typed("vocabulary", facts.vocabulary.join("\n"))}</textarea>
             </label>
             <label>"Banned phrases, one per line: agents and voice never see this list"
@@ -1204,7 +1583,7 @@ async fn render_facts(cv: &Cv, token: &str, outcome: FactsOutcome) -> Result<Str
             <button type="submit">"Save the facts"</button>
         </form>
     };
-    Ok(views::page("Facts", Nav::Cv, 0, body))
+    Ok(views::page("Facts", Nav::Cv, counts, body))
 }
 
 fn facts_failure(error: Error) -> Result<String, PageError> {
@@ -1286,6 +1665,26 @@ async fn facts_lock(
         return Ok(expired_form());
     }
     let mut tx = cv.db.begin_write().await?;
+    // What the owner read must be what is there now: an agent may have written since the page loaded.
+    let shown = form.get("hash").map(String::as_str);
+    let preview = cv_facts::lock_preview(&mut tx).await;
+    if let Ok(preview) = &preview
+        && shown != Some(preview.hash().as_str())
+    {
+        drop(tx);
+        let outcome = FactsOutcome {
+            flash: Some(Flash {
+                ok: false,
+                text: "Something changed since you opened this page, so nothing was locked. Read the new list below.".to_owned(),
+            }),
+            ..FactsOutcome::default()
+        };
+        return Ok((
+            StatusCode::CONFLICT,
+            Html(render_facts(&cv, &token, outcome).await?),
+        )
+            .into_response());
+    }
     let outcome = match cv_facts::lock(&mut tx, FACTS_ACTOR).await {
         Ok((_, added)) => {
             tx.commit().await.map_err(Error::from)?;

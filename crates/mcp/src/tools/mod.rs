@@ -30,7 +30,7 @@ use crate::{McpState, all_tools, zod};
 pub(crate) struct Thrown(pub String);
 
 /// Replaces the text of a storage failure, which can hold SQL details, in what a client sees.
-pub(crate) use cv_source::MAX_RENDER_CALLS;
+pub(crate) use cv_source::{MAX_RENDER_CALLS, approve, patch_as, render_as, review};
 
 pub(crate) const INTERNAL_ERROR: &str = "Internal error";
 

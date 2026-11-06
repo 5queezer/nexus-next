@@ -9,6 +9,7 @@
   const variant = root.dataset.variant;
   const base = `/cv/variants/${encodeURIComponent(variant)}`;
   let shown = Number(root.dataset.revision);
+  let shownState = root.dataset.state;
   let previewRun = 0;
   let pollTimer = null;
   let stream = null;
@@ -22,7 +23,7 @@
 
   // Shows `pages` images of a revision, reusing the ones there so the old stays up until the new
   // has loaded.
-  function showImages(revision, pages) {
+  function showImages(revision, pages, state) {
     const box = byId("cv-preview-pages");
     while (box.children.length > pages) box.lastElementChild.remove();
     for (let page = 1; page <= pages; page += 1) {
@@ -32,7 +33,7 @@
         box.append(image);
       }
       image.alt = `Preview of revision ${revision}, page ${page}`;
-      image.src = `${base}/preview.png?revision=${revision}&page=${page}`;
+      image.src = `${base}/preview.png?revision=${revision}&page=${page}&state=${state}`;
     }
   }
 
@@ -51,13 +52,12 @@
     if (run !== previewRun) return;
     if (ok) {
       setNote(byId("cv-preview-note"), "");
-      showImages(body.revision, body.pages);
+      showImages(body.revision, body.pages, body.state);
     } else {
       const tokens = (body.tokens || []).join(", ");
       setNote(byId("cv-preview-note"), tokens ? `${body.message} Found: ${tokens}` : body.message);
       byId("cv-preview-pages").replaceChildren();
     }
-    byId("cv-pdf").href = `${base}/cv.pdf?revision=${revision}`;
   }
 
   // Takes the revision list and head from a fresh copy of this page. An untouched editor follows
@@ -72,7 +72,7 @@
     } catch {
       return;
     }
-    for (const id of ["cv-revisions", "cv-head-tokens", "cv-revision"]) {
+    for (const id of ["cv-revisions", "cv-approval", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption"]) {
       const next = fresh.getElementById(id);
       if (next) byId(id).replaceWith(document.adoptNode(next));
     }
@@ -102,12 +102,22 @@
     followHead(revision, note);
   }
 
+  // The owner approved what is on screen, here or on another device: the stamp goes, in place.
+  function approved(revision) {
+    if (revision !== shown || shownState === "approved") return;
+    shownState = "approved";
+    root.dataset.state = shownState;
+    loadPreview(revision);
+    followHead(revision, `Revision ${revision} is approved.`);
+  }
+
   async function poll() {
     try {
       const response = await fetch(`/api/cv/${encodeURIComponent(variant)}/head`);
       if (response.ok) {
-        const { revision } = await response.json();
+        const { revision, state } = await response.json();
         arrived(revision, `Revision ${revision} landed.`);
+        if (state === "approved") approved(revision);
       }
     } catch {
       // Still offline: the next round tries again.
@@ -131,8 +141,13 @@
       arrived(revision, `Revision ${revision} landed.`);
     });
     stream.addEventListener("revision", (event) => {
-      const { revision, origin, summary } = JSON.parse(event.data);
+      const { revision, origin, summary, state } = JSON.parse(event.data);
+      shownState = state;
+      root.dataset.state = state;
       arrived(revision, `Revision ${revision} landed (${origin}: ${summary}).`);
+    });
+    stream.addEventListener("approved", (event) => {
+      approved(JSON.parse(event.data).revision);
     });
     stream.addEventListener("error", () => {
       startPolling();

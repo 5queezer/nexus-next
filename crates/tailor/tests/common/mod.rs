@@ -222,6 +222,7 @@ pub async fn render(source: &str, facts: &Facts) -> Result<Rendered, RenderError
             facts: facts.clone(),
             pdf: false,
             preview_pages: 0,
+            stamp: false,
         })
         .await
 }
