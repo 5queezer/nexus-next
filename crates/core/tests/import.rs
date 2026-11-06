@@ -277,7 +277,7 @@ async fn next_ids_follow_the_postgres_sequence_or_the_max_whichever_is_higher() 
     assert_eq!(
         issued,
         "application_events=12 application_submissions=9 applications=14 contacts=7 \
-         cv_patches=6 cv_profile=2 documents=25"
+         cv_patches=6 cv_profile=2 cv_variants=1 documents=25"
     );
     drop(conn);
     db.close().await;
