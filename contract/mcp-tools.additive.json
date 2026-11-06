@@ -1,0 +1,208 @@
+{
+  "source": "Additive tools of Nexus M2, SPEC section 9a. Served after the 35 frozen tools, in this order.",
+  "count": 5,
+  "tools": [
+    {
+      "name": "get_cv_source",
+      "description": "Read a CV variant's Typst source with its revision number, the hard facts it renders by id, and help on the template library. Revision 0 means the variant has no stored revision yet: the source is its starting point, and patch_cv with expectedRevision 0 stores the first revision.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "maxLength": 64,
+            "default": "default",
+            "description": "Variant name. `default` is the base CV."
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "A stored revision to read. Omit for the head."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "patch_cv",
+      "description": "Edit a CV variant's Typst source by exact text replacement. Needs locked facts. All edits apply, compile and pass the integrity check, or nothing is stored. Compile errors come back as diagnostics to fix and retry. A cv_fact_violation is final: report the token to the user and never reword around it. Hard facts can't be changed here.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "maxLength": 64,
+            "default": "default",
+            "description": "Variant name. `default` is the base CV."
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The revision these edits were written against, from get_cv_source. With createFrom, the head of that variant."
+          },
+          "edits": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "properties": {
+                "oldText": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Must occur exactly once in the source as edited so far."
+                },
+                "newText": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "oldText",
+                "newText"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Applied in order."
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "What changed, in a sentence."
+          },
+          "origin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "default": "mcp",
+            "description": "Where the edit came from, such as telegram. Recorded as data."
+          },
+          "createFrom": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Create `variant` from the head of this variant, then apply the edits."
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "edits",
+          "summary"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "render_cv_pdf",
+      "description": "Render a CV variant to a PDF and PNG previews. The revision is checked against today's facts, so one that no longer passes returns cv_fact_violation instead of a stale PDF. Can save the PDF as a document linked to an application.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "maxLength": 64,
+            "default": "default",
+            "description": "Variant name. `default` is the base CV."
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "A stored revision to render. Omit for the head."
+          },
+          "previewPages": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3,
+            "default": 1,
+            "description": "How many pages to return as PNG, from the first."
+          },
+          "saveToApplicationId": {
+            "type": "string",
+            "description": "Store the PDF as a document linked to this application."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "list_cv_revisions",
+      "description": "List a CV variant's revisions, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "maxLength": 64,
+            "default": "default",
+            "description": "Variant name. `default` is the base CV."
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 1
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          },
+          "includeDiff": {
+            "type": "boolean",
+            "default": false,
+            "description": "Add each revision's unified diff against its parent."
+          }
+        },
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "revert_cv",
+      "description": "Add a new revision holding an older revision's source. History never shrinks. Needs locked facts, and the old source must pass today's integrity check.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "variant": {
+            "type": "string",
+            "maxLength": 64,
+            "default": "default",
+            "description": "Variant name. `default` is the base CV."
+          },
+          "toRevision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The revision whose source to restore."
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The variant's current head."
+          }
+        },
+        "required": [
+          "toRevision",
+          "expectedRevision"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}

@@ -10,7 +10,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
-use nexus_mcp::{McpState, router};
+use nexus_mcp::{McpState, Renderer, router};
 use serde_json::{Value, json};
 
 pub const OWNER_ID: &str = "owner-synthetic";
@@ -83,13 +83,18 @@ impl ToolReply {
 
 impl Server {
     pub async fn start() -> Self {
+        Self::start_with(Renderer::InProcess).await
+    }
+
+    pub async fn start_with(renderer: Renderer) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).await.unwrap();
-        let mcp = router(McpState {
-            db: db.clone(),
-            owner_id: OWNER_ID.to_owned(),
-            owner_email: OWNER_EMAIL.to_owned(),
-        });
+        let mcp = router(McpState::new(
+            db.clone(),
+            OWNER_ID.to_owned(),
+            OWNER_EMAIL.to_owned(),
+            renderer,
+        ));
         let app = Router::new()
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp)

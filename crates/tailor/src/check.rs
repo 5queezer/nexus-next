@@ -1111,7 +1111,7 @@ pub fn unverified_numbers(text: &str, facts: &Facts) -> Vec<String> {
         violations: Vec::new(),
     };
     check_numbers(&masked, &known, &mut findings);
-    check_number_words(&masked, &known, &mut findings);
+    check_number_words(&prepare_for_words(&masked), &known, &mut findings);
     findings.violations.into_iter().map(|v| v.token).collect()
 }
 

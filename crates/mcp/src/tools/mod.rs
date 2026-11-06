@@ -3,6 +3,7 @@
 mod applications;
 mod contacts;
 mod cv;
+mod cv_source;
 mod documents;
 mod events;
 mod health;
@@ -21,7 +22,7 @@ use serde_json::{Map, Value, json};
 use sqlx::SqliteConnection;
 
 use crate::js::{nid, normalize_numbers};
-use crate::{McpState, frozen_tools, zod};
+use crate::{McpState, all_tools, zod};
 
 /// An exception no handler caught. The SDK turned its message into a tool error.
 #[derive(Debug)]
@@ -39,6 +40,12 @@ impl From<nexus_core::Error> for Thrown {
             }
             domain => Self(domain.to_string()),
         }
+    }
+}
+
+impl From<sqlx::Error> for Thrown {
+    fn from(error: sqlx::Error) -> Self {
+        nexus_core::Error::from(error).into()
     }
 }
 
@@ -253,6 +260,11 @@ async fn dispatch(ctx: &Ctx, name: &str, args: Args) -> ToolResult {
         "get_cv_profile" => cv::get_profile(ctx).await,
         "upsert_cv_profile" => cv::upsert_profile(ctx, &args).await,
         "generate_tailored_cv" => cv::generate(ctx, &args).await,
+        "get_cv_source" => cv_source::get(ctx, &args).await,
+        "patch_cv" => cv_source::patch(ctx, &args).await,
+        "render_cv_pdf" => cv_source::render(ctx, &args).await,
+        "list_cv_revisions" => cv_source::list(ctx, &args).await,
+        "revert_cv" => cv_source::revert(ctx, &args).await,
         _ => Ok(text_error(&format!(
             "MCP error -32602: Tool {name} not found"
         ))),
@@ -267,7 +279,7 @@ pub(crate) async fn call(
     name: &str,
     mut args: Option<Value>,
 ) -> CallToolResult {
-    let Some(tool) = frozen_tools().iter().find(|tool| tool["name"] == name) else {
+    let Some(tool) = all_tools().iter().find(|tool| tool["name"] == name) else {
         return text_error(&format!("MCP error -32602: Tool {name} not found"));
     };
     if let Some(args) = &mut args {

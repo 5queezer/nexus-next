@@ -8,9 +8,6 @@ use crate::blob::sha256_hex;
 use crate::error::Result;
 use crate::time::Timestamp;
 
-/// The base CV, which the migration creates.
-pub const DEFAULT_VARIANT: &str = "default";
-
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Variant {
     pub id: i64,

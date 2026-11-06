@@ -1,4 +1,4 @@
-//! MCP tool server: the 35 frozen tools of old Nexus over Streamable HTTP.
+//! MCP tool server over Streamable HTTP: the 35 frozen tools of old Nexus, then the additive M2 ones.
 
 mod http;
 mod js;
@@ -16,8 +16,10 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::Value;
+use tokio::sync::Semaphore;
 
 pub use http::router;
+pub use nexus_tailor::Renderer;
 pub use rmcp::model::CallToolResult;
 
 /// Runs one tool for a caller inside this process: the same validation, handlers and error codes
@@ -56,6 +58,21 @@ pub fn frozen_tools() -> &'static [Value] {
     &FROZEN_TOOLS
 }
 
+const ADDITIVE: &str = include_str!("../../../contract/mcp-tools.additive.json");
+
+static ALL_TOOLS: LazyLock<Vec<Value>> = LazyLock::new(|| {
+    let mut additive: Value = serde_json::from_str(ADDITIVE).expect("additive is valid JSON");
+    let Value::Array(additive) = additive["tools"].take() else {
+        panic!("additive has no tools array");
+    };
+    frozen_tools().iter().cloned().chain(additive).collect()
+});
+
+/// What `tools/list` serves: the frozen tools in order, then the additive ones, schemas untouched.
+pub fn all_tools() -> &'static [Value] {
+    &ALL_TOOLS
+}
+
 /// What tool calls need. Responses still carry the owner's `userId`, and events record the owner's
 /// email as `actor`, so both stay as they were when old Nexus wrote the imported rows.
 #[derive(Clone, Debug)]
@@ -63,6 +80,21 @@ pub struct McpState {
     pub db: Db,
     pub owner_id: String,
     pub owner_email: String,
+    pub renderer: Renderer,
+    /// One compile at a time. Taken only around the compile itself, never across other work.
+    render_slot: Arc<Semaphore>,
+}
+
+impl McpState {
+    pub fn new(db: Db, owner_id: String, owner_email: String, renderer: Renderer) -> Self {
+        Self {
+            db,
+            owner_id,
+            owner_email,
+            renderer,
+            render_slot: Arc::new(Semaphore::new(1)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -129,5 +161,22 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 35);
         assert!(tools.iter().all(|tool| tool["inputSchema"].is_object()));
+    }
+
+    #[test]
+    fn additive_tools_follow_the_frozen_ones_in_order() {
+        let tools = all_tools();
+        assert_eq!(&tools[..35], frozen_tools());
+        let added: Vec<_> = tools[35..].iter().map(|tool| &tool["name"]).collect();
+        assert_eq!(
+            added,
+            [
+                "get_cv_source",
+                "patch_cv",
+                "render_cv_pdf",
+                "list_cv_revisions",
+                "revert_cv"
+            ]
+        );
     }
 }

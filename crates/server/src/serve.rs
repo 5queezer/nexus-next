@@ -26,7 +26,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
-use nexus_mcp::McpState;
+use nexus_mcp::{McpState, Renderer};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -89,7 +89,7 @@ pub const LARGE_BODY_BYTES: u64 = 1024 * 1024;
 /// the transport holds several copies of it. They wait outside the MCP pool, so slow uploads can't
 /// take every slot from ordinary tool calls.
 pub const MAX_LARGE_BODIES: usize = 2;
-const DOWNLOAD_TOOL: &str = "download_document_content";
+const LARGE_RESULT_TOOLS: [&str; 2] = ["download_document_content", "render_cv_pdf"];
 pub const LARGE_BODY_WAIT: Duration = Duration::from_secs(30);
 /// 14 MB in 300 s is 373 kbit/s, against 1.9 Mbit/s under the 60 s deadline.
 pub const LARGE_BODY_DEADLINE: Duration = Duration::from_secs(300);
@@ -193,7 +193,10 @@ async fn admit(limits: Limits, slots: Arc<Semaphore>, request: Request, next: Ne
 /// How many documents a small request asks to download. A batch answers them all in one response.
 fn downloads_in(body: &[u8]) -> usize {
     let is_download = |message: &Value| {
-        message["method"] == "tools/call" && message["params"]["name"] == DOWNLOAD_TOOL
+        message["method"] == "tools/call"
+            && LARGE_RESULT_TOOLS
+                .iter()
+                .any(|tool| message["params"]["name"] == *tool)
     };
     match serde_json::from_slice(body) {
         Ok(Value::Array(messages)) => messages.iter().filter(|m| is_download(m)).count(),
@@ -325,11 +328,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         .clone()
         .zip(config.owner_email.clone())
         .context("the owner is not resolved")?;
-    let state = McpState {
-        db: db.clone(),
-        owner_id,
-        owner_email,
-    };
+    let state = McpState::new(db.clone(), owner_id, owner_email, Renderer::current_exe());
     let mcp = nexus_mcp::router(state.clone());
     let mcp = harden_mcp(
         Router::new()
