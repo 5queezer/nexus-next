@@ -74,6 +74,7 @@ The exit code is 0, or 3 if any `expect` failed. Anything else is a crash.
 | `allowDiff` | A reason. Differences are listed as documented and don't fail the run. |
 | `forEach` + `bind` | Repeats the call for each item of a saved list. |
 | `parallel` | A list of calls sent concurrently. `compare.py` sorts each group before comparing. |
+| `expectErrorCodes` | On a `parallel` step: the `error.code` of every call that must fail, in any order; all others must succeed. Fails whatever the baseline did, so a double claim can't pass by matching a bad baseline. |
 
 ## Trace format
 
@@ -96,7 +97,7 @@ One JSON file per scenario, the same from any MCP client:
 
 ## Comparing
 
-`compare.py` prints a per-tool table and precise JSON paths, with sizes and types instead of values. Add `--show-values` to see values, which are personal data.
+`compare.py` prints a per-tool table and precise JSON paths, with sizes and types instead of values. Add `--show-values` to see values, which are personal data. `python3 parity/test_compare.py` checks that its modes can fail, on synthetic traces.
 
 Use `--unordered contacts --unordered applications` to compare those arrays by ID: old Nexus returned them in Postgres heap order, which a restore doesn't even keep stable.
 
