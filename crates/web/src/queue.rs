@@ -2,8 +2,8 @@
 
 use std::sync::LazyLock;
 
-use chrono::{NaiveDate, Timelike};
-use nexus_core::Timestamp;
+use chrono::{NaiveDate, Utc};
+use chrono_tz::Tz;
 use nexus_core::repo::applications::Application;
 use regex::RegexSet;
 
@@ -57,27 +57,36 @@ impl Group {
     }
 }
 
-/// The calendar day of a follow-up. A date stored as UTC midnight means that day, as in old Nexus;
-/// any other instant keeps its UTC date.
-pub fn follow_up_day(application: &Application) -> Option<NaiveDate> {
+/// The owner's zone and today's date in it.
+#[derive(Clone, Copy)]
+pub struct Clock {
+    pub tz: Tz,
+    pub today: NaiveDate,
+}
+
+impl Clock {
+    pub fn now(tz: Tz) -> Self {
+        Self {
+            tz,
+            today: Utc::now().with_timezone(&tz).date_naive(),
+        }
+    }
+}
+
+pub fn follow_up_day(application: &Application, tz: Tz) -> Option<NaiveDate> {
     application
         .follow_up_at
         .as_ref()
-        .map(|at| at.to_datetime().date_naive())
+        .map(|at| crate::format::day(at, tz))
 }
 
-pub fn is_date_only(at: &Timestamp) -> bool {
-    let time = at.to_datetime().time();
-    time.num_seconds_from_midnight() == 0 && time.nanosecond() == 0
-}
-
-pub fn group_of(application: &Application, today: NaiveDate) -> Group {
-    let due = follow_up_day(application);
+pub fn group_of(application: &Application, clock: Clock) -> Group {
+    let due = follow_up_day(application, clock.tz);
     if matches!(application.status.as_str(), "offer" | "rejected") {
         Group::Completed
     } else if follow_up_hold_reason(application).is_some() {
         Group::Waiting
-    } else if due.is_some_and(|due| due <= today) {
+    } else if due.is_some_and(|due| due <= clock.today) {
         Group::Overdue
     } else if due.is_some() {
         Group::DueSoon
@@ -92,7 +101,7 @@ pub fn group_of(application: &Application, today: NaiveDate) -> Group {
 /// higher triage quality, then ID.
 pub fn build<'a>(
     applications: impl IntoIterator<Item = &'a Application>,
-    today: NaiveDate,
+    clock: Clock,
 ) -> Vec<(Group, Vec<&'a Application>)> {
     let mut groups: Vec<(Group, Vec<&Application>)> = [
         Group::Overdue,
@@ -104,7 +113,7 @@ pub fn build<'a>(
     .map(|group| (group, Vec::new()))
     .into();
     for application in applications {
-        let group = group_of(application, today);
+        let group = group_of(application, clock);
         groups
             .iter_mut()
             .find(|(candidate, _)| *candidate == group)
@@ -132,6 +141,7 @@ pub fn build<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_core::Timestamp;
 
     fn app(id: i64, status: &str) -> Application {
         Application {
@@ -188,8 +198,11 @@ mod tests {
         }
     }
 
-    fn day(value: &str) -> NaiveDate {
-        value.parse().unwrap()
+    fn clock(value: &str) -> Clock {
+        Clock {
+            tz: chrono_tz::Europe::Madrid,
+            today: value.parse().unwrap(),
+        }
     }
 
     fn due(mut application: Application, at: &str) -> Application {
@@ -221,7 +234,7 @@ mod tests {
 
     #[test]
     fn groups_follow_old_nexus_rules() {
-        let today = day("2026-11-06");
+        let today = clock("2026-11-06");
         let overdue = due(app(1, "applied"), "2026-11-06T00:00:00.000Z");
         let soon = due(app(2, "interview"), "2026-11-07T00:00:00.000Z");
         let lead = app(3, "inbound");
@@ -247,12 +260,28 @@ mod tests {
 
     #[test]
     fn build_orders_groups_and_members() {
-        let today = day("2026-11-06");
+        let today = clock("2026-11-06");
         let later = due(app(1, "applied"), "2026-11-03T00:00:00.000Z");
         let earlier = due(app(2, "applied"), "2026-11-01T00:00:00.000Z");
         let groups = build([&later, &earlier], today);
         assert_eq!(groups.len(), 1);
         let ids: Vec<_> = groups[0].1.iter().map(|a| a.id).collect();
         assert_eq!(ids, [2, 1]);
+    }
+
+    #[test]
+    fn day_boundaries_use_the_local_date_but_date_only_follow_ups_do_not_shift() {
+        let today = clock("2026-11-06");
+        let late = due(app(1, "applied"), "2026-11-06T23:30:00Z");
+        assert_eq!(group_of(&late, today), Group::DueSoon, "Nov 07 in Madrid");
+        let early = due(app(2, "applied"), "2026-11-05T23:30:00Z");
+        assert_eq!(group_of(&early, today), Group::Overdue, "Nov 06 in Madrid");
+        let date_only = due(app(3, "applied"), "2026-11-06T00:00:00.000Z");
+        assert_eq!(group_of(&date_only, today), Group::Overdue);
+        let west = Clock {
+            tz: chrono_tz::America::Los_Angeles,
+            today: "2026-11-05".parse().unwrap(),
+        };
+        assert_eq!(group_of(&date_only, west), Group::DueSoon, "still Nov 06");
     }
 }

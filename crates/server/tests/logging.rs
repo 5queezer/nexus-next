@@ -51,6 +51,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.path().to_path_buf(),
         base_url: None,
+        timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: Some(CALENDAR_TOKEN.to_owned()),
         insecure_local_only: true,
         log_level: tracing::Level::TRACE,

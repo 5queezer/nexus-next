@@ -23,6 +23,7 @@ fn config(dir: &std::path::Path, calendar: bool, insecure: bool) -> ServeConfig 
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.to_path_buf(),
         base_url: None,
+        timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: calendar.then(|| TOKEN.to_owned()),
         insecure_local_only: insecure,
         log_level: tracing::Level::INFO,

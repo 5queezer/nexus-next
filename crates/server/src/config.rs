@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use axum::http::Uri;
 use axum::http::uri::Scheme;
 use clap::Args;
+use nexus_web::Tz;
 use tracing::Level;
 
 const MIN_TOKEN_LEN: usize = 32;
@@ -23,6 +24,9 @@ pub struct ServeArgs {
     /// Public origin clients reach this server at, for example https://nexus.example.net.
     #[arg(long, env = "NEXUS_BASE_URL")]
     pub base_url: Option<String>,
+    /// IANA time zone for dates shown on the dashboard and in the calendar feed.
+    #[arg(long, env = "NEXUS_TIMEZONE", default_value = "Europe/Madrid")]
+    pub timezone: String,
     /// File holding the secret token of /calendar.ics. Without it the feed is not served.
     #[arg(long, env = "NEXUS_CALENDAR_TOKEN_FILE")]
     pub calendar_token_file: Option<PathBuf>,
@@ -39,6 +43,7 @@ pub struct ServeConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
     pub base_url: Option<String>,
+    pub timezone: Tz,
     pub calendar_token: Option<String>,
     pub insecure_local_only: bool,
     pub log_level: Level,
@@ -58,6 +63,13 @@ impl ServeArgs {
         if self.data_dir.as_os_str().is_empty() {
             problems.push("--data-dir must not be empty".to_owned());
         }
+        let timezone = self.timezone.parse::<Tz>().unwrap_or_else(|_| {
+            problems.push(format!(
+                "--timezone: {:?} is not an IANA time zone name (e.g. Europe/Madrid)",
+                self.timezone
+            ));
+            Tz::UTC
+        });
         let base_url = self.base_url.as_deref().map(|url| {
             normalize_base_url(url).unwrap_or_else(|e| {
                 problems.push(format!("--base-url: {e}"));
@@ -78,6 +90,7 @@ impl ServeArgs {
             bind: self.bind,
             data_dir: self.data_dir,
             base_url,
+            timezone,
             calendar_token,
             insecure_local_only: self.insecure_local_only,
             log_level: self.log_level,
@@ -136,6 +149,7 @@ mod tests {
             bind: "127.0.0.1:8080".parse().unwrap(),
             data_dir: "/var/lib/nexus".into(),
             base_url: None,
+            timezone: "Europe/Madrid".into(),
             calendar_token_file: None,
             insecure_local_only: false,
             log_level: Level::INFO,
@@ -227,6 +241,14 @@ mod tests {
         let mut a = args();
         a.calendar_token_file = Some("/nonexistent/token".into());
         assert!(a.validate().unwrap_err().contains("cannot read"));
+    }
+
+    #[test]
+    fn timezone_must_be_an_iana_name() {
+        assert_eq!(args().validate().unwrap().timezone, Tz::Europe__Madrid);
+        let mut a = args();
+        a.timezone = "Mars/Olympus".into();
+        assert!(a.validate().unwrap_err().contains("--timezone"));
     }
 
     #[test]
