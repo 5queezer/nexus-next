@@ -22,9 +22,9 @@ The owner does this once, on the board. Each command runs as the service user, a
    ```
 
 3. Run `nexus cv-facts show` and read it.
-4. Run `nexus cv-facts lock`. It prints every number it took from the profile's wording and added to the allowed tokens. **Read that list: locking confirms each one as true.**
+4. Run `nexus cv-facts lock`. It prints every fact that differs from the last lock, old and new, and every number and URL it would take from the profile's wording into the allowed tokens. If there is any, it writes nothing and exits non-zero. **Read the list: locking confirms all of it as true, and anything an agent wrote is in it.** If it's right, run `nexus cv-facts lock --confirm`, which prints the list again as it locks, so read that too: an agent could have written in between.
 
-Without a lock, `patch_cv` answers `cv_facts_not_locked`. To change a fact later, run `nexus cv-facts unlock`, change it, and lock again. `set` also works while locked. Every one of these writes a history row.
+Without a lock, `patch_cv` and `revert_cv` answer `cv_facts_not_locked`, and so does `render_cv_pdf` when asked to save to an application. To change a fact later, run `nexus cv-facts unlock`, change it through `upsert_cv_profile` or `set`, and lock again. `set` also works while locked. Every one of these writes a history row, and so does every `upsert_cv_profile` that changes a fact while unlocked, as `changed_by: mcp`.
 
 ## The session
 
@@ -44,22 +44,28 @@ Nothing is stored in any of these cases, and the revision stays as it was.
 | `cv_compile_failed` | Reads `diagnostics` (line, column, message, hints), fixes its own source and retries | No |
 | `cv_edit_no_match`, `cv_edit_ambiguous` | Fixes the `oldText` that `edit` names, and retries | No |
 | `cv_revision_conflict`, `cv_facts_changed` | Calls `get_cv_source` again and reapplies the edit | No |
-| `cv_render_busy` | Waits a moment and retries | Only if it keeps happening |
+| `cv_render_busy` | Waits 10 seconds and retries, at most 3 times. A compile takes seconds, and retrying faster only keeps the queue full | Only if it keeps happening |
 | **`cv_fact_violation`** | **Stops, and tells the owner exactly which `token` was refused** | **Yes, always** |
 | `cv_facts_not_locked` | Stops, and asks the owner to run `nexus cv-facts lock` | Yes |
 
 **Never work around a `cv_fact_violation`.** Don't reword the claim, spell the number out, split the word, use lookalike letters, or try another tool. The owner said something the facts don't back. Either the note was misheard, or a fact needs changing, and only the owner can tell which.
 
-A good reply: "I can't say 'eight years': `eight years` isn't in your locked facts. Nothing was changed. If it's true, add it on the board with `nexus cv-facts`."
+A good reply: "I can't say 'eight years': `eight years` isn't in your locked facts. Nothing was changed. If it's true, add it on the board with `nexus cv-facts`." A list of violations stops at 50, and `truncated` says how many more there were.
+
+## When the answer never comes
+
+A lost connection stops a compile that is still running, and then nothing is stored. It can't stop what comes after the compile, and a proxy in between may not pass the disconnect on. So **a call that got no answer may have stored its revision.** Don't assume either way: call `get_cv_source`. If `revision` moved and the source holds the edit, it went through. If not, apply it again with the `expectedRevision` that call returned. Retrying blindly is safe too, since an old `expectedRevision` gets `cv_revision_conflict`.
 
 `upsert_cv_profile` is no way around this. While locked, it answers `cv_facts_locked` to any change of a fact or any new number.
 
 ## What the gate can't do
 
-It reads the rendered CV and refuses numbers, dates, spelled-out counts, degree, seniority and language-level words, banned phrases, images and hidden text that the facts don't back. **An invented proper noun in ordinary prose is flagged, not refused**, which is why `reviewTokens` must reach the owner. SPEC section 9a lists the known limits.
+It reads the rendered CV and refuses numbers, dates, spelled-out counts, degree, seniority and language-level words, banned phrases, images, hidden, rotated or mirrored text and emails or URLs that the facts don't back. **An invented proper noun in ordinary prose is flagged, not refused**, which is why `reviewTokens` must reach the owner. SPEC section 9a lists the known limits.
 
 ## What has been tested
 
 `crates/server/tests/cv_dictation.rs` replays a messy session on invented data, using a scripted client through real OAuth against the real `nexus serve` and the real render child: wording edits, a compile error with its retry, a revert, then voice notes that change a count, a date and a year, inflate a title, claim a degree and use a banned phrase. Each is refused, with the head revision, facts and history unchanged. It ends by decoding the PNG.
+
+`crates/server/tests/cv_review.rs` runs the real server and the real `nexus cv-facts` for what an owner and a crowding or lost client see: a lock showing what an agent wrote, a crowd of compiles refused at once, and a client that disconnects during a compile.
 
 **Not tested:** a real Telegram voice note, real transcription and Hermes itself. Those need the owner and the deployed server.
