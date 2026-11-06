@@ -1,6 +1,6 @@
-# Nexus rewrite: spec (M1 detail, M2+ outline)
+# Nexus rewrite: spec
 
-Status: draft, 2026-11-06. No code yet.
+Status: M1 built, gate open. M2 and M3 designed in sections 9a and 9b.
 Baseline: `nexus-crm` at `235138d`, the commit in the running production image's tag on 2026-11-06. Sources marked **[handoff]** are not yet checked against the code or the Nexus skills.
 
 ## 1. Goal
@@ -199,6 +199,96 @@ All rows belong to the owner, and none are demo rows. The other 11 `User` rows o
 | M5 | Native wrap, only if the PWA proves painful | |
 
 M2 note: `CvProfile.experience` mixes hard facts (dates, company) with wording (bullets) in one JSON column. The fact/wording split the integrity rule requires is a real schema change, not a rename.
+
+M1's gate is still open (section 10). M2 and M3 are built on top of it, but none of this is deployed until the M1 gate has passed.
+
+## 9a. M2 design: Typst and dictation
+
+**Voice stays outside Nexus [handoff].** Tier 0 dictation is Telegram voice note → Hermes transcribes → Hermes calls `patch_cv` → Hermes sends the PNG preview back. Nexus has no Telegram code and no bot token. "Dictation works" means these tools plus the Hermes skill text in `SKILL-CHANGES.md`, tested by a scripted MCP client. A real Telegram run needs the owner and the deployed server.
+
+**`crates/tailor`, the `nexus-tailor` library.** It embeds Typst and owns rendering and the integrity check. No other crate touches Typst.
+
+- **World.** Only three virtual files exist: `/main.typ` (the revision's source), `/facts.json` (the locked facts) and `/nexus.typ` (the read-only template library, embedded in the binary). No filesystem, network, packages or system fonts. `datetime.today()` returns none. Fonts are a small embedded OFL set, chosen for binary size.
+- **Worker process.** Every compile runs in a child, `nexus __render` (hidden subcommand, same binary), with a cleared environment, JSON on stdin and a framed result on stdout. This keeps the server's RSS near M1's and lets a runaway compile die alone. The parent allows one compile at a time and kills the child on wall-clock timeout or when `/proc/<pid>/statm` RSS passes the limit. The child raises its own `oom_score_adj` to 1000, so the kernel takes it first. It doesn't call `setrlimit`: the unit's `SystemCallFilter=~@resources` forbids that. The unit gets `OOMPolicy=continue`. Tests in crates that can't name the binary use an in-process renderer, which is never used by `serve`.
+- **Limits.** Source 256 KiB, 10 pages, PDF 10 MiB, 30 s wall clock. The RSS limit comes from board measurements, and must fit under `MemoryMax`.
+- **Diagnostics.** A compile error is data, not a failure: `{severity, message, file, line, column, endLine, endColumn, hints}`. Agents see it in the tool result. Users never do.
+
+**Data.** Migration `0004`:
+
+| Table | Holds | Rules |
+|---|---|---|
+| `cv_facts` | Singleton. `name`, `contact`, `employment` (`id, company, title, date, location`), `education` (`id, institution, qualification, date, location, details`), `languages` (`name, level`), `metrics` (`key, text`), `allowed_tokens`, `banned_phrases`, `vocabulary`, `version`, `locked_at` | Hard facts. JSON columns are checked with `json_valid` |
+| `cv_facts_history` | Each previous `cv_facts` state with who changed it | Append-only |
+| `cv_profile` | `experience` keeps only `id, tier, bullets`. Name, contact, company, title, date, location and education move to `cv_facts` | `get_cv_profile` merges them, so its JSON is unchanged. The importer splits any real row the same way |
+| `cv_variants` | `id, name` (unique), `application_id`, `head_revision_id` | One variant per purpose. `default` is the base CV |
+| `cv_revisions` | `id, variant_id, number, parent_id, source, source_sha256, facts_version, origin, summary, warnings, created_at` | Immutable, enforced with triggers except for the foreign-key cascade when an application is deleted |
+
+**The integrity gate: voice edits can't change hard facts.**
+
+1. **Facts have one writer.** Nothing reachable from MCP or voice can change locked facts. Owner-only paths lock, unlock or edit them: `nexus cv-facts` on the board, and the dashboard from M3. Only those record a `cv_facts_history` row.
+2. **`upsert_cv_profile` keeps its frozen schema.** While facts are unlocked, it writes facts and wording as old Nexus would, so parity holds. While locked, a change to any fact field, a new `experience.id`, or a new numeric token in wording returns `{"error":{"code":"cv_facts_locked","fields":[...]}}`, and nothing is written.
+3. **`patch_cv` and `revert_cv` need locked facts.** Otherwise: `{"error":{"code":"cv_facts_not_locked"}}`. So an agent can't first rewrite the facts through the profile and then patch to match them.
+4. **Sources refer to facts by id.** The template library renders `#employment("acme")`, `#education("x")`, `#languages()`, `#contact()`, `#metric("key")` from `/facts.json`.
+5. **The check reads rendered output, not source.** Typst can compute text and rewrite it with show rules, so a source scan proves nothing. After a compile, the worker extracts every text run from the laid-out pages, including hidden text and the document's title, author and keywords. `nexus_tailor::check` then decides:
+
+| Rule | Blocks |
+|---|---|
+| Numbers | Any number, year, percentage, currency amount or date token (any Unicode decimal digits, normalized) not in the facts or `allowed_tokens` |
+| Number words | Spelled-out counts next to a time unit, in English and German (`eight years`, `zehn Jahre`), unless `allowed_tokens` has them |
+| Entity binding | Where a fact's company is rendered with a date on the same line, that date must be that entry's. A rendered company must also have its exact title and date in the document |
+| Claim words | Degree, title-seniority and language-level words (`bachelor`, `Studium`, `Senior`, `C1`, `fluent`, ...) unless they occur in the facts or `vocabulary` |
+| Banned phrases | Owner's `banned_phrases`, case-insensitive after Unicode NFKC and whitespace folding, across line breaks. Real phrases live only in the database, never in this repo |
+| Images | Any image in the document, because an SVG or PNG can carry text the check can't read |
+
+   A new capitalized word not found in the facts, `vocabulary` or the previous revision can't be judged reliably, because German capitalizes every noun. It doesn't block: it appears as `reviewTokens` in the response and is stored in the revision's `warnings`, and the dashboard shows it. **This is the honest limit of the gate: an invented proper noun in prose that matches no rule is flagged, not refused.**
+
+6. **Every path enforces it.** `patch_cv`, `revert_cv`, `render_cv_pdf` and `generate_tailored_cv` refuse to store or return output that fails, with `{"error":{"code":"cv_fact_violation","violations":[...]}}`. A revert checks against today's facts. `render_cv_pdf` returning a head revision which no longer passes after a facts change is a violation, not a stale PDF.
+
+**Tools.** Additive, in `contract/mcp-tools.additive.json`, checked by a second golden test. `tools/list` is the 35 frozen tools, in order, then these. All need `mcp:tools`.
+
+| Tool | Behaviour |
+|---|---|
+| `get_cv_source` | `variant` (default `default`), optional `revision`. Returns source, revision number, facts, template-library help |
+| `patch_cv` | `variant`, `expectedRevision` (required), `edits: [{oldText, newText}]` (each `oldText` must match exactly once, or the call fails naming the edit), `summary`, optional `origin`. Atomic. Compile failure returns diagnostics and stores nothing. Creates a variant from `default` with `createFrom` |
+| `render_cv_pdf` | `variant`, optional `revision`, `previewPages` (default 1), `saveToApplicationId`. Returns the PDF and PNG as base64 in MCP resource and image content. Saving makes a normal document, linked to the application |
+| `list_cv_revisions` | Paged, newest first, with `includeDiff` (unified diff against the parent) |
+| `revert_cv` | `variant`, `toRevision`, `expectedRevision`. Adds a new revision with the old source: history never shrinks |
+
+**`generate_tailored_cv`.** The section 4 gap closes: it generates a source from the profile and patch, stores it as a revision of variant `application-<id>` (`origin: generate`), compiles, checks, and stores the PDF as a document linked to the application, replacing the previous one unless that was submitted. The response keeps the frozen fields: `message, documentId, originalName, size, applicationId, company, role`, and `warnings` when any. The parity differences change from "M1 gap" to "PDF bytes differ", since old Nexus used react-pdf.
+
+**Reactive Resume** stays usable until the owner has moved real applications across. Removing the old `/resume` and `/tailor` routes is already part of cutover (section 10).
+
+## 9b. M3 design: PWA and voice
+
+**No WASM.** The handoff said Leptos islands. M1 chose SSR without WASM, and M3 keeps that: server-rendered pages, working forms, and one small hand-written `/assets/app.js` for what forms can't do. That saves a second build target and a large download on a phone, at the cost of the handoff's stack word. It's a recorded change, not an oversight.
+
+**PWA.** `manifest.webmanifest`, icons and `sw.js`. The service worker caches only static assets and one offline page: **never** a page or JSON response, because they hold personal data. Installable on Android Chrome.
+
+**Interactive dashboard.** The owner can append a note, change rating and triage fields, record lifecycle events (the one way to change status), add a contact and archive. Forms call the same tool functions as MCP through one internal entry point, so lifecycle rules and validation can't diverge. Every POST carries a CSRF token signed against the session. Old Nexus's lifecycle rule applies: mixed calls fail whole.
+
+**CV workspace (`/cv`).** Variants, source editor, revision list with diffs and revert, preview, PDF download, and the facts page with lock and unlock. Human edits pass the same integrity check. Preview PNGs are cached in `<data>/cache/renders/`, which backups skip and anything may delete.
+
+**Live preview.** `GET /api/cv/{variant}/events` is an SSE stream of new revisions, fed by an in-process channel. `X-Accel-Buffering: no`, a heartbeat, at most 4 streams, ended at shutdown, and outside the owner pool's 60 s deadline. If the stream breaks, the page falls back to a slow poll.
+
+**Voice session.** OpenAI Realtime over WebRTC, directly from the browser. Push-to-talk is the default, with hands-free as a toggle: one connection path, not two systems.
+
+1. `POST /api/voice/session`: owner session and CSRF. Nexus calls OpenAI with a key from `NEXUS_OPENAI_API_KEY_FILE` and returns a short-lived client secret plus a Nexus voice session id. The real key never reaches the browser. Without a key file, the feature is off and the page says so.
+2. The browser sets up WebRTC with that secret.
+3. The model's function calls arrive on the data channel. The browser sends each to `POST /api/voice/tool`, with the voice session id.
+4. **The allowlist is enforced by the server, on that route.** The session's tool definitions come from it too.
+
+| Allowed | Tools |
+|---|---|
+| CV | `get_cv_source`, `patch_cv` (origin forced to `voice`), `render_cv_pdf` (preview only, no save), `list_cv_revisions`, `revert_cv` |
+| Read-only pipeline | `list_applications_filtered`, `get_application`, `list_application_events` |
+
+**Gate: a voice session can't mark anything `applied`.** No allowed tool writes outside the CV tables. Every other tool, known or unknown, returns `{"error":{"code":"voice_tool_not_allowed"}}` without running. A test tries all tools with lifecycle arguments and compares a hash of every non-CV table before and after. Prompt injection from a job description can therefore reach only the CV tools, where the integrity check still applies.
+
+**Cost and data.** Sessions have a server-enforced lifetime (15 minutes by default) and an idle cut-off in the page. Everything the allowed tools return goes to OpenAI: this includes job descriptions and event notes. The owner opts in by creating the key file.
+
+**Sandbox.** The unit's `IPAddressDeny=any` blocks the call to OpenAI, and OpenAI's addresses aren't stable enough to list. `deploy/voice.conf` is an optional drop-in that lifts the filter, and using voice means accepting that. Nothing else in Nexus makes outbound calls.
+
+**What can't be tested without the owner:** a real Realtime session (costs money and sends data to OpenAI), a phone's microphone permission, and Telegram through Hermes.
 
 ## 10. Open items
 
