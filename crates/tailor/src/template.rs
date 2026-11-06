@@ -9,7 +9,7 @@ use crate::Facts;
 pub const TEMPLATE_HELP: &str = r#"Start a source with `#import "/nexus.typ": *` and `#show: cv` (or `#show: cv.with(lang: "de")`).
 Hard facts are rendered by id, never typed: `#header()`, `#contact()`, `#employment("id")[- a bullet]`, `#employment("id")` for one compact line, `#education("id")`, `#languages()`, `#metric("key")`.
 Wording helpers: `= Section`, `#skills("Category")[Rust, Go]`, `#project("Name", stack: "Rust", url: "example.org")[What it does.]`.
-Only /main.typ, /nexus.typ and /facts.json exist. A page is 200 to 1200 pt on each side. No images, packages, `hide` or `pdf.attach`. Text stays upright and at its natural spacing: no `rotate`, `skew`, mirroring, stretching or negative `tracking`. Emails and URLs come from `#contact()`; a link's text is free unless it shows a contact value."#;
+Only /main.typ, /nexus.typ and /facts.json exist. A page is 200 to 1200 pt on each side. No images, packages, `hide` or `pdf.attach`. Text stays upright and at its natural spacing: no `rotate`, `skew`, mirroring, stretching, `tracking` that stacks or spreads glyphs, or a `stroke` over 0.1 em or in white. Emails and URLs come from `#contact()`; a link's text is free unless it shows a contact value."#;
 
 /// One job in a generated CV. Tier 3 renders as one compact line.
 #[derive(Debug, Clone, Default)]
