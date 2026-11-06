@@ -1,12 +1,14 @@
+use std::sync::Arc;
+
 use base64::Engine;
 use base64::alphabet::STANDARD;
 use base64::engine::general_purpose::STANDARD as ENCODER;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
-use nexus_core::Timestamp;
 use nexus_core::blob::sha256_hex;
 use nexus_core::repo::documents::{
     self as repo, BlobState, Document, DocumentFilter, DocumentPatch, NewDocument,
 };
+use nexus_core::{BlobStore, Db, Timestamp};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -135,13 +137,17 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|e| nexus_core::Error::Io(std::io::Error::other(e)))?
 }
 
-async fn remove_blob_if_unreferenced(ctx: &Ctx, sha256: String) -> nexus_core::Result<()> {
-    let mut conn = ctx.state.db.conn().await?;
-    if repo::blob_is_referenced(&mut conn, &sha256).await? {
+/// Checks and unlinks under the write lock, so neither can interleave with `upload` making sure the
+/// file exists and inserting its row. A file left by a crash here is only an orphan.
+async fn remove_blob_if_unreferenced(db: &Db, sha256: String) -> nexus_core::Result<()> {
+    let mut tx = db.begin_write().await?;
+    if repo::blob_is_referenced(&mut tx, &sha256).await? {
         return Ok(());
     }
-    let blobs = ctx.state.db.blobs().clone();
-    run_blocking(move || blobs.delete(&sha256)).await
+    let blobs = db.blobs().clone();
+    run_blocking(move || blobs.delete(&sha256)).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
@@ -192,8 +198,10 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
         submitted_at: None,
         blob_sha256: String::new(),
     };
+    let bytes = Arc::new(bytes);
+    let put = |blobs: BlobStore, bytes: Arc<Vec<u8>>| move || blobs.put(&bytes);
     let blobs = ctx.state.db.blobs().clone();
-    let Ok(sha256) = run_blocking(move || blobs.put(&bytes)).await else {
+    let Ok(sha256) = run_blocking(put(blobs.clone(), Arc::clone(&bytes))).await else {
         return Ok(text_error("Failed to upload document"));
     };
     let new = NewDocument {
@@ -202,6 +210,12 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     let created = async {
         let mut tx = ctx.state.db.begin_write().await?;
+        // A delete of the last document with this content may have taken the file since `put`.
+        // Writing it again holds the lock, but only in that rare case and for at most 10 MiB, far
+        // below the 10 s other writers wait. From here deletes wait for this commit.
+        if !blobs.exists(&sha256)? {
+            run_blocking(put(blobs, bytes)).await?;
+        }
         let document = repo::create(&mut tx, &new).await?;
         tx.commit().await?;
         nexus_core::Result::Ok(document)
@@ -209,7 +223,7 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     Ok(match created.await {
         Ok(document) => json_result(ctx.doc_json(&document), false),
         Err(_) => {
-            let _ = remove_blob_if_unreferenced(ctx, sha256).await;
+            let _ = remove_blob_if_unreferenced(&ctx.state.db, sha256).await;
             text_error("Failed to upload document")
         }
     })
@@ -323,7 +337,9 @@ pub async fn delete(ctx: &Ctx, args: &Args) -> ToolResult {
         let deleted = repo::delete(&mut tx, existing.id).await.ok()??;
         tx.commit().await.ok()?;
         if let Some(sha256) = deleted.blob_sha256 {
-            remove_blob_if_unreferenced(ctx, sha256).await.ok()?;
+            remove_blob_if_unreferenced(&ctx.state.db, sha256)
+                .await
+                .ok()?;
         }
         Some(text_result("Document deleted"))
     };
@@ -333,6 +349,27 @@ pub async fn delete(ctx: &Ctx, args: &Args) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_reference_being_committed_keeps_the_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let sha256 = db.blobs().put(b"%PDF-1.7 synthetic").unwrap();
+        let mut tx = db.begin_write().await.unwrap();
+        let new = NewDocument {
+            blob_sha256: sha256.clone(),
+            ..Default::default()
+        };
+        repo::create(&mut tx, &new).await.unwrap();
+        let commit = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            tx.commit().await.unwrap();
+        };
+        let (removed, ()) = tokio::join!(remove_blob_if_unreferenced(&db, sha256.clone()), commit);
+        removed.unwrap();
+        assert!(db.blobs().exists(&sha256).unwrap());
+        db.close().await;
+    }
 
     #[test]
     fn base64_follows_the_old_decoder() {

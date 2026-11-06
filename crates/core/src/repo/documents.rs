@@ -373,8 +373,9 @@ pub async fn rename(
 }
 
 /// Port of `deleteDocument`: returns the deleted row, or `None` when it does not exist. The caller
-/// removes the blob afterwards if [`blob_is_referenced`] says nothing else uses it. Run inside
-/// `Db::begin_write`.
+/// removes the blob afterwards if [`blob_is_referenced`] says nothing else uses it, with the check
+/// and the unlink inside one `Db::begin_write`, or an upload of the same content can lose its file.
+/// Run inside `Db::begin_write`.
 pub async fn delete(conn: &mut SqliteConnection, id: i64) -> Result<Option<Document>> {
     let Some(existing) = get(&mut *conn, id).await? else {
         return Ok(None);
