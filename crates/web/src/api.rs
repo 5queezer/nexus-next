@@ -79,10 +79,13 @@ async fn list_applications(
 ) -> ApiResult<Value> {
     let filter = ApplicationFilter {
         status: query.status.into_iter().collect(),
-        search: query.search.filter(|s| !s.is_empty()),
         ..Default::default()
     };
     let mut items = applications::list_filtered(&mut *db.conn().await?, &filter).await?;
+    // SQLite's lower() folds ASCII only; matching here keeps `Ü` and `ö` case-insensitive.
+    if let Some(term) = query.search.as_deref().filter(|s| !s.is_empty()) {
+        items.retain(|a| crate::dashboard::matches_search(a, term));
+    }
     items.retain(|a| match query.archived {
         Archived::Hide => a.archived_at.is_none(),
         Archived::Include => true,

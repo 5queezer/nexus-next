@@ -14,6 +14,10 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+fn percent(value: &str) -> String {
+    value.bytes().map(|b| format!("%{b:02X}")).collect()
+}
+
 const TOKEN: &str = "s3cret-token-value";
 const EVIL: &str = "<script>alert(1)</script>";
 
@@ -100,6 +104,7 @@ async fn pipeline_escapes_text_and_sets_security_headers() {
     let body = String::from_utf8(body).unwrap();
     assert_eq!(status, StatusCode::OK);
     assert!(!body.contains("<script"), "{body}");
+    assert!(!body.contains(" style="), "the CSP blocks inline styles");
     assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(body.contains(&format!("#{id}")));
     assert_eq!(headers["x-content-type-options"], "nosniff");
@@ -149,6 +154,28 @@ async fn pipeline_filters_by_status_archive_and_search() {
 }
 
 #[tokio::test]
+async fn search_folds_case_beyond_ascii_in_dashboard_and_api() {
+    let f = fixture().await;
+    add_app(&f.db, "M\u{fc}nchen Werke", "applied", |_| {}).await;
+    add_app(&f.db, "Se\u{f1}or Pesca", "applied", |fields| {
+        fields.notes = Some(Some("K\u{f6}ln office".to_owned()));
+    })
+    .await;
+    for (term, hit, miss) in [
+        ("m\u{dc}nchen", "M\u{fc}nchen Werke", "Pesca"),
+        ("SE\u{d1}OR", "Se\u{f1}or Pesca", "Werke"),
+        ("k\u{d6}ln", "Pesca", "Werke"),
+    ] {
+        let encoded = percent(term);
+        let page = html(&f.app, &format!("/?q={encoded}")).await;
+        assert!(page.contains(hit) && !page.contains(miss), "{term}");
+        let api = json_of(&f.app, &format!("/api/applications?search={encoded}")).await;
+        assert_eq!(api["items"].as_array().unwrap().len(), 1, "{term}");
+        assert!(api.to_string().contains(hit), "{term}");
+    }
+}
+
+#[tokio::test]
 async fn overdue_follow_ups_stand_out_in_pipeline_and_queue() {
     let f = fixture().await;
     add_app(&f.db, "Late Co", "applied", |fields| {
@@ -169,6 +196,7 @@ async fn overdue_follow_ups_stand_out_in_pipeline_and_queue() {
 
     let pipeline = html(&f.app, "/").await;
     assert_eq!(pipeline.matches("row overdue").count(), 1);
+    assert_eq!(pipeline.matches("Overdue follow-up").count(), 1);
     let queue = html(&f.app, "/queue").await;
     let position = |text: &str| queue.find(text).unwrap_or_else(|| panic!("{text} missing"));
     assert!(position("Overdue (1)") < position("Late Co"));
