@@ -1,0 +1,49 @@
+[Unit]
+Description=Nexus encrypted backup
+Documentation=file:///usr/local/share/doc/nexus/README.md
+
+[Service]
+Type=oneshot
+User=nexus
+Group=nexus
+StateDirectory=nexus nexus-backups
+StateDirectoryMode=0700
+# Public keys only: the board cannot decrypt what it writes.
+LoadCredential=backup-recipient:/etc/nexus/backup-recipient
+ExecStart=/bin/sh -c 'exec /usr/local/bin/nexus backup --data-dir /var/lib/nexus --out /var/lib/nexus-backups/nexus-$(date -u +%%Y%%m%%dT%%H%%M%%SZ).tar.age --recipient-file %d/backup-recipient'
+# Retention: keep the newest 14 backups. Runs only after a successful backup.
+ExecStart=/bin/sh -c 'cd /var/lib/nexus-backups && ls -1t nexus-*.tar.age | tail -n +15 | xargs -r rm --'
+# Off-site sync goes in a drop-in, see deploy/README.md.
+
+TimeoutStartSec=15min
+MemoryMax=384M
+TasksMax=64
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
