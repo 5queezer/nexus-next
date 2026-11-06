@@ -1,7 +1,7 @@
 //! Server-rendered HTML. Leptos escapes every text node and attribute, and no view uses
 //! `inner_html`, so stored text cannot become markup.
 
-use chrono::NaiveDate;
+use chrono_tz::Tz;
 use leptos::prelude::*;
 use leptos::tachys::view::RenderHtml;
 use nexus_core::repo::applications::Application;
@@ -12,7 +12,7 @@ use nexus_core::repo::submissions::Submission;
 use serde_json::Value;
 
 use crate::format::{self, VISIBLE_METADATA};
-use crate::queue::{self, Group};
+use crate::queue::{self, Clock, Group};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Nav {
@@ -75,8 +75,8 @@ fn status_cell(application: &Application) -> impl IntoView {
     }
 }
 
-fn row(application: &Application, today: NaiveDate, show_action: bool) -> impl IntoView {
-    let overdue = queue::group_of(application, today) == Group::Overdue;
+fn row(application: &Application, clock: Clock, show_action: bool) -> impl IntoView {
+    let overdue = queue::group_of(application, clock) == Group::Overdue;
     let classes = format!(
         "row{}{}",
         if overdue { " overdue" } else { "" },
@@ -95,8 +95,14 @@ fn row(application: &Application, today: NaiveDate, show_action: bool) -> impl I
         .then(|| application.next_action.clone())
         .flatten()
         .filter(|action| !action.is_empty());
-    let follow_up = application.follow_up_at.as_ref().map(format::date);
-    let last_contact = application.last_contact.as_ref().map(format::date);
+    let follow_up = application
+        .follow_up_at
+        .as_ref()
+        .map(|at| format::date(at, clock.tz));
+    let last_contact = application
+        .last_contact
+        .as_ref()
+        .map(|at| format::date(at, clock.tz));
     let when_class = match (overdue, follow_up.is_some()) {
         (true, _) => "when overdue",
         (false, true) => "when",
@@ -159,7 +165,7 @@ pub struct PipelineView<'a> {
     pub status: &'a str,
     pub archived: &'a str,
     pub search: &'a str,
-    pub today: NaiveDate,
+    pub clock: Clock,
 }
 
 fn pipeline_href(status: &str, archived: &str, search: &str) -> String {
@@ -215,8 +221,8 @@ pub fn pipeline(v: PipelineView<'_>) -> impl IntoView {
         .sections
         .iter()
         .map(|(title, items)| {
-            let today = v.today;
-            let rows = items.iter().map(|a| row(a, today, false)).collect_view();
+            let clock = v.clock;
+            let rows = items.iter().map(|a| row(a, clock, false)).collect_view();
             view! {
                 <h2 class="group-title">{format!("{title} ({})", items.len())}</h2>
                 {rows}
@@ -251,14 +257,14 @@ pub fn pipeline(v: PipelineView<'_>) -> impl IntoView {
     }
 }
 
-pub fn follow_up_queue(groups: &[(Group, Vec<&Application>)], today: NaiveDate) -> impl IntoView {
+pub fn follow_up_queue(groups: &[(Group, Vec<&Application>)], clock: Clock) -> impl IntoView {
     let body = if groups.is_empty() {
         view! { <p class="empty">"No open follow-ups."</p> }.into_any()
     } else {
         groups
             .iter()
             .map(|(group, items)| {
-                let rows = items.iter().map(|a| row(a, today, true)).collect_view();
+                let rows = items.iter().map(|a| row(a, clock, true)).collect_view();
                 let title = format!("{} ({})", group.title(), items.len());
                 let class = if *group == Group::Overdue {
                     "group-title overdue"
@@ -320,8 +326,8 @@ fn text(value: Option<&str>) -> Option<Fact> {
         .map(|v| Fact::Text(v.to_owned()))
 }
 
-fn stamp(value: &Option<nexus_core::Timestamp>) -> Option<Fact> {
-    value.as_ref().map(|at| Fact::Text(format::date_time(at)))
+fn stamp(value: &Option<nexus_core::Timestamp>, tz: Tz) -> Option<Fact> {
+    value.as_ref().map(|at| Fact::Text(format::moment(at, tz)))
 }
 
 fn list(items: &[Value]) -> Option<Fact> {
@@ -343,14 +349,15 @@ pub struct Detail<'a> {
     pub contacts: &'a [Contact],
     pub documents: &'a [Document],
     pub submissions: &'a [Submission],
-    pub today: NaiveDate,
+    pub clock: Clock,
 }
 
 pub fn detail(d: Detail<'_>) -> impl IntoView {
     let a = d.application;
-    let overdue = queue::group_of(a, d.today) == Group::Overdue;
+    let tz = d.clock.tz;
+    let overdue = queue::group_of(a, d.clock) == Group::Overdue;
     let follow_up = a.follow_up_at.as_ref().map(|at| {
-        let text = format::date(at);
+        let text = format::date(at, tz);
         if overdue {
             Fact::Overdue(text)
         } else {
@@ -375,8 +382,8 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
         ),
         ("Next action", text(a.next_action.as_deref())),
         ("Follow-up", follow_up),
-        ("Last contact", stamp(&a.last_contact)),
-        ("Applied", stamp(&a.applied_at)),
+        ("Last contact", stamp(&a.last_contact, tz)),
+        ("Applied", stamp(&a.applied_at, tz)),
         ("Source", text(a.source.as_deref())),
         ("Incoming source", text(a.incoming_source.as_deref())),
         ("Resume ID", text(a.resume_id.as_deref())),
@@ -425,19 +432,19 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
         ("ATS", text(a.ats_name.as_deref())),
         ("Requisition ID", text(a.requisition_id.as_deref())),
         ("Posting status", text(a.job_liveness.as_deref())),
-        ("Posted", stamp(&a.job_posted_at)),
-        ("Captured", stamp(&a.job_captured_at)),
-        ("Verified", stamp(&a.job_verified_at)),
-        ("Closed", stamp(&a.job_closed_at)),
+        ("Posted", stamp(&a.job_posted_at, tz)),
+        ("Captured", stamp(&a.job_captured_at, tz)),
+        ("Verified", stamp(&a.job_verified_at, tz)),
+        ("Closed", stamp(&a.job_closed_at, tz)),
     ]);
     let record = facts(vec![
         (
             "Created",
-            Some(Fact::Text(format::date_time(&a.created_at))),
+            Some(Fact::Text(format::date_time(&a.created_at, tz))),
         ),
         (
             "Updated",
-            Some(Fact::Text(format::date_time(&a.updated_at))),
+            Some(Fact::Text(format::date_time(&a.updated_at, tz))),
         ),
         (
             "Event version",
@@ -446,7 +453,7 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
     ]);
     let archived = a.archived_at.as_ref().map(|at| {
         view! {
-            <p class="banner">{format!("Archived on {}. It stays out of the default pipeline and the calendar.", format::date_time(at))}</p>
+            <p class="banner">{format!("Archived on {}. It stays out of the default pipeline and the calendar.", format::date_time(at, tz))}</p>
         }
     });
     let prose = |heading: &'static str, body: Option<&str>| {
@@ -488,13 +495,13 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
         <div class="card">{role}</div>
         {description}
         <h2>{format!("Timeline ({})", d.events.len())}</h2>
-        {timeline(d.events, d.contacts)}
+        {timeline(d.events, d.contacts, tz)}
         <h2>{format!("Contacts ({})", d.contacts.len())}</h2>
         {contacts(d.contacts)}
         <h2>{format!("Documents ({})", d.documents.len())}</h2>
-        {documents(d.documents)}
+        {documents(d.documents, tz)}
         <h2>{format!("Submissions ({})", d.submissions.len())}</h2>
-        {submissions(d.submissions, d.documents)}
+        {submissions(d.submissions, d.documents, tz)}
         <h2>"Record"</h2>
         <div class="card">{record}</div>
     }
@@ -504,7 +511,7 @@ fn none_yet(what: &str) -> impl IntoView {
     view! { <div class="card"><p class="empty" style="padding:12px 0">{format!("No {what}.")}</p></div> }
 }
 
-fn timeline(events: &[ApplicationEvent], contacts: &[Contact]) -> impl IntoView {
+fn timeline(events: &[ApplicationEvent], contacts: &[Contact], tz: Tz) -> impl IntoView {
     if events.is_empty() {
         return none_yet("events").into_any();
     }
@@ -517,7 +524,7 @@ fn timeline(events: &[ApplicationEvent], contacts: &[Contact]) -> impl IntoView 
             if let Some(metadata) = metadata {
                 for (key, label) in VISIBLE_METADATA {
                     let text = match metadata.get(key) {
-                        Some(Value::String(s)) if !s.is_empty() => format::metadata_text(s),
+                        Some(Value::String(s)) if !s.is_empty() => format::metadata_text(s, tz),
                         Some(Value::Number(n)) => n.to_string(),
                         Some(Value::Bool(b)) => b.to_string(),
                         _ => continue,
@@ -549,7 +556,7 @@ fn timeline(events: &[ApplicationEvent], contacts: &[Contact]) -> impl IntoView 
                 <li>
                     <div class="t">
                         <b>{format::event_label(&event.r#type)}</b>
-                        <time datetime=event.occurred_at.to_string()>{format::date_time(&event.occurred_at)}</time>
+                        <time datetime=event.occurred_at.to_string()>{format::date_time(&event.occurred_at, tz)}</time>
                     </div>
                     {(!by.is_empty()).then(|| view! { <span class="dim">{by}</span> })}
                     {note.map(|note| view! { <p class="note">{note}</p> })}
@@ -594,7 +601,7 @@ fn contacts(contacts: &[Contact]) -> impl IntoView {
     view! { <div class="card"><ul class="items">{items}</ul></div> }.into_any()
 }
 
-fn documents(documents: &[Document]) -> impl IntoView {
+fn documents(documents: &[Document], tz: Tz) -> impl IntoView {
     if documents.is_empty() {
         return none_yet("documents").into_any();
     }
@@ -616,7 +623,7 @@ fn documents(documents: &[Document]) -> impl IntoView {
                 format::humanize(&doc.state),
                 format::file_size(doc.size),
                 doc.version,
-                format::date(&doc.uploaded_at),
+                format::date(&doc.uploaded_at, tz),
             );
             view! {
                 <li>
@@ -655,7 +662,7 @@ fn answers(answers: &Value) -> impl IntoView {
     view! { {rows} }
 }
 
-fn submissions(submissions: &[Submission], documents: &[Document]) -> impl IntoView {
+fn submissions(submissions: &[Submission], documents: &[Document], tz: Tz) -> impl IntoView {
     if submissions.is_empty() {
         return none_yet("submissions").into_any();
     }
@@ -706,7 +713,7 @@ fn submissions(submissions: &[Submission], documents: &[Document]) -> impl IntoV
             let overview = facts(vec![
                 (
                     "Submitted",
-                    Some(Fact::Text(format::date_time(&s.submitted_at))),
+                    Some(Fact::Text(format::date_time(&s.submitted_at, tz))),
                 ),
                 ("Application URL", s.application_url.clone().map(Fact::Link)),
                 ("ATS", text(s.ats_name.as_deref())),

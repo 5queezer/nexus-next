@@ -7,27 +7,34 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Router, middleware};
-use chrono::{NaiveDate, Utc};
+use chrono_tz::Tz;
 use nexus_core::Db;
 use nexus_core::repo::applications::{self, Application};
 use nexus_core::repo::{contacts, documents, events, submissions};
 use serde::Deserialize;
 
-use crate::queue::{self, Group};
+use crate::queue::{self, Clock, Group};
 use crate::views::{self, Detail, Nav, PipelineView};
 
 const STATUSES: [&str; 5] = ["interview", "offer", "applied", "inbound", "rejected"];
 const CSS: &str = include_str!("style.css");
 
-/// Mounts `/`, `/queue`, `/applications/{id}` and `/assets/app.css`. Auth is the caller's.
-pub fn dashboard_router(db: Db) -> Router {
+#[derive(Clone)]
+struct Dashboard {
+    db: Db,
+    tz: Tz,
+}
+
+/// Mounts `/`, `/queue`, `/applications/{id}` and `/assets/app.css`, showing times in `tz`. Auth
+/// is the caller's.
+pub fn dashboard_router(db: Db, tz: Tz) -> Router {
     Router::new()
         .route("/", get(pipeline))
         .route("/queue", get(follow_ups))
         .route("/applications/{id}", get(application))
         .route("/assets/app.css", get(stylesheet))
         .layer(middleware::map_response(crate::secure))
-        .with_state(db)
+        .with_state(Dashboard { db, tz })
 }
 
 struct PageError(StatusCode);
@@ -60,10 +67,6 @@ impl IntoResponse for PageError {
 }
 
 type Page = Result<Html<String>, PageError>;
-
-fn today() -> NaiveDate {
-    Utc::now().date_naive()
-}
 
 async fn stylesheet() -> impl IntoResponse {
     (
@@ -98,15 +101,18 @@ fn matches_search(application: &Application, term: &str) -> bool {
     .any(|field| field.to_lowercase().contains(&term))
 }
 
-fn overdue_count(all: &[Application], today: NaiveDate) -> usize {
+fn overdue_count(all: &[Application], clock: Clock) -> usize {
     all.iter()
-        .filter(|a| a.archived_at.is_none() && queue::group_of(a, today) == Group::Overdue)
+        .filter(|a| a.archived_at.is_none() && queue::group_of(a, clock) == Group::Overdue)
         .count()
 }
 
-async fn pipeline(State(db): State<Db>, Query(query): Query<PipelineQuery>) -> Page {
+async fn pipeline(
+    State(Dashboard { db, tz }): State<Dashboard>,
+    Query(query): Query<PipelineQuery>,
+) -> Page {
     let all = applications::list(&mut *db.conn().await?).await?;
-    let today = today();
+    let clock = Clock::now(tz);
     let archived = match query.archived.as_deref() {
         Some("include") => "include",
         Some("only") => "only",
@@ -139,7 +145,7 @@ async fn pipeline(State(db): State<Db>, Query(query): Query<PipelineQuery>) -> P
                 scoped.iter().copied().filter(|a| a.status == *s).collect();
             items.sort_by_key(|a| {
                 (
-                    queue::group_of(a, today) != Group::Overdue,
+                    queue::group_of(a, clock) != Group::Overdue,
                     a.follow_up_at.is_none(),
                     a.follow_up_at.clone(),
                     Reverse(a.updated_at.clone()),
@@ -156,22 +162,22 @@ async fn pipeline(State(db): State<Db>, Query(query): Query<PipelineQuery>) -> P
         status,
         archived,
         search,
-        today,
+        clock,
     });
-    let overdue = overdue_count(&all, today);
+    let overdue = overdue_count(&all, clock);
     Ok(Html(views::page("Pipeline", Nav::Pipeline, overdue, view)))
 }
 
-async fn follow_ups(State(db): State<Db>) -> Page {
+async fn follow_ups(State(Dashboard { db, tz }): State<Dashboard>) -> Page {
     let all = applications::list(&mut *db.conn().await?).await?;
-    let today = today();
+    let clock = Clock::now(tz);
     let open = all.iter().filter(|a| a.archived_at.is_none());
-    let groups = queue::build(open, today);
+    let groups = queue::build(open, clock);
     let overdue = groups
         .iter()
         .find(|(group, _)| *group == Group::Overdue)
         .map_or(0, |(_, items)| items.len());
-    let view = views::follow_up_queue(&groups, today);
+    let view = views::follow_up_queue(&groups, clock);
     Ok(Html(views::page(
         "Follow-ups",
         Nav::FollowUps,
@@ -180,7 +186,10 @@ async fn follow_ups(State(db): State<Db>) -> Page {
     )))
 }
 
-async fn application(State(db): State<Db>, Path(id): Path<String>) -> Page {
+async fn application(
+    State(Dashboard { db, tz }): State<Dashboard>,
+    Path(id): Path<String>,
+) -> Page {
     let id: i64 = id.parse().map_err(|_| PageError(StatusCode::NOT_FOUND))?;
     let mut conn = db.conn().await?;
     let application = applications::get(&mut conn, id)
@@ -190,15 +199,15 @@ async fn application(State(db): State<Db>, Path(id): Path<String>) -> Page {
     let contacts = contacts::list_for_application(&mut conn, id).await?;
     let documents = documents::list_for_application(&mut conn, id).await?;
     let submissions = submissions::list_for_application(&mut conn, id, true).await?;
-    let today = today();
-    let overdue = overdue_count(&applications::list(&mut conn).await?, today);
+    let clock = Clock::now(tz);
+    let overdue = overdue_count(&applications::list(&mut conn).await?, clock);
     let view = views::detail(Detail {
         application: &application,
         events: &events,
         contacts: &contacts,
         documents: &documents,
         submissions: &submissions,
-        today,
+        clock,
     });
     let title = format!("{} #{}", application.company, application.id);
     Ok(Html(views::page(&title, Nav::None, overdue, view)))

@@ -230,7 +230,7 @@ impl Calendar {
             "DTSTAMP:{}",
             utc(application.updated_at.to_datetime())
         ));
-        if queue::is_date_only(at) {
+        if crate::format::is_date_only(at) {
             self.line(&format!(
                 "DTSTART;VALUE=DATE:{}",
                 at.to_datetime().format("%Y%m%d")
