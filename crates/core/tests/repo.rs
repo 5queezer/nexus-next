@@ -1431,6 +1431,7 @@ async fn oauth_codes_are_single_use_and_tokens_store_json_scopes() {
 
     let token = oauth::NewOAuthToken {
         token_hash: "hash".into(),
+        grant_id: "grant-1".to_owned(),
         client_id: "mcp_1".into(),
         scopes: vec!["mcp:tools".into(), "mcp:submissions".into()],
         sensitive_consent_version: 1,
@@ -1449,21 +1450,67 @@ async fn oauth_codes_are_single_use_and_tokens_store_json_scopes() {
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        oauth::delete_refresh_token(&mut conn, refresh.id)
+    assert_eq!(refresh.rotated_at, None);
+
+    oauth::retire_refresh_tokens(&mut conn, "grant-1", &now)
+        .await
+        .unwrap();
+    let retired = oauth::find_refresh_token(&mut conn, "hash")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.rotated_at, Some(now.clone()));
+    let later = now.plus(Duration::seconds(5));
+    oauth::retire_refresh_tokens(&mut conn, "grant-1", &later)
+        .await
+        .unwrap();
+    assert_eq!(
+        oauth::find_refresh_token(&mut conn, "hash")
             .await
             .unwrap()
+            .unwrap()
+            .rotated_at,
+        Some(now.clone()),
+        "retiring again keeps the first time"
     );
-    assert!(
-        !oauth::delete_refresh_token(&mut conn, refresh.id)
-            .await
-            .unwrap()
+
+    let other = oauth::NewOAuthToken {
+        grant_id: "grant-2".to_owned(),
+        token_hash: "other".into(),
+        ..token
+    };
+    oauth::insert_access_token(&mut conn, &other).await.unwrap();
+    assert_eq!(
+        oauth::revoke_grant(&mut conn, "grant-1").await.unwrap(),
+        oauth::Revoked {
+            access_tokens: 1,
+            refresh_tokens: 1
+        }
     );
     assert!(
         oauth::find_refresh_token(&mut conn, "hash")
             .await
             .unwrap()
             .is_none()
+    );
+    assert!(
+        oauth::find_access_token(&mut conn, "other")
+            .await
+            .unwrap()
+            .is_some(),
+        "another grant is untouched"
+    );
+    assert_eq!(
+        oauth::revoke_all(&mut conn).await.unwrap(),
+        oauth::Revoked {
+            access_tokens: 1,
+            refresh_tokens: 0
+        }
+    );
+    assert_eq!(
+        oauth::count_clients(&mut conn).await.unwrap(),
+        1,
+        "clients stay"
     );
 }
 

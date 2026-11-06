@@ -1,12 +1,15 @@
+use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
+use nexus_core::Db;
 use nexus_core::import::{self, ImportOptions};
 use nexus_server::backup;
 use nexus_server::config::ServeArgs;
 use nexus_server::serve;
 use tokio::signal::unix::{SignalKind, signal};
+use tracing::Level;
 
 #[derive(Parser)]
 #[command(
@@ -38,6 +41,20 @@ enum Command {
     },
     /// Run the server.
     Serve(ServeArgs),
+    /// Set or change the owner passphrase, read from a prompt or stdin. Revokes all OAuth grants and
+    /// API tokens. Restart the server afterwards.
+    SetPassphrase {
+        #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
+        data_dir: PathBuf,
+    },
+    /// Issue the API token and print it once. Revokes any earlier API token.
+    IssueToken {
+        #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
+        data_dir: PathBuf,
+        /// A label for your own reference.
+        #[arg(long, default_value = "default")]
+        name: String,
+    },
     /// Write an encrypted, verified backup. Safe while the server runs.
     Backup {
         #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
@@ -73,6 +90,22 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
+/// On a terminal, asks twice without echo. Otherwise reads one line from stdin. Never from argv,
+/// which every local user can read.
+fn read_new_passphrase() -> anyhow::Result<String> {
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        let passphrase = rpassword::prompt_password("New owner passphrase: ")?;
+        if rpassword::prompt_password("Repeat it: ")? != passphrase {
+            bail!("the two entries differ, nothing was changed");
+        }
+        return Ok(passphrase);
+    }
+    let mut line = String::new();
+    stdin.lock().read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
@@ -100,6 +133,34 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .with_context(|| format!("cannot bind {}", config.bind))?;
             serve::run(config, listener, shutdown_signal()).await?;
+        }
+        Command::SetPassphrase { data_dir } => {
+            serve::init_logging(Level::INFO, std::io::stderr);
+            if std::env::var_os("NEXUS_OWNER_PASSPHRASE_HASH").is_some() {
+                bail!("NEXUS_OWNER_PASSPHRASE_HASH is set and would override the new passphrase");
+            }
+            let passphrase = read_new_passphrase()?;
+            let db = Db::open(&data_dir)
+                .await
+                .context("cannot open the database")?;
+            let path = nexus_auth::owner_passphrase_file(&data_dir);
+            let result = nexus_auth::set_owner_passphrase(&db, &path, &passphrase).await;
+            db.close().await;
+            result?;
+            eprintln!(
+                "Passphrase hash written to {}. Restart nexus for it to apply: until then a running \
+                 server still accepts the old passphrase. Each OAuth client must authorize again.",
+                path.display()
+            );
+        }
+        Command::IssueToken { data_dir, name } => {
+            serve::init_logging(Level::INFO, std::io::stderr);
+            let db = Db::open(&data_dir)
+                .await
+                .context("cannot open the database")?;
+            let token = nexus_auth::issue_api_token(&db, &name).await;
+            db.close().await;
+            println!("{}", token?);
         }
         Command::Backup {
             data_dir,

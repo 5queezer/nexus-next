@@ -8,6 +8,7 @@ rust-version = "1.94"
 publish = false
 
 [workspace.dependencies]
+nexus-auth = { path = "crates/auth" }
 nexus-core = { path = "crates/core" }
 nexus-web = { path = "crates/web" }
 
@@ -21,6 +22,7 @@ base64 = "0.22.1"
 hmac = "0.12.1"
 percent-encoding = "2.3.2"
 rand = "0.10.3"
+rpassword = "7.5.4"
 url = "2.5.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

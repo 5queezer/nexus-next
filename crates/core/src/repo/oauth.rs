@@ -128,7 +128,22 @@ pub async fn consume_auth_code(
     .await?)
 }
 
-/// A stored access or refresh token; the two tables have the same shape.
+/// The code row with this stored hash, in any state. Token issuance goes through
+/// `consume_auth_code`; this is how a replay of an already used code is recognised.
+pub async fn find_auth_code(
+    conn: &mut SqliteConnection,
+    code: &str,
+) -> Result<Option<OAuthAuthCode>> {
+    Ok(
+        sqlx::query_as("SELECT * FROM oauth_auth_codes WHERE code = ?")
+            .bind(code)
+            .fetch_optional(conn)
+            .await?,
+    )
+}
+
+/// A stored access or refresh token; the two tables have the same shape, except that only refresh
+/// tokens have `rotated_at`.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct OAuthToken {
     pub id: i64,
@@ -138,11 +153,15 @@ pub struct OAuthToken {
     pub sensitive_consent_version: i64,
     pub expires_at: Timestamp,
     pub created_at: Timestamp,
+    pub grant_id: String,
+    #[sqlx(default)]
+    pub rotated_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewOAuthToken {
     pub token_hash: String,
+    pub grant_id: String,
     pub client_id: String,
     pub scopes: Vec<String>,
     pub sensitive_consent_version: i64,
@@ -153,8 +172,8 @@ pub async fn insert_access_token(conn: &mut SqliteConnection, token: &NewOAuthTo
     insert_token(
         conn,
         token,
-        "INSERT INTO oauth_access_tokens (token_hash, client_id, scopes,
-        sensitive_consent_version, expires_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO oauth_access_tokens (token_hash, grant_id, client_id, scopes,
+        sensitive_consent_version, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .await
 }
@@ -166,8 +185,8 @@ pub async fn insert_refresh_token(
     insert_token(
         conn,
         token,
-        "INSERT INTO oauth_refresh_tokens (token_hash, client_id, scopes,
-        sensitive_consent_version, expires_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO oauth_refresh_tokens (token_hash, grant_id, client_id, scopes,
+        sensitive_consent_version, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .await
 }
@@ -179,6 +198,7 @@ async fn insert_token(
 ) -> Result<()> {
     sqlx::query(sql)
         .bind(&token.token_hash)
+        .bind(&token.grant_id)
         .bind(&token.client_id)
         .bind(Json(&token.scopes))
         .bind(token.sensitive_consent_version)
@@ -212,13 +232,62 @@ pub async fn find_refresh_token(
     )
 }
 
-/// Deletes a refresh token for rotation. False if it was already gone, so a concurrent reuse loses.
-pub async fn delete_refresh_token(conn: &mut SqliteConnection, id: i64) -> Result<bool> {
-    let done = sqlx::query("DELETE FROM oauth_refresh_tokens WHERE id = ?")
-        .bind(id)
+/// Retires every live refresh token of a grant, so a grant has at most one live token. Retired
+/// rows stay until they expire, for replay detection.
+pub async fn retire_refresh_tokens(
+    conn: &mut SqliteConnection,
+    grant_id: &str,
+    now: &Timestamp,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE oauth_refresh_tokens SET rotated_at = ? WHERE grant_id = ? AND rotated_at IS NULL",
+    )
+    .bind(now)
+    .bind(grant_id)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// How many rows a revocation deleted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Revoked {
+    pub access_tokens: u64,
+    pub refresh_tokens: u64,
+}
+
+/// Deletes every access and refresh token descending from one authorization.
+pub async fn revoke_grant(conn: &mut SqliteConnection, grant_id: &str) -> Result<Revoked> {
+    let access = sqlx::query("DELETE FROM oauth_access_tokens WHERE grant_id = ?")
+        .bind(grant_id)
+        .execute(&mut *conn)
+        .await?;
+    let refresh = sqlx::query("DELETE FROM oauth_refresh_tokens WHERE grant_id = ?")
+        .bind(grant_id)
         .execute(conn)
         .await?;
-    Ok(done.rows_affected() == 1)
+    Ok(Revoked {
+        access_tokens: access.rows_affected(),
+        refresh_tokens: refresh.rows_affected(),
+    })
+}
+
+/// Deletes every code and token of every client. Client registrations stay. Run inside
+/// `Db::begin_write`.
+pub async fn revoke_all(conn: &mut SqliteConnection) -> Result<Revoked> {
+    sqlx::query("DELETE FROM oauth_auth_codes")
+        .execute(&mut *conn)
+        .await?;
+    let access = sqlx::query("DELETE FROM oauth_access_tokens")
+        .execute(&mut *conn)
+        .await?;
+    let refresh = sqlx::query("DELETE FROM oauth_refresh_tokens")
+        .execute(conn)
+        .await?;
+    Ok(Revoked {
+        access_tokens: access.rows_affected(),
+        refresh_tokens: refresh.rows_affected(),
+    })
 }
 
 pub async fn count_clients(conn: &mut SqliteConnection) -> Result<i64> {
@@ -249,10 +318,22 @@ pub async fn evict_oldest_unused_client(
     Ok(done.rows_affected() == 1)
 }
 
-/// Deletes expired codes and tokens. Used codes go at expiry too: after that they fail either way.
-pub async fn prune_expired(conn: &mut SqliteConnection, now: &Timestamp) -> Result<()> {
+/// Deletes expired tokens and unused codes. A used code stays until `used_code_cutoff`, because
+/// presenting it again revokes its grant, and that must work for as long as the grant's tokens live.
+pub async fn prune_expired(
+    conn: &mut SqliteConnection,
+    now: &Timestamp,
+    used_code_cutoff: &Timestamp,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM oauth_auth_codes
+         WHERE (used = 0 AND expires_at <= ?) OR (used = 1 AND expires_at <= ?)",
+    )
+    .bind(now)
+    .bind(used_code_cutoff)
+    .execute(&mut *conn)
+    .await?;
     for sql in [
-        "DELETE FROM oauth_auth_codes WHERE expires_at <= ?",
         "DELETE FROM oauth_access_tokens WHERE expires_at <= ?",
         "DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?",
     ] {

@@ -2,6 +2,7 @@
 //! in one way: approval is a POST with a session-bound signed token, never a followable GET link.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -50,6 +51,11 @@ const MAX_CLIENTS: i64 = 50;
 const EVICTION_MIN_AGE_MINUTES: i64 = 10;
 const MAX_CLIENT_NAME_CHARS: usize = 200;
 const CHALLENGE_LEN: usize = 43;
+/// How long a rotated refresh token may be presented again without counting as a replay. Both MCP
+/// SDKs keep the old token when a refresh response is lost, and retry it, and an unattended agent
+/// can't re-consent. A grant still has one live refresh token: a retry supersedes the token issued
+/// before it, so if a thief won the window, the real client's next refresh exposes them.
+const REFRESH_RETRY_GRACE_SECONDS: i64 = 30;
 
 const BASIC_BASE64: GeneralPurpose = GeneralPurpose::new(
     &alphabet::STANDARD,
@@ -102,7 +108,14 @@ fn bad_request(error: &str, description: &str) -> Reject {
     oauth_error(StatusCode::BAD_REQUEST, error, description)
 }
 
-fn too_many_requests(description: &str, retry_after: u64) -> Reject {
+fn too_many_requests(route: &str, source: &str, description: &str, retry_after: u64) -> Reject {
+    tracing::warn!(
+        event = "rate_limited",
+        route,
+        source,
+        retry_after,
+        "rate limit hit"
+    );
     Reject(Box::new(
         (
             StatusCode::TOO_MANY_REQUESTS,
@@ -158,7 +171,7 @@ struct ClientMetadata {
     token_endpoint_auth_method: Option<String>,
 }
 
-fn register_failed() -> Reject {
+fn registration_error() -> Reject {
     oauth_error(
         StatusCode::INTERNAL_SERVER_ERROR,
         "server_error",
@@ -183,6 +196,11 @@ fn validate_registered_redirect(uri: &Value) -> Result<String, Reject> {
             parsed.scheme()
         )));
     }
+    if parsed.fragment().is_some() {
+        return Err(invalid_metadata(&format!(
+            "redirect_uri must not contain a fragment: {shown}"
+        )));
+    }
     Ok(shown)
 }
 
@@ -197,10 +215,12 @@ pub(crate) async fn register(
         .register_ip_limit
         .check(&client, now)
         .and_then(|()| state.0.register_global_limit.check(GLOBAL_KEY, now))
-        .map_err(|retry| too_many_requests("Too many registration requests", retry))?;
+        .map_err(|retry| {
+            too_many_requests("register", &client, "Too many registration requests", retry)
+        })?;
 
-    // Old Nexus answers an unparseable body with this 500, from a catch-all.
-    let body: Value = serde_json::from_slice(&body).map_err(|_| register_failed())?;
+    let body: Value = serde_json::from_slice(&body)
+        .map_err(|_| invalid_metadata("Request body is not valid JSON"))?;
     let uris = body
         .get("redirect_uris")
         .and_then(Value::as_array)
@@ -210,8 +230,8 @@ pub(crate) async fn register(
         .iter()
         .map(validate_registered_redirect)
         .collect::<Result<Vec<_>, _>>()?;
-    let metadata: ClientMetadata =
-        serde_json::from_value(body.clone()).map_err(|_| register_failed())?;
+    let metadata: ClientMetadata = serde_json::from_value(body.clone())
+        .map_err(|_| invalid_metadata("Client metadata has a field of the wrong type"))?;
     if metadata
         .client_name
         .as_ref()
@@ -240,7 +260,7 @@ pub(crate) async fn register(
 
     let Some(created) = store_client(&state, &new_client).await.map_err(|error| {
         tracing::error!(%error, "client registration failed");
-        register_failed()
+        registration_error()
     })?
     else {
         return Err(oauth_error(
@@ -250,6 +270,13 @@ pub(crate) async fn register(
         ));
     };
 
+    tracing::info!(
+        event = "client_registered",
+        client = %created.client_id,
+        public = client_secret.is_none(),
+        source = %client,
+        "OAuth client registered"
+    );
     let mut response = json!({ "client_id": created.client_id });
     if let Some(secret) = client_secret {
         response["client_secret"] = json!(secret);
@@ -269,6 +296,12 @@ pub(crate) async fn register(
         .into_response())
 }
 
+/// A used code is kept this long past its expiry: long enough for every token it can have produced
+/// to have expired, unless rotation has kept the grant going.
+pub(crate) fn used_code_cutoff(now: &Timestamp) -> Timestamp {
+    now.plus(Duration::days(-REFRESH_TOKEN_TTL_DAYS))
+}
+
 /// Inserts a client, keeping the table at or below `MAX_CLIENTS`. Unused clients are evicted so
 /// junk registrations can never lock out a real client; `None` means every client is in use.
 async fn store_client(
@@ -278,7 +311,7 @@ async fn store_client(
     let mut tx = state.0.db.begin_write().await?;
     if repo::count_clients(&mut tx).await? >= MAX_CLIENTS {
         let now = Timestamp::now();
-        repo::prune_expired(&mut tx, &now).await?;
+        repo::prune_expired(&mut tx, &now, &used_code_cutoff(&now)).await?;
         let cutoff = now.plus(Duration::minutes(-EVICTION_MIN_AGE_MINUTES));
         if !repo::evict_oldest_unused_client(&mut tx, &cutoff).await? {
             return Ok(None);
@@ -307,6 +340,9 @@ fn is_redirect_uri_allowed(registered: &[String], requested: &str) -> bool {
     let Ok(requested) = Url::parse(requested) else {
         return false;
     };
+    if requested.fragment().is_some() {
+        return false;
+    }
     registered.iter().any(|uri| {
         is_loopback_redirect_uri(uri)
             && Url::parse(uri).is_ok_and(|registered| {
@@ -357,13 +393,30 @@ fn is_s256_challenge(challenge: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+fn limit_authorize(state: &AuthState, source: &str) -> Result<(), Reject> {
+    state
+        .0
+        .authorize_limit
+        .check(source, Instant::now())
+        .map_err(|retry| {
+            too_many_requests(
+                "authorize",
+                source,
+                "Too many authorization requests",
+                retry,
+            )
+        })
+}
+
 /// Validates in old Nexus's order and with its messages. An omitted `code_challenge_method` stays
 /// accepted as old Nexus does: the challenge is always checked as S256, so `plain` can't succeed.
 pub(crate) async fn authorize(
     State(state): State<AuthState>,
+    ClientKey(source): ClientKey,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Response, Reject> {
+    limit_authorize(&state, &source)?;
     let query = uri.query().unwrap_or("");
     // The whole query travels through /login as `next`, which refuses anything longer.
     if query.len() + "/api/mcp/authorize?".len() > MAX_NEXT_BYTES {
@@ -498,9 +551,11 @@ fn consent_refused(status: StatusCode, message: &str) -> Reject {
 /// The consent form's POST: issues a code for exactly what the signed token says was shown.
 pub(crate) async fn approve(
     State(state): State<AuthState>,
+    ClientKey(source): ClientKey,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Reject> {
+    limit_authorize(&state, &source)?;
     const RESTART: &str = "Start the connection again from your client.";
     let Some(session) = current_session(&state, &headers) else {
         return Err(consent_refused(
@@ -532,11 +587,12 @@ pub(crate) async fn approve(
 
     let scopes: Vec<String> = consent.scope.split(' ').map(str::to_owned).collect();
     let code = URL_SAFE_NO_PAD.encode(random_bytes());
+    let code_hash = sha256_hex(&code);
     repo::insert_auth_code(
         &mut conn,
         &NewAuthCode {
-            code: sha256_hex(&code),
-            client_id: consent.client_id,
+            code: code_hash.clone(),
+            client_id: consent.client_id.clone(),
             redirect_uri: consent.redirect_uri.clone(),
             code_challenge: consent.code_challenge,
             sensitive_consent_version: if consent.scope.split(' ').any(|s| s == SCOPE_SUBMISSIONS) {
@@ -550,6 +606,14 @@ pub(crate) async fn approve(
     )
     .await?;
 
+    tracing::info!(
+        event = "consent_granted",
+        client = %consent.client_id,
+        scopes = %consent.scope,
+        grant = grant_label(&code_hash),
+        "owner approved an OAuth client"
+    );
+
     let callback = callback_url(&consent.redirect_uri, &code, consent.state.as_deref())
         .ok_or_else(|| consent_refused(StatusCode::BAD_REQUEST, RESTART))?;
     Ok((
@@ -557,6 +621,11 @@ pub(crate) async fn approve(
         Redirect::to(callback.as_str()),
     )
         .into_response())
+}
+
+/// Enough of a grant id to follow one grant through the logs.
+fn grant_label(grant_id: &str) -> &str {
+    &grant_id[..grant_id.len().min(12)]
 }
 
 /// `URLSearchParams.set` semantics: a registered query keeps its other parameters.
@@ -645,12 +714,13 @@ pub(crate) async fn token(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, Reject> {
-    if let Err(retry) = state
-        .0
-        .token_limit
-        .check(&client_key, std::time::Instant::now())
-    {
-        return Err(too_many_requests("Too many token requests", retry));
+    if let Err(retry) = state.0.token_limit.check(&client_key, Instant::now()) {
+        return Err(too_many_requests(
+            "token",
+            &client_key,
+            "Too many token requests",
+            retry,
+        ));
     }
 
     let params = token_params(&headers, &body);
@@ -718,6 +788,7 @@ pub(crate) async fn token(
 
 async fn issue_tokens(
     conn: &mut sqlx::SqliteConnection,
+    grant_id: &str,
     client_id: &str,
     access_scopes: Vec<String>,
     refresh_scopes: Vec<String>,
@@ -731,6 +802,7 @@ async fn issue_tokens(
         conn,
         &NewOAuthToken {
             token_hash: sha256_hex(&access_token),
+            grant_id: grant_id.to_owned(),
             client_id: client_id.to_owned(),
             scopes: access_scopes,
             sensitive_consent_version,
@@ -742,6 +814,7 @@ async fn issue_tokens(
         conn,
         &NewOAuthToken {
             token_hash: sha256_hex(&refresh_token),
+            grant_id: grant_id.to_owned(),
             client_id: client_id.to_owned(),
             scopes: refresh_scopes,
             sensitive_consent_version,
@@ -759,6 +832,8 @@ async fn issue_tokens(
 }
 
 /// The code is consumed before PKCE is checked, and that sticks: a wrong verifier burns the code.
+/// Presenting a used code again means it leaked, so the tokens it produced are revoked (RFC 6749
+/// §4.1.2). Whoever holds a code may do that, whichever client they claim to be.
 async fn exchange_auth_code(
     state: &AuthState,
     code: &str,
@@ -766,25 +841,41 @@ async fn exchange_auth_code(
     redirect_uri: &str,
     verifier: &str,
 ) -> nexus_core::error::Result<Option<TokenResponse>> {
+    let code_hash = sha256_hex(code);
     let mut tx = state.0.db.begin_write().await?;
     let Some(auth_code) = repo::consume_auth_code(
         &mut tx,
-        &sha256_hex(code),
+        &code_hash,
         client_id,
         redirect_uri,
         &Timestamp::now(),
     )
     .await?
     else {
+        if let Some(used) = repo::find_auth_code(&mut tx, &code_hash)
+            .await?
+            .filter(|code| code.used)
+        {
+            let revoked = repo::revoke_grant(&mut tx, &code_hash).await?;
+            tx.commit().await?;
+            log_replay("authorization_code", &used.client_id, &code_hash, revoked);
+        }
         return Ok(None);
     };
     if !secret_eq(&sha256_base64url(verifier), &auth_code.code_challenge) {
         tx.commit().await?;
+        tracing::warn!(
+            event = "pkce_failure",
+            client = %auth_code.client_id,
+            grant = grant_label(&code_hash),
+            "wrong code_verifier burned an authorization code"
+        );
         return Ok(None);
     }
     let granted = effective_mcp_scopes(&auth_code.scopes.0, auth_code.sensitive_consent_version);
     let tokens = issue_tokens(
         &mut tx,
+        &code_hash,
         client_id,
         granted.clone(),
         granted,
@@ -795,6 +886,24 @@ async fn exchange_auth_code(
     Ok(Some(tokens))
 }
 
+fn log_replay(kind: &str, client: &str, grant_id: &str, revoked: repo::Revoked) {
+    tracing::warn!(
+        event = "token_replay_detected",
+        kind,
+        client,
+        grant = grant_label(grant_id),
+        "a used credential was presented again"
+    );
+    tracing::warn!(
+        event = "grants_revoked",
+        reason = "token_replay",
+        grant = grant_label(grant_id),
+        access_tokens = revoked.access_tokens,
+        refresh_tokens = revoked.refresh_tokens,
+        "revoked the tokens of one grant"
+    );
+}
+
 async fn exchange_refresh_token(
     state: &AuthState,
     refresh_token: &str,
@@ -802,11 +911,30 @@ async fn exchange_refresh_token(
     requested: &[String],
 ) -> Result<TokenResponse, Reject> {
     let invalid = || bad_request("invalid_grant", "Invalid or expired refresh token");
+    let now = Timestamp::now();
     let mut tx = state.0.db.begin_write().await.map_err(Reject::from)?;
     let stored = repo::find_refresh_token(&mut tx, &sha256_hex(refresh_token))
         .await?
-        .filter(|stored| stored.expires_at >= Timestamp::now() && stored.client_id == client_id)
+        .filter(|stored| stored.expires_at >= now)
         .ok_or_else(invalid)?;
+
+    if let Some(rotated_at) = &stored.rotated_at {
+        let in_grace = stored.client_id == client_id
+            && now <= rotated_at.plus(Duration::seconds(REFRESH_RETRY_GRACE_SECONDS));
+        if !in_grace {
+            let revoked = repo::revoke_grant(&mut tx, &stored.grant_id).await?;
+            tx.commit().await.map_err(nexus_core::error::Error::from)?;
+            log_replay(
+                "refresh_token",
+                &stored.client_id,
+                &stored.grant_id,
+                revoked,
+            );
+            return Err(invalid());
+        }
+    } else if stored.client_id != client_id {
+        return Err(invalid());
+    }
 
     let granted = effective_mcp_scopes(&stored.scopes.0, stored.sensitive_consent_version);
     // RFC 6749 §6: a refresh may narrow scope but never widen it. A client wanting more must
@@ -831,13 +959,12 @@ async fn exchange_refresh_token(
         requested.to_vec()
     };
 
-    if !repo::delete_refresh_token(&mut tx, stored.id).await? {
-        return Err(invalid());
-    }
+    repo::retire_refresh_tokens(&mut tx, &stored.grant_id, &now).await?;
     // Narrowing applies to the access token only. The rotated refresh token keeps the original
     // grant, so a later refresh isn't permanently burned down to the narrowed set.
     let tokens = issue_tokens(
         &mut tx,
+        &stored.grant_id,
         client_id,
         issued,
         stored.scopes.0,
@@ -854,17 +981,8 @@ async fn exchange_refresh_token(
 /// anything an attacker can steer byte by byte.
 async fn authenticate(
     state: &AuthState,
-    headers: &HeaderMap,
+    raw: &str,
 ) -> nexus_core::error::Result<Option<AuthContext>> {
-    let Some(raw) = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|raw| !raw.is_empty())
-    else {
-        return Ok(None);
-    };
     let hash = sha256_hex(raw);
     let mut conn = state.0.db.conn().await?;
 
@@ -897,14 +1015,47 @@ async fn authenticate(
     }))
 }
 
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+}
+
 /// Puts `AuthContext` in the request extensions, or answers exactly as old Nexus does. The
 /// `WWW-Authenticate` header is how MCP clients discover the OAuth flow (RFC 9728 §5.1).
+///
+/// Only a presented token that fails counts towards the rate limit, and only after it was checked.
+/// So valid tokens are never limited, not even from a source that is being limited, and neither is
+/// a client's first tokenless request, which starts discovery.
 pub async fn require_mcp_auth(
     State(state): State<AuthState>,
+    ClientKey(source): ClientKey,
     mut request: Request,
     next: Next,
 ) -> Response {
-    match authenticate(&state, request.headers()).await {
+    let authenticated = match bearer_token(request.headers()) {
+        Some(raw) => {
+            let authenticated = authenticate(&state, raw).await;
+            if matches!(authenticated, Ok(None))
+                && let Err(retry) = state.0.bearer_failure_limit.check(&source, Instant::now())
+            {
+                return too_many_requests(
+                    "mcp",
+                    &source,
+                    "Too many failed authentication attempts",
+                    retry,
+                )
+                .into_response();
+            }
+            authenticated
+        }
+        None => Ok(None),
+    };
+    match authenticated {
         Ok(Some(context)) => {
             request.extensions_mut().insert(context);
             next.run(request).await
@@ -968,6 +1119,7 @@ mod tests {
             "http://example.test/callback",
             "http://localhost:39123/callback",
             "http://127.0.0.1:39123/other",
+            "http://127.0.0.1:47987/callback#fragment",
             "https://127.0.0.1:39123/callback",
             "http://127.0.0.1.example.test/callback",
             "http://127.0.0.1:39123@example.test/callback",

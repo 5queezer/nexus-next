@@ -11,6 +11,9 @@ Group=nexus
 # /var/lib/nexus on the root filesystem. Never /home: it is encrypted and stays locked after a reboot.
 StateDirectory=nexus
 StateDirectoryMode=0700
+# Must set NEXUS_PUBLIC_BASE_URL, and NEXUS_TRUSTED_IP_HEADER behind a tunnel. See README section 3.
+# The owner passphrase hash is read from /var/lib/nexus/owner-passphrase.argon2; without one, serve
+# refuses to start. Create it with `nexus set-passphrase`.
 EnvironmentFile=-/etc/nexus/nexus.env
 LoadCredential=calendar-token:/etc/nexus/calendar-token
 ExecStart=/usr/local/bin/nexus serve --bind 127.0.0.1:8080 --data-dir /var/lib/nexus --calendar-token-file %d/calendar-token

@@ -17,6 +17,7 @@ use crate::config::{
 };
 use crate::crypto::random_bytes;
 use crate::limit::{Backoff, BackoffPolicy, FixedWindow, address_key};
+use crate::oauth::used_code_cutoff;
 
 const PRUNE_EVERY: Duration = Duration::from_secs(600);
 
@@ -40,6 +41,8 @@ pub(crate) struct Inner {
     pub(crate) register_ip_limit: FixedWindow,
     pub(crate) register_global_limit: FixedWindow,
     pub(crate) token_limit: FixedWindow,
+    pub(crate) authorize_limit: FixedWindow,
+    pub(crate) bearer_failure_limit: FixedWindow,
     /// Each argon2 verification takes about 19 MiB; on the board they run one at a time.
     pub(crate) hash_slot: Semaphore,
     last_prune: Mutex<Option<Instant>>,
@@ -49,10 +52,7 @@ impl AuthState {
     pub fn new(db: Db, config: AuthConfig) -> Result<Self, ConfigError> {
         validate_passphrase_hash(&config.owner_passphrase_hash)?;
         let base_url = normalize_base_url(&config.public_base_url)?;
-        if config.trusted_proxy.is_none()
-            && !base_url.contains("://localhost")
-            && !base_url.contains("://127.0.0.1")
-        {
+        if config.trusted_proxy.is_none() && base_url.starts_with("https://") {
             tracing::warn!(
                 "no trusted proxy configured: behind a tunnel or reverse proxy all clients share one \
                  rate-limit bucket, so set NEXUS_TRUSTED_IP_HEADER"
@@ -84,6 +84,9 @@ impl AuthState {
             register_global_limit: FixedWindow::new(30, hour),
             // The `oauth` group of old Nexus's lib/rate-limit.ts.
             token_limit: FixedWindow::new(20, Duration::from_secs(60)),
+            // One authorization takes a few requests, and only the owner's browser makes them.
+            authorize_limit: FixedWindow::new(60, Duration::from_secs(60)),
+            bearer_failure_limit: FixedWindow::new(30, Duration::from_secs(60)),
             hash_slot: Semaphore::new(1),
             last_prune: Mutex::default(),
         })))
@@ -115,12 +118,13 @@ impl AuthState {
             *last = Some(now);
         }
         let mut conn = self.0.db.conn().await?;
-        repo::prune_expired(&mut conn, &Timestamp::now()).await
+        let now = Timestamp::now();
+        repo::prune_expired(&mut conn, &now, &used_code_cutoff(&now)).await
     }
 }
 
 /// The rate-limit key of the caller; see `TrustedProxy`.
-pub(crate) struct ClientKey(pub(crate) String);
+pub struct ClientKey(pub(crate) String);
 
 impl FromRequestParts<AuthState> for ClientKey {
     type Rejection = Infallible;
