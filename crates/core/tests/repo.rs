@@ -1575,3 +1575,19 @@ async fn records_serialize_in_old_nexus_json_shape() {
     assert_eq!(json["applications"][0]["id"], json!(app.id.to_string()));
     assert!(json.get("blobSha256").is_none());
 }
+
+#[tokio::test]
+async fn a_contact_for_a_deleted_application_is_not_found_even_past_the_check() {
+    let (_dir, db) = open().await;
+    let mut conn = db.conn().await.unwrap();
+    let missing = contacts::create(
+        &mut conn,
+        12345,
+        &contacts::NewContact {
+            name: "Ada".into(),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(matches!(missing, Err(nexus_core::Error::NotFound)));
+}
