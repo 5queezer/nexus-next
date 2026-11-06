@@ -27,8 +27,8 @@ async fn start(access: Access) -> Running {
         bind: "127.0.0.1:0".parse().unwrap(),
         data_dir: dir.path().to_path_buf(),
         access,
-        owner_id: "owner-1".to_owned(),
-        owner_email: "owner@example.net".to_owned(),
+        owner_id: Some("owner-1".to_owned()),
+        owner_email: Some("owner@example.net".to_owned()),
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
@@ -99,6 +99,61 @@ async fn result(response: reqwest::Response) -> Value {
     assert_eq!(response.status(), 200);
     let body: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
     body["result"].clone()
+}
+
+fn config_with(
+    owner_id: Option<&str>,
+    owner_email: Option<&str>,
+    dir: &std::path::Path,
+) -> ServeConfig {
+    ServeConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        data_dir: dir.to_path_buf(),
+        access: Access::InsecureLocalOnly,
+        owner_id: owner_id.map(str::to_owned),
+        owner_email: owner_email.map(str::to_owned),
+        timezone: nexus_web::Tz::Europe__Madrid,
+        calendar_token: None,
+        log_level: tracing::Level::INFO,
+    }
+}
+
+#[tokio::test]
+async fn the_imported_owner_wins_and_configuration_covers_a_fresh_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+
+    let mut missing = config_with(None, Some("c@example.net"), dir.path());
+    let error = serve::resolve_owner(&db, &mut missing).await.unwrap_err();
+    assert!(error.to_string().contains("NEXUS_OWNER_ID"), "{error}");
+    let mut missing = config_with(Some("c"), None, dir.path());
+    let error = serve::resolve_owner(&db, &mut missing).await.unwrap_err();
+    assert!(error.to_string().contains("NEXUS_OWNER_EMAIL"), "{error}");
+
+    let mut fresh = config_with(Some("c"), Some("c@example.net"), dir.path());
+    serve::resolve_owner(&db, &mut fresh).await.unwrap();
+    assert_eq!(fresh.owner_id.as_deref(), Some("c"));
+
+    // An import with no MCP events: the ID comes from it, the email from configuration.
+    sqlx::query("INSERT INTO import_meta (id, manifest_sha256, fingerprint, owner_id) VALUES (1, 'm', 'f', 'imported')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let mut partial = config_with(Some("c"), Some("c@example.net"), dir.path());
+    serve::resolve_owner(&db, &mut partial).await.unwrap();
+    assert_eq!(partial.owner_id.as_deref(), Some("imported"));
+    assert_eq!(partial.owner_email.as_deref(), Some("c@example.net"));
+
+    sqlx::query("UPDATE import_meta SET owner_email = 'imported@example.net'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let mut imported = config_with(None, None, dir.path());
+    serve::resolve_owner(&db, &mut imported).await.unwrap();
+    assert_eq!(
+        imported.owner_email.as_deref(),
+        Some("imported@example.net")
+    );
 }
 
 #[tokio::test]

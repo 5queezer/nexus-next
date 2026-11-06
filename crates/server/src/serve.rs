@@ -83,10 +83,15 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     if let Some(token) = &config.calendar_token {
         routes = routes.merge(nexus_web::calendar_router(db.clone(), token.clone()));
     }
+    let (owner_id, owner_email) = config
+        .owner_id
+        .clone()
+        .zip(config.owner_email.clone())
+        .context("the owner is not resolved")?;
     let mcp = nexus_mcp::router(McpState {
         db: db.clone(),
-        owner_id: config.owner_id.clone(),
-        owner_email: config.owner_email.clone(),
+        owner_id,
+        owner_email,
     });
     let mcp = Router::new()
         .nest("/api/mcp", mcp.clone())
@@ -111,6 +116,24 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     Ok(harden(routes)
         .route("/healthz", get(healthz).with_state(db.clone()))
         .layer(middleware::from_fn(log_request)))
+}
+
+/// Fills in the owner: the import's values win, because imported events' request hashes cover them,
+/// and configuration covers a database no import wrote.
+pub async fn resolve_owner(db: &Db, config: &mut ServeConfig) -> anyhow::Result<()> {
+    let imported = nexus_core::import::imported_owner(&mut *db.conn().await?).await?;
+    let (id, email) = imported.map_or((None, None), |(id, email)| (Some(id), email));
+    config.owner_id = id.or(config.owner_id.take());
+    config.owner_email = email.or(config.owner_email.take());
+    if config.owner_id.is_none() {
+        anyhow::bail!("the database has no imported owner: set NEXUS_OWNER_ID or --owner-id");
+    }
+    if config.owner_email.is_none() {
+        anyhow::bail!(
+            "the database has no imported owner email: set NEXUS_OWNER_EMAIL or --owner-email"
+        );
+    }
+    Ok(())
 }
 
 /// Liveness plus a database round trip. The body never says what is wrong.
@@ -145,13 +168,14 @@ async fn log_request(request: Request, next: Next) -> Response {
 /// Opens the database, serves on `listener` until `shutdown` resolves, then lets in-flight
 /// requests finish (up to `DRAIN_TIMEOUT`) and closes the database, which checkpoints the WAL.
 pub async fn run(
-    config: ServeConfig,
+    mut config: ServeConfig,
     listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let db = Db::open(&config.data_dir)
         .await
         .with_context(|| format!("cannot open the database in {}", config.data_dir.display()))?;
+    resolve_owner(&db, &mut config).await?;
     let base_url = match &config.access {
         Access::Owner(auth) => auth.public_base_url.as_str(),
         Access::InsecureLocalOnly => {

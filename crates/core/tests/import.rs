@@ -897,6 +897,23 @@ async fn export_schema_changes_fail() {
 }
 
 #[tokio::test]
+async fn the_owner_is_recorded_for_mcp_responses() {
+    let env = Env::new();
+    env.import().await.unwrap();
+    let db = nexus_core::Db::open(&env.data).await.unwrap();
+    let owner = nexus_core::import::imported_owner(&mut db.conn().await.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        owner.1.as_deref(),
+        Some("agent"),
+        "the most common MCP actor"
+    );
+    assert!(!owner.0.is_empty());
+}
+
+#[tokio::test]
 async fn owner_must_be_unique() {
     let env = Env::new();
     env.edit_rows("Application", |rows| {

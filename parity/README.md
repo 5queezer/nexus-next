@@ -98,6 +98,8 @@ One JSON file per scenario, the same from any MCP client:
 
 `compare.py` prints a per-tool table and precise JSON paths, with sizes and types instead of values. Add `--show-values` to see values, which are personal data.
 
+Use `--unordered contacts --unordered applications` to compare those arrays by ID: old Nexus returned them in Postgres heap order, which a restore doesn't even keep stable.
+
 Use `--drop-key` for a removal that has been decided on. For example, every old response carries `userId`, and applications and events carry `isDemo`, `demoKey` and `demoWorkspaceId`, though section 5 of the spec drops those columns. The ignored keys are printed with the results.
 
 ## Time

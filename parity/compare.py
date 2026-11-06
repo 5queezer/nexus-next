@@ -26,6 +26,10 @@ Per-call modes, set in the scenario and copied to the trace:
                             to be some error on the other side.
   allowDiff: "<reason>"     Differences are listed as documented and do not fail the run.
 
+Option --unordered KEY sorts arrays of records under KEY by id on both sides first. Old Nexus returned
+`contacts` and document `applications` in Postgres heap order, which no later read or restore promises,
+so a server that returns them by id only differs there in order. Without the flag, order counts.
+
 Values are never printed unless --show-values is given, since traces hold personal data.
 """
 import argparse
@@ -145,6 +149,17 @@ def load(directory):
     return {path.name: json.loads(path.read_text()) for path in sorted(Path(directory).glob("*.json"))}
 
 
+def sort_unordered(value, keys):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys and isinstance(item, list) and all(isinstance(i, dict) and "id" in i for i in item):
+                item.sort(key=lambda i: int(i["id"]) if str(i["id"]).isdigit() else 0)
+            sort_unordered(item, keys)
+    elif isinstance(value, list):
+        for item in value:
+            sort_unordered(item, keys)
+
+
 def normalized_calls(trace, drop_keys):
     """Parallel groups are sorted first, so completion order cannot affect comparison or numbering."""
     normalizer = Normalizer(trace, drop_keys)
@@ -218,10 +233,13 @@ def main():
     parser.add_argument("candidate")
     parser.add_argument("--show-values", action="store_true", help="print differing values (personal data)")
     parser.add_argument("--max-diffs", type=int, default=5, help="paths printed per call")
+    parser.add_argument("--unordered", action="append", default=[], help="sort record arrays under this key by id")
     parser.add_argument("--drop-key", action="append", default=[], help="ignore this JSON key everywhere; for documented removals")
     args = parser.parse_args()
 
     baseline, candidate = load(args.baseline), load(args.candidate)
+    sort_unordered(baseline, set(args.unordered))
+    sort_unordered(candidate, set(args.unordered))
     drop_keys = set(args.drop_key)
     stats = collections.defaultdict(collections.Counter)
     failures, documented = [], []
