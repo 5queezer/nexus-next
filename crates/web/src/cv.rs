@@ -49,6 +49,8 @@ const PAGE_LIMIT: Duration = Duration::from_secs(58);
 const MAX_LISTED_ITEMS: usize = 200;
 /// Of those, how many stand open above the button.
 const MAX_OPEN_ITEMS: usize = 30;
+/// Words named in the line about marks drawn on the text.
+const MAX_MARKED_WORDS: usize = 8;
 /// Unchanged lines kept around a change in the diff, so that it reads in place.
 const DIFF_CONTEXT_LINES: usize = 1;
 /// How long a preview waits for another's compile, holding an owner slot: well under the 10 s any
@@ -219,7 +221,9 @@ fn rule_text(rule: &str) -> &'static str {
         }
         "contactDetails" => "An address, phone number or link that isn't in your contact details",
         "digitLookalike" => "Letters that read as digits",
-        "missingGlyph" => "A letter the CV's font doesn't have, which draws as a crossed box",
+        "missingGlyph" => {
+            "A letter or symbol the CV's font doesn't have, which draws as a crossed box. Use a word or spell it in Latin letters, or ask for the font to be added"
+        }
         _ => "Something the check refuses",
     }
 }
@@ -758,7 +762,10 @@ fn approval_view(
         .into_any(),
         Ok(review) => {
             let against = match review.baseline_revision {
-                None => "There is no approved text to compare with, so this is the whole CV. Every number and date is marked.".to_owned(),
+                None => "Nothing to compare with, so this is the whole CV.".to_owned(),
+                Some(at) if review.baseline_is_replaced && review.baseline_is_start => format!("Compared with the approved text this variant started from, revision {at} there. That text has since been changed in another variant."),
+                Some(at) if review.baseline_is_replaced => format!("Compared with revision {at}, the approved text this variant last held. That text has since been changed in another variant."),
+                Some(at) if review.baseline_is_start => format!("Compared with the approved text this variant started from, revision {at} there."),
                 Some(at) if review.baseline_is_own && review.baseline_is_lock => format!("Compared with revision {at}, approved by your lock of the facts, however many drafts came between."),
                 Some(at) if review.baseline_is_own => format!("Compared with revision {at}, the last you approved in this variant, however many drafts came between."),
                 Some(at) => format!("Compared with revision {at}, which holds text you approved in another variant and haven't replaced there."),
@@ -785,7 +792,12 @@ fn approval_view(
             let words = review_diff(review.baseline.as_deref(), &review.rendered_text);
             // The words a reader gets match the baseline, and the source doesn't: `#strike`, or a job
             // set nearly invisible, reads as nothing changed.
+            let source_changed = review
+                .source_diff
+                .lines()
+                .any(|line| line.starts_with(['+', '-']));
             let looks_only = review.baseline.is_some()
+                && source_changed
                 && words.iter().all(|line| line.change == LineChange::Same);
             let beyond_the_text = review.baseline.is_some()
                 && !looks_only
@@ -796,6 +808,17 @@ fn approval_view(
                 {(!review.items.is_empty()).then(|| view! {
                     <h3>"Check these in the text"</h3>
                     {review_items_view(&review.items)}
+                })}
+                {review.whole_cv_because().map(|why| view! {
+                    <p class="banner warn" id="cv-whole-cv" role="status">{why}</p>
+                })}
+                {review.baseline_is_replaced.then(|| view! {
+                    <p class="banner warn" id="cv-replaced-elsewhere" role="status">{Review::REPLACED_ELSEWHERE}</p>
+                })}
+                {(!review.marked.is_empty()).then(|| view! {
+                    <p class="banner warn" id="cv-drawn-marks" role="status">
+                        {Review::DRAWN_MARKS}" Near: "{marked_words(&review.marked)}"."
+                    </p>
                 })}
                 {looks_only.then(|| view! {
                     <p class="banner warn" id="cv-looks-only" role="status">
@@ -826,6 +849,16 @@ fn approval_view(
             <h2>"Approval"</h2>
             <div class="card approval">{inner}</div>
         </section>
+    }
+}
+
+/// The first words with a mark on them: enough to know where to look.
+fn marked_words(marked: &[String]) -> String {
+    let shown = marked.iter().take(MAX_MARKED_WORDS).map(String::as_str);
+    let shown = shown.collect::<Vec<_>>().join(", ");
+    match marked.len().saturating_sub(MAX_MARKED_WORDS) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
     }
 }
 

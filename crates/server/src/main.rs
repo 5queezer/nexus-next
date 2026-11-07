@@ -261,8 +261,20 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
             "nothing was approved: the facts aren't locked. Check them, then `nexus cv-facts lock`"
         );
     }
+    if let Some(why) = review.whole_cv_because() {
+        println!("{why}");
+    }
+    if review.baseline_is_replaced {
+        println!("{}", owner::Review::REPLACED_ELSEWHERE);
+    }
     match review.baseline_revision {
-        None => println!("there is no approved text to compare with, so this is the whole CV:"),
+        None => println!("this is the whole CV:"),
+        Some(at) if review.baseline_is_start => {
+            println!("compared with the approved text this variant started from, revision {at} there:");
+        }
+        Some(at) if review.baseline_is_replaced => {
+            println!("compared with revision {at}, the approved text this variant last held:");
+        }
         Some(at) if review.baseline_is_own && review.baseline_is_lock => {
             println!("compared with revision {at}, approved by your lock of the facts:");
         }
@@ -281,7 +293,23 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
             LineChange::Same => {}
         }
     }
-    if lines.iter().all(|line| line.change == LineChange::Same) {
+    if !review.marked.is_empty() {
+        println!(
+            "{} Near: {}",
+            owner::Review::DRAWN_MARKS,
+            review
+                .marked
+                .iter()
+                .map(|word| shown(word))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let source_changed = review
+        .source_diff
+        .lines()
+        .any(|line| line.starts_with(['+', '-']));
+    if source_changed && lines.iter().all(|line| line.change == LineChange::Same) {
         println!("The wording is unchanged, but the source isn't. Read how it changed:");
         println!("{}", shown_by_line(&review.source_diff));
     }

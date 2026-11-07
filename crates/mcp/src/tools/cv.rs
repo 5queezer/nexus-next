@@ -206,6 +206,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
                 .is_some_and(|by| by != "lock"),
             None => false,
         };
+        let replaced = approvals::is_replaced(&mut conn, &source_sha256).await?;
         let standing = if !state.is_locked() {
             Generated::Unlocked
         } else if is_approved(&mut conn, &state, variant_id, &source_sha256).await? {
@@ -214,6 +215,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             && repo::wording_of(&profile) == locked_wording
             && plain_selection(&profile, &experience_ids, &skill_categories)
             && !owner_approved_here
+            && !replaced
         {
             Generated::ApprovedByLock
         } else {

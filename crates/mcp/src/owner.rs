@@ -37,10 +37,35 @@ pub struct Review {
     pub baseline_is_own: bool,
     /// Whether that approval is the one the owner's lock of the facts wrote, not a tap of their own.
     pub baseline_is_lock: bool,
+    /// Whether the baseline is what this variant started from in another, which it never held itself.
+    pub baseline_is_start: bool,
+    /// Whether another variant has replaced the baseline since: see [`Review::REPLACED_ELSEWHERE`].
+    pub baseline_is_replaced: bool,
+    /// Whether this variant has an approval of its own, under any facts.
+    pub approved_here: bool,
+    /// The words with a small mark drawn on them: see [`Review::DRAWN_MARKS`]. Empty when approved.
+    pub marked: Vec<String>,
     /// Against `baseline`, uncapped and most serious first.
     pub items: Vec<ReviewItem>,
     /// The source against the last approved revision's.
     pub source_diff: String,
+}
+
+impl Review {
+    /// Said plainly above the button: this is the cost the owner accepted for reading a diff again.
+    pub const REPLACED_ELSEWHERE: &str = "A text you approved has since been changed in another variant, and a line you corrected there won't show as changed here, so read the picture.";
+    /// Said above the button when a draft draws small marks on its text.
+    pub const DRAWN_MARKS: &str = "The draft draws marks on its text, which can make a number read as another. Read the numbers in the picture.";
+
+    /// Why this reads as the whole CV, with nothing to compare it with. `None` if it has a baseline.
+    #[must_use]
+    pub fn whole_cv_because(&self) -> Option<&'static str> {
+        self.baseline.is_none().then_some(if self.approved_here {
+            "The facts have changed since you last approved text in this variant, so that text can't stand for this one. This is the whole CV: every number and date is marked, and the text doesn't show what a source draws, so read the picture."
+        } else {
+            "Nothing this variant holds or started from has been approved under today's facts. This is the whole CV: every number and date is marked, and the text doesn't show what a source draws, so read the picture."
+        })
+    }
 }
 
 fn ctx(state: Arc<McpState>) -> Ctx {

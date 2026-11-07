@@ -1079,15 +1079,20 @@ pub(crate) async fn review(
     let baseline_is_lock = last
         .as_ref()
         .is_some_and(|baseline| baseline.approved_by == "lock");
-    let (baseline, baseline_revision) = last.map_or((None, None), |baseline| {
-        (Some(baseline.rendered_text), Some(baseline.revision))
-    });
-    let baseline_source = match baseline_revision {
-        Some(at) => repo::get_by_number(&mut conn, base.variant.id, at)
+    let baseline_is_start = last.as_ref().is_some_and(|baseline| baseline.started_from);
+    let baseline_is_replaced = last.as_ref().is_some_and(|baseline| baseline.replaced);
+    let approved_here = approvals::newest_approved_by(&mut conn, base.variant.id)
+        .await?
+        .is_some();
+    let baseline_source = match &last {
+        Some(baseline) => repo::get_by_id(&mut conn, baseline.revision_id)
             .await?
             .map(|revision| revision.source),
         None => None,
     };
+    let (baseline, baseline_revision) = last.map_or((None, None), |baseline| {
+        (Some(baseline.rendered_text), Some(baseline.revision))
+    });
     let known = known_to_owner(&mut conn, None, &state.facts).await?;
     drop(conn);
     let mut review = Review {
@@ -1104,13 +1109,23 @@ pub(crate) async fn review(
         baseline_revision,
         baseline_is_own,
         baseline_is_lock,
+        baseline_is_start,
+        baseline_is_replaced,
+        approved_here,
+        marked: Vec::new(),
         items: Vec::new(),
         source_diff: unified_diff(
             baseline_source.as_deref().unwrap_or(""),
             &base.source,
             &baseline_revision.map_or_else(
                 || "no approved text to compare with".to_owned(),
-                |at| format!("revision {at}"),
+                |at| {
+                    if baseline_is_start {
+                        format!("the approved text it started from, revision {at} there")
+                    } else {
+                        format!("revision {at}")
+                    }
+                },
             ),
             &format!("revision {}", base.number),
         ),
@@ -1135,6 +1150,7 @@ pub(crate) async fn review(
     review.rendered_text = review_text(&rendered.text);
     review.previews = rendered.previews;
     review.items = report.review_items;
+    review.marked = rendered.text.marked;
     Ok(Ok(review))
 }
 

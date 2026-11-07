@@ -2352,7 +2352,7 @@ async fn patch_in(server: &Server, variant: &str, expected: i64, old: &str, new:
 
 /// A new variant brought text back: what it is read against must not be that same replaced text.
 #[tokio::test]
-async fn a_new_variant_reads_against_no_text_the_owner_has_replaced() {
+async fn a_new_variant_reads_against_what_stands_or_says_it_was_replaced() {
     let server = locked_server().await;
     let old = "Built the routing service.";
     let (twenty, twelve) = ("Led a team of 20 engineers.", "Led a team of 12 engineers.");
@@ -2374,8 +2374,10 @@ async fn a_new_variant_reads_against_no_text_the_owner_has_replaced() {
     let review = owner::review(server.state.clone(), "laundry")
         .await
         .unwrap();
-    assert_eq!(review.baseline, None, "the whole CV shows");
-    assert_eq!(review.baseline_revision, None);
+    // It started from the text that stands, so the claim coming back reads as a change.
+    assert!(review.baseline.unwrap().contains(twelve));
+    assert!(review.baseline_is_start && !review.baseline_is_replaced);
+    assert!(review.source_diff.contains("started from"), "{}", review.source_diff);
 
     // Text still standing where it was approved is a baseline, as long as it stands.
     let kept = server
@@ -2391,13 +2393,17 @@ async fn a_new_variant_reads_against_no_text_the_owner_has_replaced() {
     let review = owner::review(server.state.clone(), "kept").await.unwrap();
     assert!(review.baseline.unwrap().contains(twelve));
     assert_eq!(review.baseline_revision, Some(1));
+    assert!(!review.baseline_is_replaced);
 
     patch(&server, 2, twelve, "Led a team of 15 engineers.")
         .await
         .ok();
     owner_approve(&server, "default").await;
     let review = owner::review(server.state.clone(), "kept").await.unwrap();
-    assert_eq!(review.baseline, None, "replaced where it stood");
+    assert!(review.baseline.unwrap().contains(twelve), "it still reads as a diff");
+    assert_eq!(review.baseline_revision, Some(1));
+    assert!(review.baseline_is_replaced, "and it says what that text is");
+    assert!(!review.approved);
 }
 
 /// An approval under facts that came back doesn't outrank what the owner approved since.
@@ -2568,22 +2574,144 @@ async fn a_correction_in_one_variant_stops_a_new_variant_taking_the_old_claim() 
         .await
         .ok();
     assert_eq!(rendered["state"], "draft", "stamped: {rendered}");
-    // It reads as all new, so the claim isn't hidden as unchanged.
+    // It reads against the text it holds, which the owner approved, and says that was replaced since. A
+    // correction made elsewhere reads as unchanged here, which the owner accepted for a diff.
     let review = owner::review(server.state.clone(), "gamma").await.unwrap();
-    assert_eq!(review.baseline, None, "{review:?}");
-    assert_eq!(review.baseline_revision, None);
-    // Text the owner approved stands elsewhere: the diff's header doesn't say otherwise.
-    assert!(
-        review
-            .source_diff
-            .contains("no approved text to compare with")
-            && !review.source_diff.contains("nothing approved yet"),
-        "{}",
-        review.source_diff
-    );
+    assert!(review.baseline.as_deref().unwrap().contains("a team of 20"));
+    assert!(review.baseline_is_replaced && !review.baseline_is_own, "{review:?}");
+    assert!(review.whole_cv_because().is_none());
+    assert!(!review.approved, "a baseline approves nothing");
+    assert!(review.items.is_empty(), "{:?}", review.items);
+    assert!(!review.source_diff.contains("no approved text"));
     // And a tap makes it stand there, as any draft.
     owner_approve(&server, "gamma").await;
     assert_eq!(head_state(&server, "gamma").await, "approved");
+}
+
+/// The fifth gate review's finding 4. A lock doesn't approve text a variant has replaced, in any later
+/// application, and the owner's tap does. Another selection is another text, and nothing replaced stays
+/// tap-free.
+#[tokio::test]
+async fn a_lock_does_not_bring_back_what_the_owner_corrected_in_another_application() {
+    let server = locked_server().await;
+    let selection = json!(["brightpath"]);
+    let generate = async |server: &Server, app: &str, jobs: &Value| {
+        server
+            .call(
+                "generate_tailored_cv",
+                json!({"applicationId": app, "experienceIds": jobs, "skillCategories": []}),
+            )
+            .await
+    };
+    let documents = async |server: &Server, app: &str| {
+        let listed = server
+            .call("list_documents", json!({"applicationId": app}))
+            .await
+            .ok();
+        listed.as_array().unwrap().len()
+    };
+    // Nothing replaced yet: every application takes it with no tap.
+    let (first, second) = (server.application("A").await, server.application("B").await);
+    for app in [&first, &second] {
+        let done = generate(&server, app, &selection).await.ok();
+        assert_eq!(done["message"], "CV generated successfully", "{done}");
+    }
+
+    // The owner corrects the line where the first application has it.
+    let variant = format!("application-{first}");
+    let (at, _) = head(&server, &variant).await;
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": variant, "expectedRevision": at, "summary": "Correct",
+                "edits": [{"oldText": "Built the routing service.", "newText": "Built the routing core."}]}),
+        )
+        .await
+        .ok();
+    owner_approve(&server, &variant).await;
+
+    // A later application gets a draft, with no document and no real PDF.
+    let third = server.application("C").await;
+    let held = generate(&server, &third, &selection).await;
+    assert_eq!(held.code(), "cv_approval_required", "{:?}", held.json());
+    assert_eq!(documents(&server, &third).await, 0);
+    let later = format!("application-{third}");
+    let rendered = server
+        .call("render_cv_pdf", json!({"variant": later, "previewPages": 0}))
+        .await
+        .ok();
+    assert_eq!(rendered["state"], "draft", "{rendered}");
+    let review = owner::review(server.state.clone(), &later).await.unwrap();
+    assert!(review.baseline_is_replaced && !review.approved, "{review:?}");
+
+    // The tap gives it.
+    owner_approve(&server, &later).await;
+    let done = generate(&server, &third, &selection).await.ok();
+    assert_eq!(done["message"], "CV generated successfully", "{done}");
+    assert_eq!(documents(&server, &third).await, 1);
+
+    // Another selection's text isn't replaced.
+    let fourth = server.application("D").await;
+    let done = generate(&server, &fourth, &json!(["harborline"])).await.ok();
+    assert_eq!(done["message"], "CV generated successfully", "{done}");
+}
+
+/// The fifth gate review's finding 8: a variant made from another with a fix in the same call counts as
+/// having held what it started from. It reads against that text, and says when it was replaced.
+#[tokio::test]
+async fn a_fix_made_in_the_call_that_creates_a_variant_counts() {
+    let server = locked_server().await;
+    let (twenty, twelve) = (CLAIM_20.1, "Led a team of 12 engineers.");
+    patch(&server, 0, CLAIM_20.0, twenty).await.ok();
+    owner_approve(&server, "default").await;
+    let (at, _) = head(&server, "default").await;
+    let fixed = server
+        .call(
+            "patch_cv",
+            json!({"variant": "fixed", "createFrom": "default", "expectedRevision": at,
+                "summary": "Fix", "edits": [{"oldText": twenty, "newText": twelve}]}),
+        )
+        .await
+        .ok();
+    assert_eq!(fixed["state"], "draft", "{fixed}");
+    let review = owner::review(server.state.clone(), "fixed").await.unwrap();
+    assert!(review.baseline.as_deref().unwrap().contains(twenty));
+    assert!(review.baseline_is_start && !review.baseline_is_replaced, "{review:?}");
+    assert!(review.items.iter().all(|item| !item.token.contains("2019")), "{:?}", review.items);
+
+    // Not tapped, so nothing is replaced yet.
+    let copy = new_variant(&server, "copy", "default").await;
+    assert_eq!(copy["state"], "approved", "{copy}");
+    owner_approve(&server, "fixed").await;
+    let copy = new_variant(&server, "copy2", "default").await;
+    assert_eq!(copy["state"], "draft", "{copy}");
+    let rendered = server
+        .call("render_cv_pdf", json!({"variant": "copy2", "previewPages": 0}))
+        .await
+        .ok();
+    assert_eq!(rendered["state"], "draft", "{rendered}");
+    assert_eq!(head_state(&server, "default").await, "approved", "its own stands");
+}
+
+/// The fifth gate review's finding 6: the whole CV only where nothing stands, with the reason.
+#[tokio::test]
+async fn a_whole_cv_review_says_why() {
+    let server = locked_server().await;
+    let during = json!({"languages": [{"name": "German", "level": "B2"}]});
+    patch(&server, 0, CLAIM_20.0, CLAIM_20.1).await.ok();
+    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    let why = review.whole_cv_because().unwrap();
+    assert!(why.contains("Nothing this variant holds"), "{why}");
+    owner_approve(&server, "default").await;
+    assert_eq!(
+        owner::review(server.state.clone(), "default").await.unwrap().whole_cv_because(),
+        None
+    );
+    owner_set(&server, during).await;
+    let review = owner::review(server.state.clone(), "default").await.unwrap();
+    let why = review.whole_cv_because().unwrap();
+    assert!(why.contains("The facts have changed"), "{why}");
+    assert!(review.source_diff.contains("no approved text to compare with"));
 }
 
 /// The owner approving the old text again takes it back: it stands, and a new variant may take it.

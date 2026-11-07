@@ -19,19 +19,33 @@ pub fn facts_sha256(facts: &Facts) -> String {
     sha256_hex(&renderable)
 }
 
-/// SQL saying whether some variant has replaced a source: it held that text, and the owner has since
-/// approved another there. Under any facts, since a correction doesn't stop counting when a fact comes
-/// back. Nothing tells a correction from tailoring, so approving a changed text counts either way. A
-/// variant that approves the text again has taken it back. Its argument is SQL written in this file.
+/// SQL saying whether some variant has replaced a source: it held that text, or started from it with a
+/// change in the same call, and the owner has since approved another there. A lock moving between two
+/// selections replaces nothing, as nobody corrected anything. Under any facts, since a correction doesn't
+/// stop counting when a fact comes back. Nothing tells a correction from tailoring, so approving a
+/// changed text counts either way. A variant that approves the text again has taken it back. Its argument
+/// is SQL written in this file.
 fn replaced_sql(source: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM cv_approvals newest
             JOIN cv_revisions held ON held.variant_id = newest.variant_id
-                AND held.number < newest.revision_number
-            WHERE held.source_sha256 = {source} AND newest.source_sha256 <> {source}
+                AND held.number <= newest.revision_number
+            LEFT JOIN cv_revisions parent ON parent.id = held.parent_id
+            WHERE {source} IN (held.source_sha256, parent.source_sha256)
+            AND newest.source_sha256 <> {source} AND newest.approved_by <> 'lock'
             AND newest.id = (SELECT max(n.id) FROM cv_approvals n
                 WHERE n.variant_id = newest.variant_id))"
     )
+}
+
+/// Whether some variant has replaced this source. The lock asks too: its approval of the owner's wording
+/// doesn't speak over a correction made since.
+pub async fn is_replaced(conn: &mut SqliteConnection, source_sha256: &str) -> Result<bool> {
+    let sql = format!("SELECT {}", replaced_sql("?1"));
+    Ok(sqlx::query_scalar(AssertSqlSafe(sql))
+        .bind(source_sha256)
+        .fetch_one(conn)
+        .await?)
 }
 
 /// SQL saying whether a source is approved in a variant, under these facts. A variant's newest approval
@@ -119,23 +133,31 @@ pub async fn record(conn: &mut SqliteConnection, new: &NewApproval<'_>) -> Resul
     Ok(())
 }
 
-/// What a draft is read against. See [`last_approved`].
+/// What a draft is read against. See [`last_approved`]. It says nothing of what is approved:
+/// [`is_approved`] alone says that.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct Baseline {
     pub rendered_text: String,
+    /// The revision holding that text: in the variant it started from, if `started_from`.
     pub revision: i64,
+    pub revision_id: i64,
     /// The approval is this variant's own, not another's text it holds.
     pub own: bool,
     /// `cli`, `dashboard` or `lock`.
     pub approved_by: String,
+    /// The text is what this variant started from in another, and it never held it.
+    pub started_from: bool,
+    /// Another variant has replaced this text since, so a line the owner corrected there reads here as
+    /// unchanged. The owner accepted that, as long as the review says so plainly.
+    pub replaced: bool,
 }
 
 /// What a variant's next draft is read against, at which revision, and whether the approval is its own.
 /// Its newest approval, if that was made under these facts: under others it is no baseline, since a
-/// line the owner has corrected would read as unchanged. For a variant with none of its own, the newest
-/// approval of a text it holds, if that is still the newest where it was made and no variant has
-/// replaced it: replaced text would read as unchanged too. By approval, not revision number: a revert to
-/// older text must not hide the correction it undoes.
+/// line the owner has corrected would read as unchanged. A variant with none of its own reads against the
+/// newest approved text it holds or started from, under these facts: first one that still stands, then
+/// one replaced since, which says so. By approval, not revision number: a revert to older text must not
+/// hide the correction it undoes.
 pub async fn last_approved(
     conn: &mut SqliteConnection,
     variant: &Variant,
@@ -143,14 +165,22 @@ pub async fn last_approved(
 ) -> Result<Option<Baseline>> {
     let replaced = replaced_sql("a.source_sha256");
     let sql = format!(
-        "SELECT a.rendered_text, r.number AS revision, a.variant_id = ?1 AS own, a.approved_by
-         FROM cv_revisions r JOIN cv_approvals a ON a.source_sha256 = r.source_sha256
-         WHERE r.variant_id = ?1 AND a.facts_sha256 = ?2
-         AND a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id)
+        "WITH held (source_sha256, id, number, started_from) AS (
+            SELECT source_sha256, id, number, 0 FROM cv_revisions WHERE variant_id = ?1
+            UNION ALL
+            SELECT p.source_sha256, p.id, p.number, 1
+            FROM cv_revisions r JOIN cv_revisions p ON p.id = r.parent_id
+            WHERE r.variant_id = ?1 AND p.variant_id <> ?1
+         )
+         SELECT a.rendered_text, h.number AS revision, h.id AS revision_id, a.variant_id = ?1 AS own,
+             a.approved_by, h.started_from, a.variant_id <> ?1 AND {replaced} AS replaced
+         FROM held h JOIN cv_approvals a ON a.source_sha256 = h.source_sha256
+         WHERE a.facts_sha256 = ?2
+         AND (a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id)
+             OR (a.variant_id <> ?1 AND {replaced}))
          AND (a.variant_id = ?1
-             OR (NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1)
-                 AND NOT {replaced}))
-         ORDER BY a.id DESC, r.number DESC
+             OR NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1))
+         ORDER BY replaced, a.id DESC, h.started_from, h.number DESC
          LIMIT 1"
     );
     Ok(sqlx::query_as(AssertSqlSafe(sql))

@@ -1667,6 +1667,120 @@ async fn the_page_says_truly_what_a_draft_is_read_against() {
     assert!(!page.contains("isn't the text you last approved"), "{page}");
     assert!(!page.contains("Nothing is approved yet"), "{page}");
     assert!(page.contains("no approved text to compare with"), "{page}");
+    assert!(page.contains("id=\"cv-whole-cv\""), "{page}");
+    assert!(page.contains("The facts have changed"), "{page}");
+}
+
+async fn tap(f: &Fixture, url: &str) {
+    let (_, _, page) = get(&f.app, url).await;
+    let (status, _, _) = post(
+        &f.app,
+        &format!("{url}/approve"),
+        &[
+            ("csrf", TOKEN),
+            ("revision", &hidden(&page, "revision")),
+            ("sourceSha256", &hidden(&page, "sourceSha256")),
+            ("factsSha256", &hidden(&page, "factsSha256")),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+}
+
+fn above_the_button(page: &str, id: &str) -> bool {
+    let line = page.find(&format!("id=\"{id}\"")).unwrap_or(usize::MAX);
+    line < page.find("class=\"approve-form\"").unwrap()
+}
+
+/// The owner's decision on corrections: a text replaced elsewhere reads as a diff again, and the line that
+/// says what that costs stands above the button.
+#[tokio::test]
+async fn a_replaced_text_reads_as_a_diff_and_says_so_above_the_button() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let make = async |name: &str, edits: Value| {
+        agent_call(
+            &f,
+            "patch_cv",
+            json!({"variant": name, "createFrom": "default", "expectedRevision": 1,
+                "summary": "new", "edits": edits}),
+        )
+        .await
+    };
+    // Nothing replaced: taken at once, and a whole-CV line nowhere.
+    make("copied", json!([])).await;
+    let (_, _, page) = get(&f.app, "/cv/variants/copied").await;
+    assert!(!page.contains("cv-replaced-elsewhere"), "{page}");
+
+    // A change in the call that makes a variant reads against what it started from.
+    let changed = source.replace("Built the routing service.", "Built the routing core.");
+    assert_ne!(changed, source);
+    make("tailored", json!([{"oldText": source, "newText": changed}])).await;
+    let (_, _, page) = get(&f.app, "/cv/variants/tailored").await;
+    assert!(page.contains("started from"), "{page}");
+    assert!(!page.contains("cv-whole-cv"), "{page}");
+    tap(&f, "/cv/variants/tailored").await;
+
+    // That tap replaced the starting text. The next copy holds it, with nothing to mark, and says why.
+    make("copy-after", json!([])).await;
+    let (_, _, page) = get(&f.app, "/cv/variants/copy-after").await;
+    assert!(page.contains("class=\"approve-form\""), "{page}");
+    assert!(above_the_button(&page, "cv-replaced-elsewhere"), "{page}");
+    assert!(page.contains("a line you corrected there won"), "{page}");
+    assert!(!page.contains("cv-whole-cv"), "{page}");
+    assert!(!page.contains("cv-looks-only"), "the source is the same: {page}");
+}
+
+/// The owner's decision on marks: said above the button, naming where to look, and refusing nothing.
+#[tokio::test]
+async fn a_mark_drawn_on_a_number_is_said_above_the_button() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(!page.contains("cv-drawn-marks"), "{page}");
+    let marked = source.replace(
+        "Built the routing service.",
+        "Grade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here.",
+    );
+    assert_ne!(marked, source);
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "tidy",
+            "edits": [{"oldText": source, "newText": marked}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(above_the_button(&page, "cv-drawn-marks"), "{page}");
+    assert!(page.contains("Read the numbers in the picture"), "{page}");
+}
+
+/// The fifth gate review's finding 7: a sentence nobody has seen stays open ahead of a flood of numbers.
+#[tokio::test]
+async fn a_new_word_stands_ahead_of_the_numbers() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let lines: String = (0..40)
+        .map(|i| format!("- Handled {} invoices.\n", 100 + i))
+        .collect();
+    let flood = source.replace(
+        "- Built the routing service.\n",
+        &format!("{lines}- Won the zorbitane award.\n"),
+    );
+    assert_ne!(flood, source);
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "tidy",
+            "edits": [{"oldText": source, "newText": flood}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let open = &page[page.find("id=\"cv-review-items\"").unwrap()..];
+    let open = &open[..open.find("</ul>").unwrap()];
+    assert!(open.contains("<mark>zorbitane</mark>"), "{open}");
 }
 
 /// A stored revision that can't be drawn: no form, a refused tap, and no claim that nothing is stored.

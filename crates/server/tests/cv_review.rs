@@ -437,6 +437,68 @@ async fn nothing_an_agent_wrote_reaches_the_owners_terminal_raw() {
     assert!(shown.contains("+#strong[#header()]"), "{shown}");
 }
 
+/// The owner's decisions on corrections and on marks reach the terminal too, in the same words.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_terminal_says_why_a_cv_is_whole_replaced_or_marked() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    agent.ok("upsert_cv_profile", profile()).await;
+    lock_confirmed(&node.dir);
+    let read = |variant: &str, revision: &str, confirm: bool| {
+        let mut args = vec!["approve", "--variant", variant, "--revision", revision];
+        if confirm {
+            args.push("--confirm");
+        }
+        let output = cv_facts(&node.dir, &args);
+        let bytes = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let new = |name: &str, edits: Value| {
+        agent.ok(
+            "patch_cv",
+            json!({"variant": name, "createFrom": "default", "expectedRevision": 1,
+                "summary": "new", "edits": edits}),
+        )
+    };
+    let drafted = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": 0, "summary": "start",
+                "edits": [{"oldText": "#header()", "newText": "#header()\n"}]}),
+        )
+        .await;
+    assert_eq!(drafted["state"], "draft", "{drafted}");
+    let shown = read("default", "1", false);
+    assert!(shown.contains("Nothing this variant holds"), "{shown}");
+    read("default", "1", true);
+
+    let (old, fixed) = ("3 depots", "2 depots");
+    let tailored = new("tailored", json!([{"oldText": old, "newText": fixed}])).await;
+    assert_eq!(tailored["state"], "draft", "{tailored}");
+    let shown = read("tailored", "1", false);
+    assert!(shown.contains("this variant started from"), "{shown}");
+    assert!(!shown.contains("A text you approved"), "{shown}");
+    read("tailored", "1", true);
+
+    let copied = new("copied", json!([])).await;
+    assert_eq!(copied["state"], "draft", "{copied}");
+    let shown = read("copied", "1", false);
+    assert!(shown.contains("A text you approved has since been changed"), "{shown}");
+    assert!(!shown.contains("The wording is unchanged"), "{shown}");
+
+    let marked = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": 1, "summary": "tidy",
+                "edits": [{"oldText": "#header()", "newText": "#header()\nGrade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here.\n"}]}),
+        )
+        .await;
+    assert_eq!(marked["state"], "draft", "{marked}");
+    let shown = read("default", "2", false);
+    assert!(shown.contains("The draft draws marks on its text"), "{shown}");
+}
+
 /// What a terminal of this size still shows at the end of `output`.
 fn last_screen(output: &Output, rows: usize, columns: usize) -> String {
     let bytes = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
