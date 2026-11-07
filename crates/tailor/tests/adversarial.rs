@@ -2821,15 +2821,15 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
     ];
     // Only the widening makes these hairlines a patch, and only it has a ground for that patch to stand out
     // on: read against the real page, the dot is erased.
-    let hairlines: Vec<String> = (0..4)
+    let hairlines: Vec<String> = (0..5)
         .map(|i| {
             format!(
-                "place(top + left, dx: -2pt, dy: {}pt, line(length: 2pt, stroke: 0.02pt + white))",
-                f64::from(i) * 0.4 - 1.2
+                "place(top + left, dx: -1.85pt, dy: {}pt, line(length: 1.4pt, stroke: 0.02pt + white))",
+                f64::from(i) * 0.3 - 1.2
             )
         })
         .collect();
-    let ground = nowhere(-2.4, -0.2, 3.6, 3.6, "rgb(120, 120, 120)");
+    let ground = nowhere(-1.0, -0.5, 4.4, 5.0, "rgb(120, 120, 120)");
     let cases: Vec<(&str, String)> = cases
         .into_iter()
         .chain([(
