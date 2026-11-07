@@ -435,10 +435,12 @@ button.hold.holding { background: var(--warn); color: var(--surface); }
 .lock-list del { color: var(--del-ink); background: var(--del-bg); }
 .lock-list ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; }
 .preview-caption { margin: 6px 0 0; }
-/* Over 1 px to a point, where a CV's body text can be read on a phone. A narrower card scrolls sideways. */
-.picture-pages { display: grid; gap: 10px; margin: 8px 0 0; overflow-x: auto; }
+/* Each page whole, fitting the card, then over 1 px to a point, where a CV's body text can be read on a
+   phone. Only the second scrolls sideways, so that nothing of the first starts off screen. */
+.picture-pages { display: grid; gap: 10px; margin: 8px 0 0; min-width: 0; }
+.picture-read { overflow-x: auto; }
 .picture-page { display: block; width: max(100%, 38rem); max-width: 50rem; }
-.picture-page img {
+.picture-whole, .picture-page img {
   display: block;
   width: 100%;
   height: auto;
@@ -448,6 +450,8 @@ button.hold.holding { background: var(--warn); color: var(--surface); }
   border: 1px solid var(--line);
   border-radius: 4px;
 }
+.picture-whole { max-width: 26rem; margin: 0 auto; }
+.approval details { margin-top: 12px; }
 .approval .diff { max-height: 24rem; overflow: auto; }
 
 @media (min-width: 40rem) {
@@ -457,4 +461,7 @@ button.hold.holding { background: var(--warn); color: var(--surface); }
 @media (max-width: 60rem) {
   .cv-grid { grid-template-columns: minmax(0, 1fr); }
   .preview-pages img { max-width: 28rem; }
+  /* A draft's pages are in the approval panel, above. This one stays in the page, where cv.js keeps it
+     up to date, and comes back with an approval, when the panel has none. */
+  body:has(#cv-approval .approve-form) #cv-preview-pages { display: none; }
 }

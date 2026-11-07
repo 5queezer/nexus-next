@@ -7,7 +7,7 @@
 
 use std::path::Path as FilePath;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -26,7 +26,7 @@ use nexus_core::repo::cv_facts::{self, FactChange, FactsState, LockPreview, Owne
 use nexus_core::repo::cv_revisions;
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
-use nexus_tailor::{Language, LineChange, Metric, ReviewItem, Rule, review_diff};
+use nexus_tailor::{DiffLine, Language, LineChange, Metric, ReviewItem, Rule, review_diff};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -43,8 +43,12 @@ use crate::voice::{self, MAX_SESSION_BODY_BYTES, MAX_TOOL_BODY_BYTES, Voice, Voi
 const SAVE_BODY_LIMIT: usize = 1024 * 1024;
 const REVISIONS_PER_PAGE: i64 = 20;
 const FACTS_ACTOR: &str = "dashboard";
+/// How long a page may take with all it compiles, under the owner pool's 60 s deadline.
+const PAGE_LIMIT: Duration = Duration::from_secs(58);
 /// How many review items a page lists. Past that the diff still marks them where they stand.
 const MAX_LISTED_ITEMS: usize = 200;
+/// Of those, how many stand open above the button.
+const MAX_OPEN_ITEMS: usize = 30;
 /// Unchanged lines kept around a change in the diff, so that it reads in place.
 const DIFF_CONTEXT_LINES: usize = 1;
 /// How long a preview waits for another's compile, holding an owner slot: well under the 10 s any
@@ -215,6 +219,7 @@ fn rule_text(rule: &str) -> &'static str {
         }
         "contactDetails" => "An address, phone number or link that isn't in your contact details",
         "digitLookalike" => "Letters that read as digits",
+        "missingGlyph" => "A letter the CV's font doesn't have, which draws as a crossed box",
         _ => "Something the check refuses",
     }
 }
@@ -406,6 +411,9 @@ struct Outcome {
     /// conflict leaves it empty on purpose: the page then names the new head, and saving again
     /// after reading it is a choice.
     kept_expected: Option<i64>,
+    /// When the request began, if it has compiled already: the page must still answer inside the owner
+    /// pool's deadline, so its own review gets what is left.
+    started: Option<Instant>,
     /// The form's text came through a conflict, or from a form that doesn't say where it came from, so
     /// its base says nothing of that text. It stores a draft from here on, and says so.
     not_from_base: bool,
@@ -473,9 +481,11 @@ async fn render_variant(
     if source.is_error {
         return Err(PageError(StatusCode::NOT_FOUND));
     }
-    let review = owner::review(cv.mcp.clone(), variant)
-        .await
-        .map_err(|error| told(*error));
+    let left = PAGE_LIMIT.saturating_sub(outcome.started.map_or(Duration::ZERO, |at| at.elapsed()));
+    let review = match tokio::time::timeout(left, owner::review(cv.mcp.clone(), variant)).await {
+        Ok(review) => review.map_err(|error| told(*error)),
+        Err(_) => Err(told(owner::render_busy_error())),
+    };
     // The picture on the approval screen is this very compile's: a source can't pass this and then
     // fail to draw when the page asks for its image.
     if let Ok(review) = &review
@@ -676,32 +686,45 @@ fn rule_of(item: &ReviewItem) -> String {
 }
 
 /// Most serious first, as the check orders them, a rule's items together.
+fn review_item_view(item: &ReviewItem) -> impl IntoView + use<> {
+    let serious = matches!(
+        item.rule,
+        Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel
+    );
+    let context = item.context.clone();
+    view! {
+        <li class=serious.then_some("serious")>
+            <mark>{item.token.clone()}</mark>" "
+            <b>{rule_text(&rule_of(item))}</b>
+            {(!context.is_empty()).then(|| view! {
+                <small class="context">{highlighted(&context, &[item.token.as_str()])}</small>
+            })}
+        </li>
+    }
+}
+
+/// The most serious come first, and stay open. A long first approval lists hundreds, and the rest must
+/// not push the button down: a measured 10 pages put it 16,000 px under the last picture.
 fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
-    let listed: Vec<_> = items
-        .iter()
-        .take(MAX_LISTED_ITEMS)
-        .map(|item| {
-            let serious = matches!(
-                item.rule,
-                Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel
-            );
-            let context = item.context.clone();
-            view! {
-                <li class=serious.then_some("serious")>
-                    <mark>{item.token.clone()}</mark>" "
-                    <b>{rule_text(&rule_of(item))}</b>
-                    {(!context.is_empty()).then(|| view! {
-                        <small class="context">{highlighted(&context, &[item.token.as_str()])}</small>
-                    })}
-                </li>
-            }
-        })
+    let listed = items.iter().take(MAX_LISTED_ITEMS);
+    let open: Vec<_> = listed
+        .clone()
+        .take(MAX_OPEN_ITEMS)
+        .map(review_item_view)
         .collect();
+    let closed: Vec<_> = listed.skip(MAX_OPEN_ITEMS).map(review_item_view).collect();
+    let closed_count = closed.len();
     let more = items.len().saturating_sub(MAX_LISTED_ITEMS);
     view! {
-        <ul class="review-items" id="cv-review-items">{listed}</ul>
-        {(more > 0).then(|| view! {
-            <p class="hint">{format!("And {more} more. The text below marks them where they stand.")}</p>
+        <ul class="review-items" id="cv-review-items">{open}</ul>
+        {(closed_count > 0).then(|| view! {
+            <details id="cv-more-items">
+                <summary>{format!("The other {} to check", closed_count + more)}</summary>
+                <ul class="review-items">{closed}</ul>
+                {(more > 0).then(|| view! {
+                    <p class="hint">{format!("And {more} more, marked in the text where they stand.")}</p>
+                })}
+            </details>
         })}
     }
 }
@@ -736,6 +759,7 @@ fn approval_view(
         Ok(review) => {
             let against = match review.baseline_revision {
                 None => "There is no approved text to compare with, so this is the whole CV. Every number and date is marked.".to_owned(),
+                Some(at) if review.baseline_is_own && review.baseline_is_lock => format!("Compared with revision {at}, approved by your lock of the facts, however many drafts came between."),
                 Some(at) if review.baseline_is_own => format!("Compared with revision {at}, the last you approved in this variant, however many drafts came between."),
                 Some(at) => format!("Compared with revision {at}, which holds text you approved in another variant and haven't replaced there."),
             };
@@ -758,12 +782,14 @@ fn approval_view(
                 }
                 .into_any()
             };
+            let words = review_diff(review.baseline.as_deref(), &review.rendered_text);
             // The words a reader gets match the baseline, and the source doesn't: `#strike`, or a job
             // set nearly invisible, reads as nothing changed.
             let looks_only = review.baseline.is_some()
-                && review_diff(review.baseline.as_deref(), &review.rendered_text)
-                    .iter()
-                    .all(|line| line.change == LineChange::Same);
+                && words.iter().all(|line| line.change == LineChange::Same);
+            let beyond_the_text = review.baseline.is_some()
+                && !looks_only
+                && source_goes_beyond_words(&review.source_diff, &words);
             view! {
                 <p>"This revision isn't approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
                 {picture_view(variant, review)}
@@ -771,23 +797,26 @@ fn approval_view(
                     <h3>"Check these in the text"</h3>
                     {review_items_view(&review.items)}
                 })}
-                <h3>"What the text says"</h3>
-                <p class="hint">{against}</p>
-                {if looks_only {
-                    view! {
-                        <p class="banner warn" id="cv-looks-only" role="status">
-                            "The wording is unchanged, but the source isn't. What changed is how it looks: read the source below, and look at the picture."
-                        </p>
-                    }
-                    .into_any()
-                } else {
-                    rendered_diff_view(review).into_any()
-                }}
-                <details open>
+                {looks_only.then(|| view! {
+                    <p class="banner warn" id="cv-looks-only" role="status">
+                        "The wording is unchanged, but the source isn't. What changed is how it looks: compare the picture, and read the source changes below the button."
+                    </p>
+                })}
+                {beyond_the_text.then(|| view! {
+                    <p class="banner warn" id="cv-beyond-text" role="status">
+                        "The source changed in places the wording doesn't show. Look at the picture, and read the source changes below the button."
+                    </p>
+                })}
+                {action}
+                <details id="cv-text-details">
+                    <summary>"What the text says"</summary>
+                    <p class="hint">{against}</p>
+                    {(!looks_only).then(|| rendered_diff_view(review))}
+                </details>
+                <details id="cv-source-details">
                     <summary>"Source changes"</summary>
                     {diff_view(&review.source_diff)}
                 </details>
-                {action}
             }
             .into_any()
         }
@@ -800,8 +829,33 @@ fn approval_view(
     }
 }
 
+/// Whether a line of the source changed that the changed wording doesn't hold: a shape, or anything else
+/// that draws. Markup around unchanged words counts, which at worst says something needless.
+fn source_goes_beyond_words(source_diff: &str, words: &[DiffLine]) -> bool {
+    let changed: Vec<String> = words
+        .iter()
+        .filter(|line| line.change != LineChange::Same)
+        .map(|line| line.text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    source_diff
+        .lines()
+        .filter(|line| !line.starts_with("+++") && !line.starts_with("---"))
+        .filter_map(|line| line.strip_prefix(['+', '-']))
+        .map(|line| {
+            let line = line.trim();
+            line.strip_prefix("- ")
+                .unwrap_or(line)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|line| !line.is_empty())
+        .any(|line| !changed.iter().any(|said| said.contains(&line)))
+}
+
 /// What the owner approves, as a reader gets it, above the button: text can read as something the
-/// page doesn't show. Wide enough to read on a phone, and a tap opens a page at full size.
+/// page doesn't show. Each page whole and small, so that nothing starts off screen, then wide enough to
+/// read on a phone, and a tap opens a page at full size.
 fn picture_view(variant: &str, review: &Review) -> impl IntoView + use<> {
     let base = variant_url(variant);
     let revision = review.revision;
@@ -810,18 +864,25 @@ fn picture_view(variant: &str, review: &Review) -> impl IntoView + use<> {
             let url = format!("{base}/preview.png?revision={revision}&page={page}&state=draft");
             let url = url.as_str();
             view! {
-                <a class="picture-page" href=url.to_owned() target="_blank" rel="noopener">
-                    <img
-                        src=url.to_owned()
-                        alt=format!("Revision {revision}, page {page}, as a reader gets it, stamped. If you can't see it, don't approve this: reload.")
-                    />
-                </a>
+                <img
+                    class="picture-whole"
+                    src=url.to_owned()
+                    alt=format!("Revision {revision}, page {page}, the whole page, stamped. If you can't see it, don't approve this: reload.")
+                />
+                <div class="picture-read">
+                    <a class="picture-page" href=url.to_owned() target="_blank" rel="noopener">
+                        <img
+                            src=url.to_owned()
+                            alt=format!("Revision {revision}, page {page}, at a size to read, stamped. If you can't see it, don't approve this: reload.")
+                        />
+                    </a>
+                </div>
             }
         })
         .collect();
     view! {
         <h3>"The picture"</h3>
-        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text below. On a narrow screen, swipe it sideways for the whole width, or tap a page to open it at full size. The stamp is no part of the CV."</p>
+        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text. Each page comes whole, then at a size to read, which swipes sideways on a narrow screen. Tap it to open the page at full size. The stamp is no part of the CV."</p>
         <div class="picture-pages" id="cv-picture-pages">{pages}</div>
     }
 }
@@ -1125,6 +1186,7 @@ async fn save(
         typed_summary: Some(typed_summary),
         kept_expected: Some(expected),
         not_from_base: !from_base,
+        started: Some(Instant::now()),
         ..Outcome::default()
     };
     if base.is_error {
@@ -1176,6 +1238,7 @@ async fn approve(
     let Ok(revision) = text("revision").parse::<i64>() else {
         return Err(PageError(StatusCode::BAD_REQUEST));
     };
+    let started = Instant::now();
     let told = told(
         owner::approve(
             cv.mcp.clone(),
@@ -1198,6 +1261,7 @@ async fn approve(
         return Err(PageError(StatusCode::NOT_FOUND));
     }
     let (status, mut outcome) = refused(&told, Outcome::default());
+    outcome.started = Some(started);
     if told.code() == "cv_approval_stale" {
         outcome.flash = Some(Flash {
             ok: false,
@@ -1236,6 +1300,7 @@ async fn revert(
     let (Some(expected), Some(to)) = (number("expected"), number("to")) else {
         return Err(PageError(StatusCode::BAD_REQUEST));
     };
+    let started = Instant::now();
     let told = call(
         &cv,
         "revert_cv",
@@ -1250,7 +1315,8 @@ async fn revert(
     if told.code() == "cv_variant_not_found" {
         return Err(PageError(StatusCode::NOT_FOUND));
     }
-    let (status, outcome) = refused(&told, Outcome::default());
+    let (status, mut outcome) = refused(&told, Outcome::default());
+    outcome.started = Some(started);
     Ok(with_status(
         status,
         render_variant(&cv, &variant, 1, &token, outcome).await?,

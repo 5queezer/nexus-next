@@ -1275,7 +1275,11 @@ async fn a_change_in_looks_says_so_and_opens_the_source() {
     let (_, _, page) = get(&f.app, VARIANT).await;
     assert!(page.contains("id=\"cv-looks-only\""), "{page}");
     assert!(page.contains("The wording is unchanged"), "{page}");
-    assert!(page.contains("<details open"), "{page}");
+    let line = page.find("id=\"cv-looks-only\"").unwrap();
+    assert!(
+        line < page.find("class=\"approve-form\"").unwrap(),
+        "above the button"
+    );
     assert!(page.contains("#strike"), "the source diff is on the page");
 
     // With a real wording change, nothing is claimed about looks.
@@ -1491,7 +1495,7 @@ async fn the_editor_form_keeps_no_typing_across_a_reload() {
 
 /// Finding 5: one changed word elsewhere must not fold what shows a change in looks.
 #[tokio::test]
-async fn every_draft_opens_its_source_changes() {
+async fn a_draft_says_above_the_button_when_its_source_goes_beyond_its_words() {
     let f = locked().await;
     approved_start(&f).await;
     agent_patch(
@@ -1503,7 +1507,14 @@ async fn every_draft_opens_its_source_changes() {
     .await;
     let (_, _, page) = get(&f.app, VARIANT).await;
     assert!(!page.contains("cv-looks-only"), "words changed too: {page}");
-    assert!(page.contains("<details open"), "{page}");
+    // Words changed, and so did something they don't show: a line above the button says so.
+    let line = page
+        .find("id=\"cv-beyond-text\"")
+        .unwrap_or_else(|| panic!("{page}"));
+    assert!(
+        line < page.find("class=\"approve-form\"").unwrap(),
+        "{page}"
+    );
     assert!(page.contains("#strike[routing]"), "{page}");
 }
 
@@ -1551,12 +1562,46 @@ async fn the_approval_screen_shows_the_picture_before_the_button() {
     let button = panel.find("class=\"approve-form\"").unwrap();
     let read = panel.find("Read the picture").unwrap();
     assert!(read < picture && picture < button, "{panel}");
-    let to_full_size = &panel[..picture];
+    // The whole page first, then the same page at a size to read, with its tap.
+    let whole = panel.find("class=\"picture-whole\"").unwrap();
+    let to_read = panel.find("class=\"picture-read\"").unwrap();
+    assert!(whole < to_read && to_read < button, "{panel}");
     assert!(
-        to_full_size
-            .rfind("<a ")
-            .is_some_and(|at| panel[at..picture].contains("href=")),
+        panel[to_read..button].contains("href=") && panel[to_read..button].contains("preview.png"),
         "a tap opens the page at full size: {panel}"
+    );
+    // The text and the source are collapsed, below the button: they no longer push it down.
+    let text = panel.find("id=\"cv-text-details\"").unwrap();
+    let source = panel.find("id=\"cv-source-details\"").unwrap();
+    assert!(button < text && button < source, "{panel}");
+    assert!(!panel.contains("<details open"), "{panel}");
+}
+
+/// A long first approval keeps its button close: only the most serious items stand open.
+#[tokio::test]
+async fn a_long_list_of_items_does_not_push_the_button_down() {
+    let f = locked().await;
+    approved_start(&f).await;
+    let many: String = (0..80)
+        .map(|i| format!("Handled batch number {i}0 of 7{i}.\\\n"))
+        .collect();
+    agent_patch(&f, 1, "Built the routing service.", &many).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let panel = &page[page.find("id=\"cv-approval\"").unwrap()..];
+    let (open, closed) = (
+        panel
+            .find("id=\"cv-review-items\"")
+            .unwrap_or_else(|| panic!("{panel}")),
+        panel
+            .find("id=\"cv-more-items\"")
+            .unwrap_or_else(|| panic!("{panel}")),
+    );
+    let button = panel.find("class=\"approve-form\"").unwrap();
+    assert!(open < closed && closed < button, "{panel}");
+    assert_eq!(panel[open..closed].matches("<li").count(), 30, "{panel}");
+    assert!(
+        !panel[closed..button].contains("<details id=\"cv-more-items\" open"),
+        "{panel}"
     );
 }
 
