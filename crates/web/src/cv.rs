@@ -821,7 +821,7 @@ fn picture_view(variant: &str, review: &Review) -> impl IntoView + use<> {
         .collect();
     view! {
         <h3>"The picture"</h3>
-        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text below. The stamp is no part of the CV. Tap a page to open it at full size."</p>
+        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text below. On a narrow screen, swipe it sideways for the whole width, or tap a page to open it at full size. The stamp is no part of the CV."</p>
         <div class="picture-pages" id="cv-picture-pages">{pages}</div>
     }
 }
