@@ -2139,6 +2139,18 @@ async fn a_letter_the_fonts_lack_is_refused_and_says_which() {
         ("Arabic", Rule::MissingGlyph, "I am ليس certified."),
         ("Devanagari", Rule::MissingGlyph, "I am नहीं certified."),
         ("a letter in math", Rule::MissingGlyph, "Model: $x$ here."),
+        (
+            "a name in Chinese",
+            Rule::MissingGlyph,
+            "Worked with 李雷 here.",
+        ),
+        (
+            "a name in Arabic",
+            Rule::MissingGlyph,
+            "Worked with محمد here.",
+        ),
+        ("numerals in Chinese", Rule::MissingGlyph, "Since 二〇一五."),
+        ("Arabic digits", Rule::MissingGlyph, "مرحبا ٢٠١٩"),
     ])
     .await;
     let source = format!("{START}I am 非 certified.\n");

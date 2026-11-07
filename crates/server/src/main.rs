@@ -392,7 +392,12 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
                 .chain(&preview.wording)
                 .flat_map(|change| [change.old.as_str(), &change.new])
                 .chain(preview.added.iter().map(String::as_str))
-                .any(is_cut);
+                .any(is_cut)
+                || preview
+                    .changes
+                    .iter()
+                    .chain(&preview.wording)
+                    .any(|change| change.field.chars().count() > MAX_PRINTED_FIELD_CHARS);
             if was_cut {
                 anyhow::bail!(
                     "nothing was written. A value above was cut short, so this can't be confirmed \

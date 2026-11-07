@@ -2574,7 +2574,9 @@ async fn a_correction_in_one_variant_stops_a_new_variant_taking_the_old_claim() 
     assert_eq!(review.baseline_revision, None);
     // Text the owner approved stands elsewhere: the diff's header doesn't say otherwise.
     assert!(
-        review.source_diff.contains("no approved text to compare with")
+        review
+            .source_diff
+            .contains("no approved text to compare with")
             && !review.source_diff.contains("nothing approved yet"),
         "{}",
         review.source_diff

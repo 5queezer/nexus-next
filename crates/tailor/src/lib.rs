@@ -38,7 +38,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// figure on the board is still to come: before those drawings, 9 pages took 48 MB there. The unit's
 /// `MemoryHigh=256M` is the real ceiling, not `MemoryMax`: above it the kernel stalls the whole cgroup,
 /// server included, instead of killing anything. So this limit, the server's own peak, and what a
-/// compile can allocate between two polls must fit below it. The server's peak measured 118 MiB on
+/// compile can allocate between two polls must fit below it. The server's peak measured 128 MiB on
 /// x86-64 after four browsers loaded a 10-page approval, also still to be measured on the board.
 pub const DEFAULT_RSS_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 

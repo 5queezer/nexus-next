@@ -491,9 +491,11 @@ async fn nothing_an_agent_wrote_scrolls_the_lock_list_off_the_terminal() {
         let screen = last_screen(&refused, 50, 200);
         assert!(screen.contains("Fake Inc"), "{name}: {screen}");
         assert!(screen.contains("CEO"), "{name}: {screen}");
-        assert!(screen.contains("--confirm"), "{name}: {screen}");
         if name.starts_with("a long") {
             assert!(screen.contains("more characters"), "{name}: {screen}");
+            assert!(screen.contains("facts page"), "{name}: {screen}");
+        } else {
+            assert!(screen.contains("--confirm"), "{name}: {screen}");
         }
     }
 }

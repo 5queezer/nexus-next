@@ -299,10 +299,13 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                         if overridden(text) {
                             result.reversed.push(text.text.to_string());
                         }
-                        // A font's first glyph draws what it has no letter for, as a crossed box.
+                        // A font's first glyph draws what it has no letter for, as a crossed box. A
+                        // control character is no letter that goes missing: it says nothing to read.
                         for glyph in text.glyphs.iter().filter(|glyph| glyph.id == 0) {
                             let said = text.text.get(glyph.range()).unwrap_or_default();
-                            if !said.trim().is_empty() && !result.missing.iter().any(|m| m == said)
+                            if !said.trim().is_empty()
+                                && !said.chars().all(char::is_control)
+                                && !result.missing.iter().any(|m| m == said)
                             {
                                 result.missing.push(said.to_owned());
                             }
