@@ -1394,7 +1394,8 @@ async fn racing_a_tap<T>(
     work: impl Future<Output = T>,
 ) -> (T, bool) {
     let work = async {
-        tokio::time::sleep(Duration::from_millis(60)).await;
+        // Long enough for the tap to hold the one compile, and well under what it takes to draw.
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let done = work.await;
         (done, std::time::Instant::now())
     };
