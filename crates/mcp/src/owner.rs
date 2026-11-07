@@ -63,7 +63,7 @@ impl Review {
         self.baseline.is_none().then_some(if self.approved_here {
             "The facts have changed since you last approved text in this variant, so that text can't stand for this one. This is the whole CV: every number and date is marked, and the text doesn't show what a source draws, so read the picture."
         } else {
-            "Nothing this variant holds or started from has been approved under today's facts. This is the whole CV: every number and date is marked, and the text doesn't show what a source draws, so read the picture."
+            "Nothing this variant holds or started from still stands as approved under today's facts. This is the whole CV: every number and date is marked, and the text doesn't show what a source draws, so read the picture."
         })
     }
 }

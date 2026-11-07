@@ -51,7 +51,9 @@ pub async fn is_replaced(conn: &mut SqliteConnection, source_sha256: &str) -> Re
 /// SQL saying whether a source is approved in a variant, under these facts. A variant's newest approval
 /// decides, under whichever facts it was made: the text is approved only if that row's source and
 /// facts both match, so an approval the owner has since replaced stops counting, even if the facts
-/// come back to what they were. A variant with no approval of its own takes text from elsewhere, as
+/// come back to what they were. A lock's own row stops counting once any variant has replaced its text,
+/// as nobody tapped it and a lock doesn't speak over a correction: a tap there writes a row of its own. A
+/// row the owner tapped still stands. A variant with no approval of its own takes text from elsewhere, as
 /// long as that is still the newest approval where it was made and no variant has replaced it: the
 /// owner's decision is that a correction counts everywhere, so a new variant can't bring back what they
 /// corrected in any of them. Its arguments are SQL written in this file, never data.
@@ -59,7 +61,9 @@ fn approved_sql(variant: &str, source: &str, facts: &str) -> String {
     let replaced = replaced_sql(source);
     format!(
         "COALESCE(
-            (SELECT own.source_sha256 = {source} AND own.facts_sha256 = {facts} FROM cv_approvals own
+            (SELECT own.source_sha256 = {source} AND own.facts_sha256 = {facts}
+                AND NOT (own.approved_by = 'lock' AND {replaced})
+                FROM cv_approvals own
                 WHERE own.variant_id = {variant}
                 ORDER BY own.id DESC LIMIT 1),
             EXISTS (SELECT 1 FROM cv_approvals a
@@ -112,13 +116,15 @@ pub struct NewApproval<'a> {
 }
 
 /// Run inside `Db::begin_write`. Approving what is the variant's newest approval, under these same
-/// facts, changes nothing. Anything else becomes the newest, which is what decides.
+/// facts, changes nothing, unless that row is a lock's and this the owner's tap, which then stands where
+/// the lock's wouldn't. Anything else becomes the newest, which is what decides.
 pub async fn record(conn: &mut SqliteConnection, new: &NewApproval<'_>) -> Result<()> {
     sqlx::query(
         "INSERT INTO cv_approvals (source_sha256, facts_sha256, rendered_text, variant_id,
              revision_number, approved_by, approved_at)
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-         WHERE NOT COALESCE((SELECT source_sha256 = ?1 AND facts_sha256 = ?2 FROM cv_approvals
+         WHERE NOT COALESCE((SELECT source_sha256 = ?1 AND facts_sha256 = ?2
+                 AND (approved_by <> 'lock' OR ?6 = 'lock') FROM cv_approvals
              WHERE variant_id = ?4 ORDER BY id DESC LIMIT 1), 0)",
     )
     .bind(new.source_sha256)
@@ -147,7 +153,8 @@ pub struct Baseline {
     pub approved_by: String,
     /// The text is what this variant started from in another, and it never held it.
     pub started_from: bool,
-    /// Another variant has replaced this text since, so a line the owner corrected there reads here as
+    /// Another variant has replaced this text since, whoever's approval this is, so a line the owner
+    /// corrected there reads here as
     /// unchanged. The owner accepted that, as long as the review says so plainly.
     pub replaced: bool,
 }
@@ -174,7 +181,7 @@ pub async fn last_approved(
             WHERE r.variant_id = ?1 AND p.variant_id <> ?1
          )
          SELECT a.rendered_text, h.number AS revision, h.id AS revision_id, a.variant_id = ?1 AS own,
-             a.approved_by, h.started_from, a.variant_id <> ?1 AND {replaced} AS replaced
+             a.approved_by, h.started_from, {replaced} AS replaced
          FROM held h JOIN cv_approvals a ON a.source_sha256 = h.source_sha256
          WHERE a.facts_sha256 = ?2
          AND (a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id)

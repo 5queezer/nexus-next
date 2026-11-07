@@ -1732,6 +1732,27 @@ async fn a_replaced_text_reads_as_a_diff_and_says_so_above_the_button() {
         !page.contains("cv-looks-only"),
         "the source is the same: {page}"
     );
+
+    // A draft on `default`'s own approval of that replaced text keeps its wording, with the line.
+    let worded = source.replace("Built the routing service.", "Built the routing engine.");
+    let landed = agent_call(
+        &f,
+        "patch_cv",
+        json!({"expectedRevision": 1, "summary": "tidy",
+            "edits": [{"oldText": source, "newText": worded}]}),
+    )
+    .await;
+    assert_ne!(landed.is_error, Some(true));
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert!(above_the_button(&page, "cv-replaced-elsewhere"), "{page}");
+    assert!(
+        page.contains("the last you approved in this variant"),
+        "{page}"
+    );
+
+    // On the text the tap approved, in the variant where it was changed, there is nothing to say.
+    let (_, _, page) = get(&f.app, "/cv/variants/tailored").await;
+    assert!(!page.contains("cv-replaced-elsewhere"), "{page}");
 }
 
 /// The owner's decision on marks: said above the button, naming where to look, and refusing nothing.

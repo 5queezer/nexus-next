@@ -269,6 +269,12 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
     }
     match review.baseline_revision {
         None => println!("this is the whole CV:"),
+        Some(at) if review.baseline_is_own && review.baseline_is_lock => {
+            println!("compared with revision {at}, approved by your lock of the facts:");
+        }
+        Some(at) if review.baseline_is_own => {
+            println!("compared with revision {at}, the last you approved in this variant:");
+        }
         Some(at) if review.baseline_is_start => {
             println!(
                 "compared with the approved text this variant started from, revision {at} there:"
@@ -276,12 +282,6 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
         }
         Some(at) if review.baseline_is_replaced => {
             println!("compared with revision {at}, the approved text this variant last held:");
-        }
-        Some(at) if review.baseline_is_own && review.baseline_is_lock => {
-            println!("compared with revision {at}, approved by your lock of the facts:");
-        }
-        Some(at) if review.baseline_is_own => {
-            println!("compared with revision {at}, the last you approved in this variant:");
         }
         Some(at) => println!(
             "compared with revision {at}, which holds text you approved in another variant:"

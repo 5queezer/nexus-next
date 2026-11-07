@@ -503,6 +503,14 @@ async fn the_terminal_says_why_a_cv_is_whole_replaced_or_marked() {
         shown.contains("The draft draws marks on its text"),
         "{shown}"
     );
+    assert!(
+        shown.contains("the last you approved in this variant"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("A text you approved has since been changed"),
+        "{shown}"
+    );
 }
 
 /// What a terminal of this size still shows at the end of `output`.

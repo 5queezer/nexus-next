@@ -3035,6 +3035,145 @@ async fn a_lock_does_not_bring_back_what_the_owner_corrected_in_another_applicat
     assert_eq!(done["message"], "CV generated successfully", "{done}");
 }
 
+/// The sixth check's finding 1, the lock test with its applications swapped. The first application holds
+/// the lock's own row, and the owner corrects the text in the second. The lock doesn't go on speaking in
+/// the first: a draft, no real PDF by any path, and the owner's one tap gets it out.
+#[tokio::test]
+async fn a_locks_own_row_stops_counting_once_its_text_is_replaced() {
+    let server = locked_server().await;
+    let selection = |app: &str| json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
+    let (first, second) = (server.application("A").await, server.application("B").await);
+    let made = server
+        .call("generate_tailored_cv", selection(&first))
+        .await
+        .ok();
+    let kept = made["documentId"].as_str().unwrap().to_owned();
+    server
+        .call("generate_tailored_cv", selection(&second))
+        .await
+        .ok();
+    let own = format!("application-{first}");
+    assert_eq!(approvals_by_of(&server, &own).await, ["lock"]);
+    assert_eq!(
+        head_state(&server, &own).await,
+        "approved",
+        "nothing replaced yet"
+    );
+
+    let corrected = format!("application-{second}");
+    let (at, _) = head(&server, &corrected).await;
+    patch_in(
+        &server,
+        &corrected,
+        at,
+        "Built the routing service.",
+        "Built the routing core.",
+    )
+    .await;
+    owner_approve(&server, &corrected).await;
+
+    assert_eq!(head_state(&server, &own).await, "draft");
+    let held = server.call("generate_tailored_cv", selection(&first)).await;
+    assert_eq!(held.code(), "cv_approval_required", "{:?}", held.json());
+    assert_eq!(
+        documents_of(&server, &first).await,
+        [kept.clone()],
+        "the one from before"
+    );
+    let elsewhere = server.application("C").await;
+    let saved = render(
+        &server,
+        json!({"variant": own, "previewPages": 0, "saveToApplicationId": elsewhere}),
+    )
+    .await;
+    assert_eq!(saved.text_json()["error"]["code"], "cv_approval_required");
+    assert_eq!(
+        documents_of(&server, &elsewhere).await,
+        Vec::<String>::new()
+    );
+    let drawn = render(&server, json!({"variant": own, "previewPages": 1})).await;
+    assert_eq!(drawn.text_json()["state"], "draft");
+    assert_eq!(drawn.content.len(), 2, "no PDF");
+
+    // The review says what this is, and reads against that row.
+    let review = owner::review(server.state.clone(), &own).await.unwrap();
+    assert!(
+        !review.approved && review.baseline_is_own && review.baseline_is_lock,
+        "{review:?}"
+    );
+    assert!(review.baseline_is_replaced, "{review:?}");
+
+    // One tap gets it out, as the owner's own row, which stands.
+    owner_approve(&server, &own).await;
+    assert_eq!(approvals_by_of(&server, &own).await, ["lock", "cli"]);
+    assert_eq!(head_state(&server, &own).await, "approved");
+    let again = server
+        .call("generate_tailored_cv", selection(&first))
+        .await
+        .ok();
+    assert_eq!(again["message"], "CV generated successfully", "{again}");
+    let drawn = render(&server, json!({"variant": own, "previewPages": 0})).await;
+    assert_eq!(drawn.text_json()["state"], "approved");
+    assert_eq!(
+        head_state(&server, &corrected).await,
+        "approved",
+        "its own stands"
+    );
+}
+
+/// The sixth check's finding 2: a draft on a variant's own approval of a text replaced elsewhere says so,
+/// and it is true each time it says so: not before the correction, and not where it was made.
+#[tokio::test]
+async fn a_draft_on_an_own_approval_says_when_its_text_was_replaced_elsewhere() {
+    let server = locked_server().await;
+    let (twenty, twelve) = (CLAIM_20.1, "Led a team of 12 engineers.");
+    patch(&server, 0, CLAIM_20.0, twenty).await.ok();
+    owner_approve(&server, "default").await;
+    new_variant(&server, "alpha", "default").await;
+    patch_in(
+        &server,
+        "default",
+        1,
+        "Backend engineer",
+        "Freight engineer",
+    )
+    .await;
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert!(
+        review.baseline_is_own && !review.baseline_is_replaced,
+        "the text stands: {review:?}"
+    );
+
+    patch_in(&server, "alpha", 1, twenty, twelve).await;
+    owner_approve(&server, "alpha").await;
+    let review = owner::review(server.state.clone(), "default")
+        .await
+        .unwrap();
+    assert!(
+        review.baseline_is_own && review.baseline_is_replaced,
+        "{review:?}"
+    );
+    assert!(!review.approved);
+
+    // Where the correction was made, nothing was replaced.
+    patch_in(&server, "alpha", 2, "Backend engineer", "Road engineer").await;
+    let review = owner::review(server.state.clone(), "alpha").await.unwrap();
+    assert!(
+        review.baseline_is_own && !review.baseline_is_replaced,
+        "{review:?}"
+    );
+
+    // A row the owner tapped still stands, as decided.
+    let rendered = render(
+        &server,
+        json!({"variant": "default", "revision": 1, "previewPages": 0}),
+    )
+    .await;
+    assert_eq!(rendered.text_json()["state"], "approved");
+}
+
 /// The fifth gate review's finding 8: a variant made from another with a fix in the same call counts as
 /// having held what it started from. It reads against that text, and says when it was replaced.
 #[tokio::test]
@@ -3096,7 +3235,10 @@ async fn a_whole_cv_review_says_why() {
         .await
         .unwrap();
     let why = review.whole_cv_because().unwrap();
-    assert!(why.contains("Nothing this variant holds"), "{why}");
+    assert!(
+        why.contains("Nothing this variant holds or started from still stands as approved"),
+        "{why}"
+    );
     owner_approve(&server, "default").await;
     assert_eq!(
         owner::review(server.state.clone(), "default")

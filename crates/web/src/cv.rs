@@ -763,11 +763,11 @@ fn approval_view(
         Ok(review) => {
             let against = match review.baseline_revision {
                 None => "Nothing to compare with, so this is the whole CV.".to_owned(),
+                Some(at) if review.baseline_is_own && review.baseline_is_lock => format!("Compared with revision {at}, approved by your lock of the facts, however many drafts came between."),
+                Some(at) if review.baseline_is_own => format!("Compared with revision {at}, the last you approved in this variant, however many drafts came between."),
                 Some(at) if review.baseline_is_replaced && review.baseline_is_start => format!("Compared with the approved text this variant started from, revision {at} there. That text has since been changed in another variant."),
                 Some(at) if review.baseline_is_replaced => format!("Compared with revision {at}, the approved text this variant last held. That text has since been changed in another variant."),
                 Some(at) if review.baseline_is_start => format!("Compared with the approved text this variant started from, revision {at} there."),
-                Some(at) if review.baseline_is_own && review.baseline_is_lock => format!("Compared with revision {at}, approved by your lock of the facts, however many drafts came between."),
-                Some(at) if review.baseline_is_own => format!("Compared with revision {at}, the last you approved in this variant, however many drafts came between."),
                 Some(at) => format!("Compared with revision {at}, which holds text you approved in another variant and haven't replaced there."),
             };
             let action = if review.revision == 0 {
