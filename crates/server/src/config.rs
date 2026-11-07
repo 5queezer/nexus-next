@@ -213,12 +213,22 @@ fn auth_problem(error: &ConfigError) -> String {
     }
 }
 
+/// Whether a secret file's mode keeps it from other users. systemd hands a credential over as 0440, in
+/// a directory only the service can reach, and its group is the service's own, so there the group may
+/// read. Nowhere else.
+fn secret_mode_ok(mode: u32, in_credentials: bool) -> bool {
+    let denied = if in_credentials { 0o037 } else { 0o077 };
+    mode & denied == 0
+}
+
 fn read_token(path: &std::path::Path) -> Result<String, String> {
     let mode = std::fs::metadata(path)
         .map_err(|e| format!("cannot read: {}", e.kind()))?
         .permissions()
         .mode();
-    if mode & 0o077 != 0 {
+    let in_credentials =
+        std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|dir| path.starts_with(dir));
+    if !secret_mode_ok(mode, in_credentials) {
         return Err(format!(
             "mode {:o} lets other users read the secret, use 0400 or 0600",
             mode & 0o777
@@ -453,6 +463,16 @@ mod tests {
             a.voice_session_seconds = bad;
             assert!(a.validate().unwrap_err().contains("voice-session-seconds"));
         }
+    }
+
+    #[test]
+    fn only_a_systemd_credential_may_be_readable_by_its_group() {
+        assert!(secret_mode_ok(0o600, false));
+        assert!(secret_mode_ok(0o400, false));
+        assert!(!secret_mode_ok(0o440, false));
+        assert!(secret_mode_ok(0o440, true));
+        assert!(!secret_mode_ok(0o460, true));
+        assert!(!secret_mode_ok(0o444, true));
     }
 
     #[test]
