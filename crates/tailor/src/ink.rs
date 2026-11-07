@@ -54,6 +54,8 @@ const NEAR: i64 = 3;
 const LINE_HEIGHT: i64 = 4;
 /// Pixels looked at for marks on one page, as a multiple of the page's own. Past it, the page warns.
 const MAX_MARK_PAGES: u64 = 2;
+/// Words kept as having a mark on them, on one page: enough to say where to look.
+const MAX_MARKED_WORDS: usize = 100;
 /// Pixels judged on one page, as a multiple of the page's own: a thousand page-sized glyphs would
 /// otherwise take minutes. Honest text covers a fraction of its page once. Past it, the source is refused.
 const MAX_INK_PAGES: u64 = 16;
@@ -451,9 +453,8 @@ fn has_mark(
         return false;
     }
     let around = surroundings(bare, cover, size);
-    let differs = |x: i64, y: i64| {
-        difference(Lab::of_srgb(bare.srgb(index(x, y))), around) >= MIN_DIFFERENCE
-    };
+    let differs =
+        |x: i64, y: i64| difference(Lab::of_srgb(bare.srgb(index(x, y))), around) >= MIN_DIFFERENCE;
     // A flood goes no further than it takes to know a paint is past an em.
     let (from_x, to_x) = ((left - em).max(0), (right + em).min(width));
     let (from_y, to_y) = ((top - em).max(0), (bottom + em).min(height));
@@ -489,11 +490,10 @@ fn has_mark(
             }
             let level = high_y - low_y < em / LINE_HEIGHT;
             let row = (low_y + high_y) / 2;
-            let line_goes_on = (1..=em)
-                .any(|step| {
-                    (high_x + step < width && differs(high_x + step, row))
-                        || (low_x - step >= 0 && differs(low_x - step, row))
-                });
+            let line_goes_on = (1..=em).any(|step| {
+                (high_x + step < width && differs(high_x + step, row))
+                    || (low_x - step >= 0 && differs(low_x - step, row))
+            });
             if !(level && (low_y > baseline || line_goes_on)) {
                 return true;
             }
@@ -609,8 +609,7 @@ pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>, marked: &mut V
                 }
             };
             let unread_in = |drawn, bare| {
-                judge(drawn, bare, &real_bare, &cover, fill, &later, size)
-                    .unread(is_letter(glyph))
+                judge(drawn, bare, &real_bare, &cover, fill, &later, size).unread(is_letter(glyph))
             };
             if unread_in(&wide, &wide_bare) || unread_in(&real, &real_bare) {
                 let word = word_at(text, glyph);
@@ -619,9 +618,16 @@ pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>, marked: &mut V
                     last_word = Some(word);
                 }
             }
-            if has_mark(&real_bare, &cover, baseline.y as i64, em, size, &mut mark_budget) {
+            if has_mark(
+                &real_bare,
+                &cover,
+                baseline.y as i64,
+                em,
+                size,
+                &mut mark_budget,
+            ) {
                 let word = word_at(text, glyph);
-                if !marked.contains(&word) {
+                if marked.len() < MAX_MARKED_WORDS && !marked.contains(&word) {
                     marked.push(word);
                 }
             }

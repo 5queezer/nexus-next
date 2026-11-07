@@ -2650,7 +2650,9 @@ async fn pale_text_and_strokes_count_as_hidden_and_muted_colours_do_not() {
 /// What the check says of a line of a CV: the words no reader can see, and those with a mark on them.
 async fn judged(line: &str) -> (Vec<String>, Vec<String>) {
     let request = RenderRequest {
-        source: format!("{START}= Work\n#employment(\"brightpath\")[\n- {line}\n- Mentored developers.\n]\n"),
+        source: format!(
+            "{START}= Work\n#employment(\"brightpath\")[\n- {line}\n- Mentored developers.\n]\n"
+        ),
         facts: facts_en(),
         pdf: false,
         preview_pages: 0,
@@ -2669,10 +2671,21 @@ fn nowhere(dx: f64, dy: f64, length: f64, thickness: f64, paint: &str) -> String
 
 /// `glyph` at 11 pt with a grey ground only the widened drawing has, and white patches that really are
 /// on the page. Its box and its advance are in the font's units, thousandths of an em.
-fn erased_on_a_ground_of_no_page(glyph: &str, (x0, y0, x1, y1): (f64, f64, f64, f64), advance: f64, patches: &[(f64, f64, f64, f64)]) -> String {
+fn erased_on_a_ground_of_no_page(
+    glyph: &str,
+    (x0, y0, x1, y1): (f64, f64, f64, f64),
+    advance: f64,
+    patches: &[(f64, f64, f64, f64)],
+) -> String {
     let s = 0.011;
     let (pad, width, height) = (1.2, (x1 - x0) * s + 2.4, (y1 - y0) * s + 2.4);
-    let ground = nowhere(x0 * s - pad, -y1 * s - pad + height / 2.0, width, height, "rgb(120, 120, 120)");
+    let ground = nowhere(
+        x0 * s - pad,
+        -y1 * s - pad + height / 2.0,
+        width,
+        height,
+        "rgb(120, 120, 120)",
+    );
     let white: Vec<String> = patches
         .iter()
         .map(|(px0, py0, px1, py1)| {
@@ -2709,20 +2722,124 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
         .map(|i| format!("#place(top + left, dx: -1pt, dy: {}pt, polygon(fill: black, (0pt, 0pt), (19pt, 0pt), (0pt, 0pt)))", f64::from(i) * 0.5 - 1.0))
         .collect();
     let cases: Vec<(&str, String)> = vec![
-        ("white on a dash", format!("I am #box[#{}#text(fill: white)[not]] certified.", band("black"))),
-        ("navy on navy, with a white dash", format!("I am #box(fill: navy, outset: 1pt)[#{}#text(fill: navy)[not]] certified.", band("white"))),
-        ("white on a mesh", format!("I am #box[{}#text(fill: white)[not]] certified.", mesh.join("\n"))),
-        ("white on zero-area polygons", format!("I am #box[{}#text(fill: white)[not]] certified.", polygons.join("\n"))),
-        ("a dot", format!("Grew revenue 4{}9 times.", erased_on_a_ground_of_no_page(".", dot, 220.0, &[dot]))),
-        ("a minus", format!("Margin {}5 percent.", erased_on_a_ground_of_no_page("−", minus, 550.0, &[minus]))),
-        ("a hyphen", format!("Range 3{}5 percent.", erased_on_a_ground_of_no_page("-", hyphen, 338.0, &[hyphen]))),
-        ("a comma's tail", format!("Paid 1{}000 euro.", erased_on_a_ground_of_no_page(",", comma, 220.0, &[(43.0, -133.0, 170.0, 22.0)]))),
-        ("a plus's arms", format!("Change {}5 points.", erased_on_a_ground_of_no_page("+", plus, 550.0, &[(210.0, 41.0, 390.0, 170.0), (210.0, 330.0, 390.0, 462.0)]))),
-        ("a colon's top", format!("Time 10{}30.", erased_on_a_ground_of_no_page(":", colon, 236.0, &[(70.0, 250.0, 176.0, 411.0)]))),
-        ("a dollar", format!("Saved {}500 invoices.", erased_on_a_ground_of_no_page("\\$", dollar, 465.0, &[dollar]))),
-        ("E as F", format!("Grade {}.", erased_on_a_ground_of_no_page("E", e_box, 557.0, &[(150.0, -2.0, 528.0, 110.0)]))),
-        ("8 as 3", format!("Saved {}00 invoices.", erased_on_a_ground_of_no_page("8", eight, 465.0, &[(30.0, 50.0, 160.0, 560.0)]))),
+        (
+            "white on a dash",
+            format!(
+                "I am #box[#{}#text(fill: white)[not]] certified.",
+                band("black")
+            ),
+        ),
+        (
+            "navy on navy, with a white dash",
+            format!(
+                "I am #box(fill: navy, outset: 1pt)[#{}#text(fill: navy)[not]] certified.",
+                band("white")
+            ),
+        ),
+        (
+            "white on a mesh",
+            format!(
+                "I am #box[{}#text(fill: white)[not]] certified.",
+                mesh.join("\n")
+            ),
+        ),
+        (
+            "white on zero-area polygons",
+            format!(
+                "I am #box[{}#text(fill: white)[not]] certified.",
+                polygons.join("\n")
+            ),
+        ),
+        (
+            "a dot",
+            format!(
+                "Grew revenue 4{}9 times.",
+                erased_on_a_ground_of_no_page(".", dot, 220.0, &[dot])
+            ),
+        ),
+        (
+            "a minus",
+            format!(
+                "Margin {}5 percent.",
+                erased_on_a_ground_of_no_page("−", minus, 550.0, &[minus])
+            ),
+        ),
+        (
+            "a hyphen",
+            format!(
+                "Range 3{}5 percent.",
+                erased_on_a_ground_of_no_page("-", hyphen, 338.0, &[hyphen])
+            ),
+        ),
+        (
+            "a comma's tail",
+            format!(
+                "Paid 1{}000 euro.",
+                erased_on_a_ground_of_no_page(",", comma, 220.0, &[(43.0, -133.0, 170.0, 22.0)])
+            ),
+        ),
+        (
+            "a plus's arms",
+            format!(
+                "Change {}5 points.",
+                erased_on_a_ground_of_no_page(
+                    "+",
+                    plus,
+                    550.0,
+                    &[(210.0, 41.0, 390.0, 170.0), (210.0, 330.0, 390.0, 462.0)]
+                )
+            ),
+        ),
+        (
+            "a colon's top",
+            format!(
+                "Time 10{}30.",
+                erased_on_a_ground_of_no_page(":", colon, 236.0, &[(70.0, 250.0, 176.0, 411.0)])
+            ),
+        ),
+        (
+            "a dollar",
+            format!(
+                "Saved {}500 invoices.",
+                erased_on_a_ground_of_no_page("\\$", dollar, 465.0, &[dollar])
+            ),
+        ),
+        (
+            "E as F",
+            format!(
+                "Grade {}.",
+                erased_on_a_ground_of_no_page("E", e_box, 557.0, &[(150.0, -2.0, 528.0, 110.0)])
+            ),
+        ),
+        (
+            "8 as 3",
+            format!(
+                "Saved {}00 invoices.",
+                erased_on_a_ground_of_no_page("8", eight, 465.0, &[(30.0, 50.0, 160.0, 560.0)])
+            ),
+        ),
     ];
+    // Only the widening makes these hairlines a patch, and only it has a ground for that patch to stand out
+    // on: read against the real page, the dot is erased.
+    let hairlines: Vec<String> = (0..4)
+        .map(|i| {
+            format!(
+                "place(top + left, dx: -2pt, dy: {}pt, line(length: 2pt, stroke: 0.02pt + white))",
+                f64::from(i) * 0.4 - 1.2
+            )
+        })
+        .collect();
+    let ground = nowhere(-2.4, -0.2, 3.6, 3.6, "rgb(120, 120, 120)");
+    let cases: Vec<(&str, String)> = cases
+        .into_iter()
+        .chain([(
+            "hairlines over a dot, on a ground of no page",
+            format!(
+                "Grew revenue 4#box(width: 0pt, height: 0pt, {{ {ground} }})#text(size: 11pt, kerning: false)[.]#box(width: 0pt, height: 0pt, {{ {} }})9 times.",
+                hairlines.join("\n")
+            ),
+        )])
+        .collect();
     for (name, line) in cases {
         let (hidden, _) = judged(&line).await;
         assert!(!hidden.is_empty(), "{name} passed: {line}");
@@ -2744,7 +2861,12 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
 async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
     let across = |count: i32, length: f64| -> String {
         (0..count)
-            .map(|i| format!("place(top + left, dy: {}pt, line(length: {length}pt, stroke: 0.02pt + white))", f64::from(i) * 0.5))
+            .map(|i| {
+                format!(
+                    "place(top + left, dy: {}pt, line(length: {length}pt, stroke: 0.02pt + white))",
+                    f64::from(i) * 0.5
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -2757,11 +2879,39 @@ async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
         .collect::<Vec<_>>()
         .join("\n");
     let cases = [
-        ("stretched across", format!("I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(x: 10000%, origin: top + left, reflow: false, box(width: 0.2pt, {{\n{}\n}})))] certified.", across(20, 0.2))),
-        ("stretched down", format!("I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(y: 10000%, origin: top + left, reflow: false, box(height: 0.2pt, {{\n{down}\n}})))] certified.")),
-        ("turned and stretched", format!("I am #box[not#place(top + left, dx: 8pt, dy: 3pt, rotate(90deg, reflow: false, scale(y: 10000%, origin: top + left, reflow: false, box(width: 10pt, height: 0.2pt, {{\n{turned}\n}}))))] certified.")),
-        ("on a digit", format!("Saved #box[#text(size: 11pt)[8]#place(top + left, dx: -0.5pt, dy: -1pt, scale(x: 1000%, origin: top + left, reflow: false, box(width: 0.3pt, {{\n{}\n}})))]00 invoices.", across(20, 0.3))),
-        ("over a whole line", format!("I am #box(width: 300pt)[#text[not certified as an auditor]#place(top + left, dx: -1pt, dy: -1pt, scale(x: 100000%, origin: top + left, reflow: false, box(width: 0.31pt, {{\n{}\n}})))]", across(20, 0.31))),
+        (
+            "stretched across",
+            format!(
+                "I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(x: 10000%, origin: top + left, reflow: false, box(width: 0.2pt, {{\n{}\n}})))] certified.",
+                across(20, 0.2)
+            ),
+        ),
+        (
+            "stretched down",
+            format!(
+                "I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(y: 10000%, origin: top + left, reflow: false, box(height: 0.2pt, {{\n{down}\n}})))] certified."
+            ),
+        ),
+        (
+            "turned and stretched",
+            format!(
+                "I am #box[not#place(top + left, dx: 8pt, dy: 3pt, rotate(90deg, reflow: false, scale(y: 10000%, origin: top + left, reflow: false, box(width: 10pt, height: 0.2pt, {{\n{turned}\n}}))))] certified."
+            ),
+        ),
+        (
+            "on a digit",
+            format!(
+                "Saved #box[#text(size: 11pt)[8]#place(top + left, dx: -0.5pt, dy: -1pt, scale(x: 1000%, origin: top + left, reflow: false, box(width: 0.3pt, {{\n{}\n}})))]00 invoices.",
+                across(20, 0.3)
+            ),
+        ),
+        (
+            "over a whole line",
+            format!(
+                "I am #box(width: 300pt)[#text[not certified as an auditor]#place(top + left, dx: -1pt, dy: -1pt, scale(x: 100000%, origin: top + left, reflow: false, box(width: 0.31pt, {{\n{}\n}})))]",
+                across(20, 0.31)
+            ),
+        ),
     ];
     for (name, line) in cases {
         let (hidden, _) = judged(&line).await;
@@ -2777,10 +2927,22 @@ async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
 #[tokio::test]
 async fn a_mark_drawn_on_text_is_said_and_not_refused() {
     let marked = [
-        ("3 as 8", "Saved #text(size: 11pt, kerning: false)[3]#box(width: 0pt, height: 0pt, {place(top + left, dx: -5.0pt, dy: -6.8pt, curve(stroke: 0.7pt + black, curve.move((2.4pt, 0.3pt)), curve.cubic((0.3pt, 0.3pt), (0.3pt, 3pt), (2.4pt, 3.4pt)), curve.cubic((0.0pt, 3.8pt), (0.0pt, 7pt), (2.4pt, 7pt))))})00 invoices."),
-        ("15 as 1.5", "Grew revenue #text(size: 11pt, kerning: false)[1]#box(width: 0pt, height: 0pt, place(top + left, dx: 0.4pt, dy: -1.3pt, circle(radius: 0.65pt, fill: black)))#h(0.9pt)#text(size: 11pt)[5] times."),
-        ("5 as minus 5", "Margin#h(3pt)#box(width: 0pt, height: 0pt, place(top + left, dy: -3pt, rect(width: 4.5pt, height: 0.5pt, fill: black)))#h(5pt)5 percent."),
-        ("F as E", "Grade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here."),
+        (
+            "3 as 8",
+            "Saved #text(size: 11pt, kerning: false)[3]#box(width: 0pt, height: 0pt, {place(top + left, dx: -5.0pt, dy: -6.8pt, curve(stroke: 0.7pt + black, curve.move((2.4pt, 0.3pt)), curve.cubic((0.3pt, 0.3pt), (0.3pt, 3pt), (2.4pt, 3.4pt)), curve.cubic((0.0pt, 3.8pt), (0.0pt, 7pt), (2.4pt, 7pt))))})00 invoices.",
+        ),
+        (
+            "15 as 1.5",
+            "Grew revenue #text(size: 11pt, kerning: false)[1]#box(width: 0pt, height: 0pt, place(top + left, dx: 0.4pt, dy: -1.3pt, circle(radius: 0.65pt, fill: black)))#h(0.9pt)#text(size: 11pt)[5] times.",
+        ),
+        (
+            "5 as minus 5",
+            "Margin#h(3pt)#box(width: 0pt, height: 0pt, place(top + left, dy: -3pt, rect(width: 4.5pt, height: 0.5pt, fill: black)))#h(5pt)5 percent.",
+        ),
+        (
+            "F as E",
+            "Grade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here.",
+        ),
     ];
     for (name, line) in marked {
         let (hidden, marks) = judged(line).await;
@@ -2815,5 +2977,9 @@ async fn a_mark_drawn_on_text_is_said_and_not_refused() {
         stamp: false,
     };
     let rendered = Renderer::InProcess.render(request).await.unwrap();
-    assert_eq!(rendered.text.marked, Vec::<String>::new(), "the template itself");
+    assert_eq!(
+        rendered.text.marked,
+        Vec::<String>::new(),
+        "the template itself"
+    );
 }

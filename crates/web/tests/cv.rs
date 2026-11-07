@@ -1728,7 +1728,10 @@ async fn a_replaced_text_reads_as_a_diff_and_says_so_above_the_button() {
     assert!(above_the_button(&page, "cv-replaced-elsewhere"), "{page}");
     assert!(page.contains("a line you corrected there won"), "{page}");
     assert!(!page.contains("cv-whole-cv"), "{page}");
-    assert!(!page.contains("cv-looks-only"), "the source is the same: {page}");
+    assert!(
+        !page.contains("cv-looks-only"),
+        "the source is the same: {page}"
+    );
 }
 
 /// The owner's decision on marks: said above the button, naming where to look, and refusing nothing.

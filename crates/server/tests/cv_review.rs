@@ -484,7 +484,10 @@ async fn the_terminal_says_why_a_cv_is_whole_replaced_or_marked() {
     let copied = new("copied", json!([])).await;
     assert_eq!(copied["state"], "draft", "{copied}");
     let shown = read("copied", "1", false);
-    assert!(shown.contains("A text you approved has since been changed"), "{shown}");
+    assert!(
+        shown.contains("A text you approved has since been changed"),
+        "{shown}"
+    );
     assert!(!shown.contains("The wording is unchanged"), "{shown}");
 
     let marked = agent
@@ -496,7 +499,10 @@ async fn the_terminal_says_why_a_cv_is_whole_replaced_or_marked() {
         .await;
     assert_eq!(marked["state"], "draft", "{marked}");
     let shown = read("default", "2", false);
-    assert!(shown.contains("The draft draws marks on its text"), "{shown}");
+    assert!(
+        shown.contains("The draft draws marks on its text"),
+        "{shown}"
+    );
 }
 
 /// What a terminal of this size still shows at the end of `output`.

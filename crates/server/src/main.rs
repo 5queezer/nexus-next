@@ -270,7 +270,9 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
     match review.baseline_revision {
         None => println!("this is the whole CV:"),
         Some(at) if review.baseline_is_start => {
-            println!("compared with the approved text this variant started from, revision {at} there:");
+            println!(
+                "compared with the approved text this variant started from, revision {at} there:"
+            );
         }
         Some(at) if review.baseline_is_replaced => {
             println!("compared with revision {at}, the approved text this variant last held:");

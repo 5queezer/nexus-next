@@ -156,8 +156,9 @@ pub struct Baseline {
 /// Its newest approval, if that was made under these facts: under others it is no baseline, since a
 /// line the owner has corrected would read as unchanged. A variant with none of its own reads against the
 /// newest approved text it holds or started from, under these facts: first one that still stands, then
-/// one replaced since, which says so. By approval, not revision number: a revert to older text must not
-/// hide the correction it undoes.
+/// one replaced since, which says so, and among those one other than its head, which would read as
+/// nothing changed. By approval, not revision number: a revert to older text must not hide the
+/// correction it undoes.
 pub async fn last_approved(
     conn: &mut SqliteConnection,
     variant: &Variant,
@@ -180,7 +181,10 @@ pub async fn last_approved(
              OR (a.variant_id <> ?1 AND {replaced}))
          AND (a.variant_id = ?1
              OR NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1))
-         ORDER BY replaced, a.id DESC, h.started_from, h.number DESC
+         ORDER BY replaced,
+             a.source_sha256 = (SELECT r.source_sha256 FROM cv_revisions r
+                 JOIN cv_variants v ON v.head_revision_id = r.id WHERE v.id = ?1),
+             a.id DESC, h.started_from, h.number DESC
          LIMIT 1"
     );
     Ok(sqlx::query_as(AssertSqlSafe(sql))
