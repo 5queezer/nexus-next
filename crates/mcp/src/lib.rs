@@ -113,9 +113,13 @@ pub struct McpState {
     pub renderer: Renderer,
     /// One compile at a time. Taken only around the compile itself, never across other work.
     render_slot: Arc<Semaphore>,
-    /// The compile and the calls allowed to wait for it. Each holds a slot of the MCP pool meanwhile,
-    /// so any more are refused at once.
+    /// An agent's compile and the calls allowed to wait for it. Each holds a slot of the MCP pool
+    /// meanwhile, so any more are refused at once.
     render_calls: Arc<Semaphore>,
+    /// Held by the one agent going on to `render_slot`, so that the owner stands behind one at most.
+    agent_turn: Arc<Semaphore>,
+    /// The owner's compiles, which no agent's calls can use up.
+    owner_render_calls: Arc<Semaphore>,
     /// Sent after commit by every path that stores a revision. No receiver is fine.
     pub cv_events: broadcast::Sender<CvRevisionEvent>,
 }
@@ -129,6 +133,8 @@ impl McpState {
             renderer,
             render_slot: Arc::new(Semaphore::new(1)),
             render_calls: Arc::new(Semaphore::new(tools::MAX_RENDER_CALLS)),
+            agent_turn: Arc::new(Semaphore::new(1)),
+            owner_render_calls: Arc::new(Semaphore::new(tools::MAX_OWNER_RENDER_CALLS)),
             cv_events: broadcast::channel(CV_EVENT_BACKLOG).0,
         }
     }

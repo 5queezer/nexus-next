@@ -35,6 +35,8 @@ pub struct Review {
     pub baseline_revision: Option<i64>,
     /// Whether the baseline is this variant's own newest approval, or text approved in another.
     pub baseline_is_own: bool,
+    /// Whether that approval is the one the owner's lock of the facts wrote, not a tap of their own.
+    pub baseline_is_lock: bool,
     /// Against `baseline`, uncapped and most serious first.
     pub items: Vec<ReviewItem>,
     /// The source against the last approved revision's.
@@ -45,13 +47,19 @@ fn ctx(state: Arc<McpState>) -> Ctx {
     Ctx {
         state,
         can_access_submissions: false,
-        source: "dashboard",
+        source: tools::OWNER_SOURCE,
         client_gone: CancellationToken::new(),
     }
 }
 
 fn outcome(result: tools::ToolResult) -> CallToolResult {
     result.unwrap_or_else(|Thrown(message)| text_error(&message))
+}
+
+/// What a page says when it ran out of time before its review could finish.
+#[must_use]
+pub fn render_busy_error() -> CallToolResult {
+    *tools::render_busy()
 }
 
 /// Reads the variant's head for review. `Err` carries the tool error saying why it can't be read.

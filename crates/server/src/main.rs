@@ -223,6 +223,11 @@ fn shown(text: &str) -> String {
     cut(text, MAX_PRINTED_CHARS)
 }
 
+/// Whether [`shown`] leaves part of `text` unprinted. What the owner wasn't shown can't be confirmed.
+fn is_cut(text: &str) -> bool {
+    text.chars().count() > MAX_PRINTED_CHARS
+}
+
 /// A diff, the one thing printed with its line breaks.
 fn shown_by_line(text: &str) -> String {
     let lines: Vec<String> = text.lines().map(shown).collect();
@@ -258,6 +263,9 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
     }
     match review.baseline_revision {
         None => println!("there is no approved text to compare with, so this is the whole CV:"),
+        Some(at) if review.baseline_is_own && review.baseline_is_lock => {
+            println!("compared with revision {at}, approved by your lock of the facts:");
+        }
         Some(at) if review.baseline_is_own => {
             println!("compared with revision {at}, the last you approved in this variant:");
         }
@@ -288,6 +296,19 @@ async fn run_approve(db: &Db, variant: &str, revision: i64, confirm: bool) -> an
         "That is {changed} changed lines and {} items, which your terminal may not hold. This is the text: a shape drawn over it shows only in the picture, so look at the stamped preview on the dashboard.",
         review.items.len()
     );
+    let was_cut = lines
+        .iter()
+        .filter(|line| line.change != LineChange::Same)
+        .map(|line| line.text.as_str())
+        .chain(review.items.iter().map(|item| item.token.as_str()))
+        .chain(review.source_diff.lines())
+        .any(is_cut);
+    if was_cut {
+        bail!(
+            "nothing was written. A value above was cut short, so this can't be confirmed here: \
+             read it whole and approve it on the dashboard"
+        );
+    }
     if !confirm {
         bail!(
             "nothing was written. Approving says all of the above is true: if it is, run \
@@ -365,6 +386,19 @@ async fn run_cv_facts(db: &Db, action: CvFactsAction) -> anyhow::Result<()> {
                 preview.wording.len(),
                 preview.added.len()
             );
+            let was_cut = preview
+                .changes
+                .iter()
+                .chain(&preview.wording)
+                .flat_map(|change| [change.old.as_str(), &change.new])
+                .chain(preview.added.iter().map(String::as_str))
+                .any(is_cut);
+            if was_cut {
+                anyhow::bail!(
+                    "nothing was written. A value above was cut short, so this can't be confirmed \
+                     here: read it whole and lock on the dashboard's facts page"
+                );
+            }
             let hash = preview.hash();
             if preview.needs_confirmation() && confirm.as_deref() != Some(hash.as_str()) {
                 let moved = if confirm.is_some() {

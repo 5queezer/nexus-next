@@ -24,7 +24,6 @@ use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Value, json};
 use similar::TextDiff;
 use sqlx::SqliteConnection;
-use tokio::sync::OwnedSemaphorePermit;
 
 use super::documents::{put_blob, remove_blob_if_unreferenced};
 use super::{Args, Ctx, ToolResult, code_error, find_application, json_result, req_str, str_arg};
@@ -38,15 +37,23 @@ pub(crate) const MAX_RENDER_CALLS: usize = 3;
 const MAX_REPORTED_VIOLATIONS: usize = 50;
 const MAX_REPORTED_ITEMS: usize = 50;
 const MAX_VIOLATION_TEXT_CHARS: usize = 200;
-/// How long the owner's review or tap waits to be admitted. With the 20 s for its turn and a compile's
-/// 30 s, it stays inside the owner pool's 60 s deadline. And being under that pool's 10 s wait for a
-/// slot, those waiting can't keep any other page out.
+/// How many of the owner's own compiles may wait at once. A page with several tabs needs few, and each
+/// holds a slot of the owner pool meanwhile.
+pub(crate) const MAX_OWNER_RENDER_CALLS: usize = 2;
+/// How long the owner's review, tap or save may take once admitted. With the wait to be admitted it ends
+/// under the owner pool's 60 s deadline. Agents queue behind one turn, so the owner waits for at most the
+/// one compile running, at most 30 s, and has the rest for their own. Stopped here, it says why in words.
+const OWNER_RENDER_LIMIT: Duration = Duration::from_secs(52);
+/// How long the owner waits to be admitted at all. Being under that pool's 10 s wait for a slot, those
+/// waiting can't keep any other page out.
 const OWNER_ADMISSION_WAIT: Duration = Duration::from_secs(5);
 /// What one page of `list_cv_revisions` carries in diffs. A source can reach 256 KiB, so 50 full
 /// diffs would be 50 MB in the reply, and several times that in the transport.
 const MAX_DIFF_BYTES_PER_PAGE: usize = 1024 * 1024;
 /// Past this a diff gets coarser, not wrong. A page holds up to 50 of them, on a runtime thread.
 const DIFF_TIMEOUT: Duration = Duration::from_millis(200);
+/// `Ctx::source` on the owner's own paths, which no tool call can set.
+pub(crate) const OWNER_SOURCE: &str = "dashboard";
 const RESERVED_VARIANT_PREFIX: &str = "application-";
 /// Origins that say the owner acted, or that the revert tool did. A page shows them as such, so a tool
 /// call can't send them: the owner's own paths and `revert_cv` write them.
@@ -165,7 +172,7 @@ fn render_error(error: RenderError) -> CallToolResult {
     }
 }
 
-fn render_busy() -> Box<CallToolResult> {
+pub(crate) fn render_busy() -> Box<CallToolResult> {
     Box::new(error_with(
         "cv_render_busy",
         json!({"message": "Other CVs are rendering. Nothing was stored. Try again shortly."}),
@@ -174,7 +181,7 @@ fn render_busy() -> Box<CallToolResult> {
 
 /// One compile, waiting its turn for a bounded time, and only if few calls wait already. It ends with
 /// the client's connection: the child dies with this future. `/facts.json` holds what a CV can
-/// render and no more: see [`Facts::renderable`].
+/// render and no more: see [`Facts::renderable`]. The owner's own edit waits as the owner's review does.
 pub(super) async fn compile(
     ctx: &Ctx,
     source: &str,
@@ -183,59 +190,90 @@ pub(super) async fn compile(
     preview_pages: u32,
     stamp: bool,
 ) -> Result<Rendered, Box<CallToolResult>> {
-    let Ok(admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
+    if ctx.source == OWNER_SOURCE {
+        return owners_compile(ctx, source, facts, pdf, preview_pages, stamp).await;
+    }
+    let Ok(_admitted) = ctx.state.render_calls.clone().try_acquire_owned() else {
         return Err(render_busy());
     };
-    compile_admitted(ctx, admitted, source, facts, pdf, preview_pages, stamp).await
+    let wait_for_slot = async {
+        // One agent at a time goes on to the slot, so that the owner is never behind more than the one
+        // compile: any number of agents looping can't keep the owner off their own review.
+        let turn = ctx.state.agent_turn.clone().acquire_owned().await;
+        let slot = ctx.state.render_slot.clone().acquire_owned().await;
+        (turn, slot)
+    };
+    let work = async {
+        let Ok((Ok(_turn), Ok(_slot))) =
+            tokio::time::timeout(RENDER_QUEUE_WAIT, wait_for_slot).await
+        else {
+            return Err(render_busy());
+        };
+        run_compile(ctx, source, facts, pdf, preview_pages, stamp).await
+    };
+    tokio::select! {
+        () = ctx.client_gone.cancelled() => Err(client_gone_error()),
+        result = work => result,
+    }
 }
 
 /// What the owner reads and approves: every page drawn with the stamp, as a preview draws it. So a
-/// source that can't be drawn has no picture, and no form and no approval either. It waits briefly to
-/// be admitted, since a tab re-rendering is no reason to tell the owner it can't be approved.
+/// source that can't be drawn has no picture, and no form and no approval either.
 async fn compile_for_owner(
     ctx: &Ctx,
     source: &str,
     facts: &Facts,
 ) -> Result<Rendered, Box<CallToolResult>> {
-    let admission = ctx.state.render_calls.clone().acquire_owned();
-    let Ok(Ok(admitted)) = tokio::time::timeout(OWNER_ADMISSION_WAIT, admission).await else {
-        return Err(render_busy());
-    };
-    compile_admitted(ctx, admitted, source, facts, false, MAX_PAGES, true).await
+    owners_compile(ctx, source, facts, false, MAX_PAGES, true).await
 }
 
-async fn compile_admitted(
+/// A compile for the owner, ahead of every agent but the one compiling, and bounded as a whole.
+async fn owners_compile(
     ctx: &Ctx,
-    _admitted: OwnedSemaphorePermit,
     source: &str,
     facts: &Facts,
     pdf: bool,
     preview_pages: u32,
     stamp: bool,
 ) -> Result<Rendered, Box<CallToolResult>> {
+    let admission = ctx.state.owner_render_calls.clone().acquire_owned();
+    let Ok(Ok(_admitted)) = tokio::time::timeout(OWNER_ADMISSION_WAIT, admission).await else {
+        return Err(render_busy());
+    };
     let work = async {
-        let slot = ctx.state.render_slot.clone();
-        let Ok(Ok(_slot)) = tokio::time::timeout(RENDER_QUEUE_WAIT, slot.acquire_owned()).await
-        else {
+        let Ok(_slot) = ctx.state.render_slot.clone().acquire_owned().await else {
             return Err(render_busy());
         };
-        let request = RenderRequest {
-            source: source.to_owned(),
-            facts: facts.renderable(),
-            pdf,
-            preview_pages,
-            stamp,
-        };
-        ctx.state
-            .renderer
-            .render(request)
-            .await
-            .map_err(|error| Box::new(render_error(error)))
+        run_compile(ctx, source, facts, pdf, preview_pages, stamp).await
     };
     tokio::select! {
         () = ctx.client_gone.cancelled() => Err(client_gone_error()),
-        result = work => result,
+        result = tokio::time::timeout(OWNER_RENDER_LIMIT, work) => {
+            result.unwrap_or_else(|_| Err(render_busy()))
+        }
     }
+}
+
+async fn run_compile(
+    ctx: &Ctx,
+    source: &str,
+    facts: &Facts,
+    pdf: bool,
+    preview_pages: u32,
+    stamp: bool,
+) -> Result<Rendered, Box<CallToolResult>> {
+    let request = RenderRequest {
+        source: source.to_owned(),
+        facts: facts.renderable(),
+        pdf,
+        preview_pages,
+        stamp,
+    };
+    ctx.state
+        .renderer
+        .render(request)
+        .await
+        .map_err(|error| Box::new(render_error(error)))
 }
 
 /// Nobody reads this: it only makes the tool stop before it stores anything.
@@ -541,7 +579,7 @@ pub(super) async fn known_to_owner(
     let approved = match variant {
         Some(variant) => approvals::last_approved(&mut *conn, variant, &facts_sha256(facts))
             .await?
-            .map(|(text, _, _)| text),
+            .map(|baseline| baseline.rendered_text),
         None => None,
     };
     let wording = cv_facts::locked_wording(conn).await?;
@@ -1037,9 +1075,13 @@ pub(crate) async fn review(
     let approved = is_approved(&mut conn, &state, Some(base.variant.id), &source_sha256).await?;
     let last =
         approvals::last_approved(&mut conn, &base.variant, &facts_sha256(&state.facts)).await?;
-    let baseline_is_own = last.as_ref().is_some_and(|(_, _, own)| *own);
-    let (baseline, baseline_revision) =
-        last.map_or((None, None), |(text, at, _)| (Some(text), Some(at)));
+    let baseline_is_own = last.as_ref().is_some_and(|baseline| baseline.own);
+    let baseline_is_lock = last
+        .as_ref()
+        .is_some_and(|baseline| baseline.approved_by == "lock");
+    let (baseline, baseline_revision) = last.map_or((None, None), |baseline| {
+        (Some(baseline.rendered_text), Some(baseline.revision))
+    });
     let baseline_source = match baseline_revision {
         Some(at) => repo::get_by_number(&mut conn, base.variant.id, at)
             .await?
@@ -1061,12 +1103,13 @@ pub(crate) async fn review(
         baseline,
         baseline_revision,
         baseline_is_own,
+        baseline_is_lock,
         items: Vec::new(),
         source_diff: unified_diff(
             baseline_source.as_deref().unwrap_or(""),
             &base.source,
             &baseline_revision.map_or_else(
-                || "nothing approved yet".to_owned(),
+                || "no approved text to compare with".to_owned(),
                 |at| format!("revision {at}"),
             ),
             &format!("revision {}", base.number),
@@ -1232,9 +1275,9 @@ mod tests {
             Renderer::InProcess,
         ));
         let held = state
-            .render_calls
+            .owner_render_calls
             .clone()
-            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .acquire_many_owned(MAX_OWNER_RENDER_CALLS as u32)
             .await
             .unwrap();
         tokio::spawn(async move {
@@ -1263,9 +1306,9 @@ mod tests {
             Renderer::InProcess,
         ));
         let _held = state
-            .render_calls
+            .owner_render_calls
             .clone()
-            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .acquire_many_owned(MAX_OWNER_RENDER_CALLS as u32)
             .await
             .unwrap();
         let ctx = Ctx {
@@ -1280,6 +1323,107 @@ mod tests {
             .await
             .unwrap_err();
         assert!((OWNER_ADMISSION_WAIT..OWNER_ADMISSION_WAIT * 2).contains(&started.elapsed()));
+        let text = serde_json::to_string(&error.structured_content).unwrap();
+        assert!(text.contains("cv_render_busy"), "{text}");
+    }
+
+    /// Finding 11 of the fourth gate review: agents looping on renders kept the owner off their review.
+    #[tokio::test]
+    async fn the_owner_goes_ahead_of_every_agent_but_the_one_compiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        // An agent's compile, running.
+        let turn = state.agent_turn.clone().acquire_owned().await.unwrap();
+        let slot = state.render_slot.clone().acquire_owned().await.unwrap();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let run = |who: &'static str, source: &'static str| {
+            let (state, order) = (state.clone(), order.clone());
+            tokio::spawn(async move {
+                let ctx = Ctx {
+                    state,
+                    can_access_submissions: true,
+                    source,
+                    client_gone: CancellationToken::new(),
+                };
+                let done = compile(&ctx, "= CV", &Facts::default(), false, 0, false).await;
+                assert!(done.is_ok(), "{who}");
+                order.lock().unwrap().push(who);
+            })
+        };
+        let agents = [run("agent", "mcp"), run("agent", "mcp")];
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let owner = run("owner", OWNER_SOURCE);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(turn);
+        drop(slot);
+        owner.await.unwrap();
+        for agent in agents {
+            agent.await.unwrap();
+        }
+        assert_eq!(order.lock().unwrap().first(), Some(&"owner"));
+    }
+
+    /// Calls that use up what agents may hold leave the owner's review as it was.
+    #[tokio::test]
+    async fn agents_at_their_limit_leave_the_owner_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let _held = state
+            .render_calls
+            .clone()
+            .acquire_many_owned(MAX_RENDER_CALLS as u32)
+            .await
+            .unwrap();
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+            client_gone: CancellationToken::new(),
+        };
+        assert!(
+            compile_for_owner(&ctx, "= CV", &Facts::default())
+                .await
+                .is_ok()
+        );
+    }
+
+    /// The owner's whole wait has an end, and it is under the owner pool's 60 s deadline.
+    #[tokio::test]
+    async fn the_owners_whole_wait_ends_inside_the_pools_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let _slot = state.render_slot.clone().acquire_owned().await.unwrap();
+        let ctx = Ctx {
+            state,
+            can_access_submissions: true,
+            source: "test",
+            client_gone: CancellationToken::new(),
+        };
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let error = compile_for_owner(&ctx, "= CV", &Facts::default())
+            .await
+            .unwrap_err();
+        assert!(started.elapsed() >= OWNER_RENDER_LIMIT);
+        assert!(started.elapsed() + OWNER_ADMISSION_WAIT <= Duration::from_secs(60));
         let text = serde_json::to_string(&error.structured_content).unwrap();
         assert!(text.contains("cv_render_busy"), "{text}");
     }

@@ -498,6 +498,76 @@ async fn nothing_an_agent_wrote_scrolls_the_lock_list_off_the_terminal() {
     }
 }
 
+/// Finding 12 of the fourth gate review: what the terminal cut short can't be confirmed from it.
+#[tokio::test]
+async fn a_lock_with_a_cut_value_cannot_be_confirmed_from_the_terminal() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    let mut hostile = profile();
+    let tail = " and I was its CEO";
+    hostile["experience"][0]["company"] = json!(format!("Brightpath {}{tail}", "x".repeat(1200)));
+    agent.ok("upsert_cv_profile", hostile).await;
+    let listed = cv_facts(&node.dir, &["lock"]);
+    assert!(!listed.status.success());
+    let told = format!(
+        "{}{}",
+        String::from_utf8_lossy(&listed.stdout),
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert!(!told.contains("its CEO"), "{told}");
+    assert!(told.contains("more characters"), "{told}");
+    assert!(told.contains("facts page"), "{told}");
+    assert!(!told.contains("--confirm"), "no hash to run: {told}");
+    // Nor does any hash get past it.
+    let hash_of = cv_facts(&node.dir, &["lock", "--confirm", "0000"]);
+    assert!(!hash_of.status.success());
+    let state = cv_facts(&node.dir, &["show"]);
+    let shown = String::from_utf8_lossy(&state.stdout);
+    assert!(shown.contains("\"lockedAt\": null"), "{shown}");
+}
+
+/// The same for a draft: a cut line can't be approved from the terminal.
+#[tokio::test]
+async fn an_approval_with_a_cut_line_cannot_be_confirmed_from_the_terminal() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    agent.ok("upsert_cv_profile", profile()).await;
+    lock_confirmed(&node.dir);
+    let long = "word ".repeat(300);
+    let source = format!("{START}#header()\n{long}and I was its CEO.\n");
+    let head = agent
+        .ok("get_cv_source", json!({"variant": "default"}))
+        .await;
+    let reply = agent
+        .ok(
+            "patch_cv",
+            json!({"expectedRevision": head["revision"], "summary": "Long",
+                "edits": [{"oldText": head["source"], "newText": source}]}),
+        )
+        .await;
+    let revision = reply["revision"].to_string();
+    let tried = cv_facts(
+        &node.dir,
+        &[
+            "approve",
+            "--variant",
+            "default",
+            "--revision",
+            &revision,
+            "--confirm",
+        ],
+    );
+    assert!(!tried.status.success());
+    let told = String::from_utf8_lossy(&tried.stderr);
+    assert!(told.contains("dashboard"), "{told}");
+    let after = agent
+        .ok("get_cv_source", json!({"variant": "default"}))
+        .await;
+    assert_eq!(after["state"], "draft");
+}
+
 /// A worker that does what the real one does, except that it can't draw: what a source does when it
 /// fits in memory until its pages are drawn. Whatever asks it to draw is told so.
 fn worker_that_cannot_draw(root: &Path) -> nexus_mcp::Renderer {
