@@ -2940,6 +2940,10 @@ async fn a_mark_drawn_on_text_is_said_and_not_refused() {
             "Margin#h(3pt)#box(width: 0pt, height: 0pt, place(top + left, dy: -3pt, rect(width: 4.5pt, height: 0.5pt, fill: black)))#h(5pt)5 percent.",
         ),
         (
+            "a dot as a comma",
+            "Paid 1.#box(width: 0pt, height: 0pt, place(top + left, dx: -1.6pt, dy: 0.3pt, rect(width: 1pt, height: 1.8pt, fill: black)))000 euro.",
+        ),
+        (
             "F as E",
             "Grade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here.",
         ),

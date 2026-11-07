@@ -52,6 +52,9 @@ const SURROUND: i64 = 2;
 const NEAR: i64 = 3;
 /// A paint under this share of an em high is level enough to be a line, or a piece of one.
 const LINE_HEIGHT: i64 = 4;
+/// A paint under the baseline this many times longer than it is high reads as an underline, and a shorter
+/// one can read as a comma's tail on a dot.
+const LINE_LENGTH: i64 = 3;
 /// Pixels looked at for marks on one page, as a multiple of the page's own. Past it, the page warns.
 const MAX_MARK_PAGES: u64 = 2;
 /// Words kept as having a mark on them, on one page: enough to say where to look.
@@ -425,8 +428,8 @@ fn judge(
 /// Whether the page without its text has a small paint on this glyph or right beside it: a mark that can
 /// make a `3` read as an `8`, a `15` as `1.5`, or an `F` as an `E`. Nothing refuses such a mark, as nothing
 /// is hidden, and it is only said. An underline, a strike, a rule, a fill or a frame runs past an em and
-/// isn't one: nor is a level piece with more of its line beside it or under the baseline, as an underline
-/// breaks around a descender, and a dotted leader is all pieces. `budget` runs out on a page of many paints,
+/// isn't one: nor is a level piece with more of its line beside it, as an underline breaks around a
+/// descender and a dotted leader is all pieces, nor a short underline. `budget` runs out on a page of many paints,
 /// which then counts as marked: this only warns, so it needn't be exact there.
 fn has_mark(
     bare: &Drawing,
@@ -446,8 +449,10 @@ fn has_mark(
     let first = &raw[index(left, top) * 4..index(left, top) * 4 + 4];
     let plain = (top..bottom).all(|y| {
         raw[index(left, y) * 4..index(right, y) * 4]
-            .chunks_exact(4)
-            .all(|pixel| pixel == first)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel.as_slice() == first)
     });
     if plain {
         return false;
@@ -494,7 +499,8 @@ fn has_mark(
                 (high_x + step < width && differs(high_x + step, row))
                     || (low_x - step >= 0 && differs(low_x - step, row))
             });
-            if !(level && (low_y > baseline || line_goes_on)) {
+            let underline = low_y > baseline && high_x - low_x >= LINE_LENGTH * (high_y - low_y);
+            if !(level && (underline || line_goes_on)) {
                 return true;
             }
         }
