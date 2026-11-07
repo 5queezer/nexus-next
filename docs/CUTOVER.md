@@ -1,6 +1,6 @@
 # Cutover runbook
 
-From today's state (M1 code merged, nothing deployed, old Nexus live) to Nexus on the board. Do the steps in order. Placeholders: `<old-host>`, `<board>`, `<test-host>`, `<final-host>`, `<db-container>`, `<app-container>`, `<db-name>`. Commands marked **workstation**, **board** or **old host** say where they run. Fuller explanations are in [`deploy/README.md`](../deploy/README.md).
+From today's state (M1 to M3 merged, installed on the board on 2026-11-07 for a tailnet-only test with the first export, old Nexus live) to Nexus on the board. Do the steps in order. Placeholders: `<old-host>`, `<board>`, `<test-host>`, `<final-host>`, `<db-container>`, `<app-container>`, `<db-name>`. Commands marked **workstation**, **board** or **old host** say where they run. Fuller explanations are in [`deploy/README.md`](../deploy/README.md).
 
 **Owner only:** every step that touches old Nexus, DNS, Cloudflare or Tailscale, and the steps needing a browser or a choice: the passphrase, the backup key, consent in Claude.ai and Hermes, the recovered-document review, the ingress choice and the off-site destination.
 
@@ -10,11 +10,11 @@ Treat these as untested, and stop if one behaves differently from what is writte
 
 | Step | Status |
 |---|---|
-| Install under real systemd, `IPAddressDeny`, `PrivateUsers` (steps 2, 3) | Never run. The binary ran on the board once, by hand, with synthetic data. `IPAddressDeny` isn't enforced under `systemd-run --user`, so it has never been seen working |
-| Any ingress, Claude.ai and Hermes against this server (steps 4, 12) | Never run. The Claude.ai callback host and the Tailscale Funnel client-address header are unverified |
+| Install under real systemd, `IPAddressDeny`, `PrivateUsers` (steps 2, 3) | Run on 2026-11-07, except the backup timer and its unit. It found one fault, since fixed: systemd hands a credential over as mode 0440, which `read_token` refused. Enforced: a curl under the same settings timed out going out, and answered on loopback. `uid_map` shows two lines, no BPF or firewall line in the log. A reboot with `/home` locked brought the service up unattended, no restarts |
+| Any ingress, Claude.ai and Hermes against this server (steps 4, 12) | `tailscale serve` only, tailnet only, on 2026-11-07: `X-Forwarded-For` gave the client's real tailnet address in `login_failure`. Cloudflare, Funnel, Claude.ai and Hermes never run. The Claude.ai callback host and Funnel's client-address header are unverified |
 | Freezing old Nexus and unfreezing it (step 7, rollback) | Never run on old Nexus. The SQL was tested on a local Postgres 17 |
 | Final export (step 8) | `deploy/export/` was tested on 2026-11-06 against a local Postgres restored from the first dump, with a stubbed storage client: the rows, sequences and imported database were identical to the first export. It has not been run over ssh or against real GCS since being ported. The same blob code did run against GCS for the first export |
-| Import on the board, with real data (step 9) | Never run. It ran on the workstation, with and without approvals. The real data set has never been measured on the board |
+| Import on the board, with real data (step 9) | The first export only, on 2026-11-07: 1.4 s, every count clean, 12 MB on disk. Never with final data |
 | Parity against a new baseline (step 10) | Run once on 2026-11-06, as written, on a re-export of the first dump. Never on real final data |
 | Restore drill with the real key, the backup timer, off-site sync (steps 6, 14) | Never run. No off-site destination exists |
 | Every rollback below | Never run |

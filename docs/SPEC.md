@@ -1,6 +1,6 @@
 # Nexus rewrite: spec
 
-Status: M1 built, gate open. M2 built on top of it (section 9a). M3 designed in section 9b.
+Status: M1, M2 (section 9a) and M3 (section 9b) built. Installed on the board on 2026-11-07, tailnet only, with no cutover: old Nexus stays the system of record. Still the owner's to run: the M1 gate through a real ingress, real Telegram through Hermes, a real voice session, a phone, entering real CV facts and locking them.
 Baseline: `nexus-crm` at `235138d`, the commit in the running production image's tag on 2026-11-06. Sources marked **[handoff]** are not yet checked against the code or the Nexus skills.
 
 ## 1. Goal

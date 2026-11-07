@@ -38,6 +38,7 @@ scp target/aarch64-unknown-linux-musl/release/nexus deploy/nexus.service deploy/
 
 # on the board
 sudo install -m 0755 /tmp/nexus /usr/local/bin/nexus
+sudo install -d -m 0755 /etc/sysusers.d    # Debian 13 on this board doesn't have it
 sudo install -m 0644 /tmp/nexus.sysusers /etc/sysusers.d/nexus.conf
 sudo systemd-sysusers
 sudo install -m 0644 /tmp/nexus.service /tmp/nexus-backup.service /tmp/nexus-backup.timer /etc/systemd/system/
@@ -263,6 +264,7 @@ Whichever is used, set `NEXUS_TRUSTED_IP_HEADER` for it (section 3) and restart 
 **Buffering.** The MCP router is mounted, and this is what its responses really carry. `POST` returns one complete `application/json` body with `Content-Length`, and no `Cache-Control`. `GET` returns `text/event-stream` with `Cache-Control: no-cache, no-transform` and an empty body that ends at once. Nothing sets `X-Accel-Buffering`. So there is no long-lived stream for a proxy to buffer, and that header shouldn't be needed. That is an expectation, not a result: nothing has been tested through either ingress, and only a real Claude.ai OAuth and tool call can settle it. The steps are in [`docs/CUTOVER.md`](../docs/CUTOVER.md), step 4.
 
 - **Cloudflare tunnel** (`cloudflared` on the board, ingress `http://127.0.0.1:8091`): keeps a stable custom domain, but a tunnel is always proxied. Old Nexus's local notes say Cloudflare's proxy broke MCP Streamable HTTP by buffering streaming responses, so its domain stayed DNS-only.
+- **`tailscale serve`, tailnet only, for testing:** `sudo tailscale serve --bg --https=<port> http://127.0.0.1:8091`, with `NEXUS_PUBLIC_BASE_URL=https://<name>.ts.net:<port>` and `NEXUS_TRUSTED_IP_HEADER=X-Forwarded-For`, which was checked to give the client's real address. Pick a port that's free on the tailscale address too: on this board Coolify's proxy holds 443 and a container 8443. Run on 2026-11-07 on 8444. It reaches no public client, so it can't stand in for the ingress test.
 - **Tailscale Funnel** (`tailscale funnel 8091`): no Cloudflare in the path, but the hostname becomes `*.ts.net`, so every OAuth client re-registers once.
 
 `NEXUS_PUBLIC_BASE_URL` must be the public origin. It is the OAuth issuer, so changing it later means every client registers again. Calendar apps that cannot send bearer tokens use the secret URL; Google Calendar cannot reach a tailnet-only URL, so use an on-device subscriber (ICSx5) or the public ingress.
