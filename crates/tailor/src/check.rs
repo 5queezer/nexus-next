@@ -25,10 +25,11 @@ pub enum Rule {
     /// A fact's language with a level other than its own.
     LanguageLevel,
     ClaimWords,
+    /// A word in neither the facts, `vocabulary`, the last locked wording nor the last approved text.
+    /// Ahead of numbers: a whole CV lists every number, and a sentence nobody has seen must stay in sight.
+    NewWords,
     Numbers,
     NumberWords,
-    /// A word in neither the facts, `vocabulary`, the last locked wording nor the last approved text.
-    NewWords,
     BannedPhrases,
     Images,
     /// Text the pages hold but no reader can see.
@@ -1715,7 +1716,7 @@ pub fn check(
         findings.add(
             Rule::HiddenText,
             run,
-            "white, tiny, clipped, off-page or covered text: a CV shows everything it says"
+            "tiny, clipped, off-page, covered or too pale text: a CV shows everything it says"
                 .to_owned(),
         );
     }
@@ -1723,8 +1724,9 @@ pub fn check(
         findings.add(
             Rule::MissingGlyph,
             letter,
-            "the CV's font has no such letter, so it draws as a crossed box. It holds Latin, Greek, \
-             Cyrillic and Hebrew letters, and digits but no letters in math"
+            "the CV's font has no such letter or symbol, so it draws as a crossed box. It holds Latin, \
+             Greek, Cyrillic and Hebrew letters, and digits but no letters in math. Use a word or an \
+             embedded symbol instead, or tell the owner the font lacks this"
                 .to_owned(),
         );
     }
