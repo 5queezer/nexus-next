@@ -116,8 +116,9 @@ pub async fn approve(
     outcome(approved.await)
 }
 
-/// The owner's edit on the dashboard. Stored and approved in one step if its base was approved, since
-/// the whole difference is then theirs. On a draft it stores a draft, for the review like any other.
+/// The owner's edit on the dashboard. Stored and approved in one step if its base is still approved when
+/// it is stored, since the whole difference is then theirs. On a draft it stores a draft, for the review
+/// like any other.
 /// `args` are `patch_cv`'s, and validated the same.
 pub async fn save(state: Arc<McpState>, args: &Value) -> CallToolResult {
     save_as(state, args, false).await

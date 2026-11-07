@@ -630,7 +630,7 @@ pub(crate) async fn patch_as(
         Ok(state) => state,
         Err(error) => return Ok(error),
     };
-    let (base, known, base_approved) = {
+    let (base, known) = {
         let mut conn = ctx.state.db.conn().await?;
         if create_from.is_some() {
             if !valid_new_variant_name(name) {
@@ -648,14 +648,7 @@ pub(crate) async fn patch_as(
         // A variant made with `createFrom` has no approved text of its own yet.
         let own = create_from.is_none().then_some(&base.variant);
         let known = known_to_owner(&mut conn, own, &state.facts).await?;
-        let base_approved = is_approved(
-            &mut conn,
-            &state,
-            Some(base.variant.id),
-            &sha256_hex(base.source.as_bytes()),
-        )
-        .await?;
-        (base, known, base_approved)
+        (base, known)
     };
     if base.number != expected {
         return Ok(conflict(expected, base.number));
@@ -701,6 +694,14 @@ pub(crate) async fn patch_as(
             summary,
             warnings: &capped_items(&report.review_items).0,
         },
+    )
+    .await?;
+    // Read now: the owner may have replaced this base in another variant during the compile.
+    let base_approved = is_approved(
+        &mut tx,
+        &state,
+        Some(base.variant.id),
+        &sha256_hex(base.source.as_bytes()),
     )
     .await?;
     if let Some(approved_by) = approved_by.filter(|_| base_approved && !draft_only) {

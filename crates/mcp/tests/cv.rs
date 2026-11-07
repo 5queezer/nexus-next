@@ -1529,6 +1529,69 @@ async fn a_generate_of_text_the_owner_replaced_during_its_compile_stores_no_docu
     panic!("the tap never met a generate in its compile");
 }
 
+/// The owner saves an edit on approved text in one tab, and replaces that text in another variant during
+/// the save's compile. The base no longer stands, so the save stores a draft, as Save draft does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owners_save_on_text_replaced_during_its_compile_stores_a_draft() {
+    for _ in 0..4 {
+        let server = locked_server().await;
+        patch(&server, 0, "Backend engineer", "Freight engineer")
+            .await
+            .ok();
+        owner_approve(&server, "default").await;
+        let holds = new_variant(&server, "holds", "default").await;
+        assert_eq!(holds["state"], "approved", "{holds}");
+        new_variant(&server, "other", "default").await;
+        let review = long_draft_in(&server, "other").await;
+
+        let args = json!({"variant": "holds", "expectedRevision": 1, "summary": "Edited by hand",
+            "origin": "dashboard",
+            "edits": [{"oldText": "Freight engineer", "newText": "Rail engineer"}]});
+        let (saved, in_time) =
+            racing_a_tap(&server, &review, owner::save(server.state.clone(), &args)).await;
+        let reply = saved.structured_content.unwrap();
+        if !in_time || reply["error"]["code"] == "cv_render_busy" {
+            continue;
+        }
+        assert_eq!(
+            (&reply["state"], &reply["revision"]),
+            (&json!("draft"), &json!(2)),
+            "{reply}"
+        );
+        assert_eq!(
+            approvals_by_of(&server, "holds").await,
+            Vec::<String>::new()
+        );
+        assert_eq!(head_state(&server, "holds").await, "draft");
+        let review = owner::review(server.state.clone(), "holds").await.unwrap();
+        assert!(
+            !review.approved && review.baseline_is_replaced,
+            "{review:?}"
+        );
+        return;
+    }
+    panic!("the tap never met a save in its compile");
+}
+
+/// A variant's own approval stands when another variant replaces that text, so an owner's save there
+/// still approves: the question under the lock is about this base in this variant.
+#[tokio::test]
+async fn an_owners_save_on_its_own_approval_still_approves_after_a_correction_elsewhere() {
+    let server = locked_server().await;
+    corrected_in_one_variant(&server).await;
+    let (at, _) = head(&server, "beta").await;
+    let saved = owner::save(
+        server.state.clone(),
+        &json!({"variant": "beta", "expectedRevision": at, "summary": "Edited by hand",
+            "origin": "dashboard",
+            "edits": [{"oldText": "a team of 20", "newText": "a team of 18"}]}),
+    )
+    .await;
+    let reply = saved.structured_content.unwrap();
+    assert_eq!(reply["state"], "approved", "{reply}");
+    assert_eq!(approvals_by_of(&server, "beta").await, ["cli", "dashboard"]);
+}
+
 /// A revision of approved text, with a draft on top for the owner to tap.
 async fn approved_text_under_a_draft() -> (Server, owner::Review) {
     let server = locked_server().await;
