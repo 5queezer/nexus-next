@@ -1257,7 +1257,7 @@ async fn a_stale_editor_gets_the_conflict_and_never_approves_what_landed() {
 
 /// Finding 9: a change only in how text looks never shows Approve under an empty panel.
 #[tokio::test]
-async fn a_change_in_looks_says_so_and_opens_the_source() {
+async fn a_change_in_looks_says_so_above_the_button() {
     let f = locked().await;
     let source = approved_start(&f).await;
     let (_, _, page) = get(&f.app, VARIANT).await;
@@ -1574,7 +1574,12 @@ async fn the_approval_screen_shows_the_picture_before_the_button() {
     let text = panel.find("id=\"cv-text-details\"").unwrap();
     let source = panel.find("id=\"cv-source-details\"").unwrap();
     assert!(button < text && button < source, "{panel}");
-    assert!(!panel.contains("<details open"), "{panel}");
+    for collapsed in ["cv-text-details", "cv-source-details"] {
+        assert!(
+            !panel.contains(&format!("id=\"{collapsed}\" open")),
+            "{panel}"
+        );
+    }
 }
 
 /// A long first approval keeps its button close: only the most serious items stand open.
