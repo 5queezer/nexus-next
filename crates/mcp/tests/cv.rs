@@ -3077,7 +3077,7 @@ async fn a_locks_own_row_stops_counting_once_its_text_is_replaced() {
     assert_eq!(held.code(), "cv_approval_required", "{:?}", held.json());
     assert_eq!(
         documents_of(&server, &first).await,
-        [kept.clone()],
+        [kept],
         "the one from before"
     );
     let elsewhere = server.application("C").await;
