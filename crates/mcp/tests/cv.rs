@@ -1367,6 +1367,230 @@ async fn an_approval_refuses_a_revision_that_stopped_being_the_head_during_its_c
     panic!("the approval never met a patch in its compile");
 }
 
+/// A draft the owner can tap in `variant`, replacing what it holds, long enough to draw that an agent's
+/// call starting after the tap reads the database before the tap commits. Drawing isn't memoized.
+async fn long_draft_in(server: &Server, variant: &str) -> owner::Review {
+    let (at, source) = head(server, variant).await;
+    let lines: String = (0..240)
+        .map(|line| format!("- Moved freight lane {line} across the depots with care.\n"))
+        .collect();
+    let draft = format!("#import \"/nexus.typ\": *\n#show: cv\n#header()\n{lines}");
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": variant, "expectedRevision": at, "summary": "Correct",
+                "edits": [{"oldText": source, "newText": draft}]}),
+        )
+        .await
+        .ok();
+    owner::review(server.state.clone(), variant).await.unwrap()
+}
+
+/// The owner taps `review`, and `work` starts just after, reads what stands, and waits behind the tap's
+/// compile, one at a time. So what it read is out of date when it compiles. The tap landed, if true.
+async fn racing_a_tap<T>(
+    server: &Server,
+    review: &owner::Review,
+    work: impl Future<Output = T>,
+) -> (T, bool) {
+    let work = async {
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let done = work.await;
+        (done, std::time::Instant::now())
+    };
+    let tap = async {
+        let tapped = owner::approve(
+            server.state.clone(),
+            &review.variant,
+            review.revision,
+            &review.source_sha256,
+            &review.facts_sha256,
+            "dashboard",
+        )
+        .await;
+        (tapped.is_error != Some(true), std::time::Instant::now())
+    };
+    let ((done, finished), (tapped, tap_at)) = tokio::join!(work, tap);
+    (done, tapped && tap_at < finished)
+}
+
+async fn documents_of(server: &Server, app: &str) -> Vec<String> {
+    let listed = server
+        .call("list_documents", json!({"applicationId": app}))
+        .await
+        .ok();
+    listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|document| document["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn approvals_by_of(server: &Server, variant: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT a.approved_by FROM cv_approvals a JOIN cv_variants v ON v.id = a.variant_id
+         WHERE v.name = ? ORDER BY a.id",
+    )
+    .bind(variant)
+    .fetch_all(server.db.pool())
+    .await
+    .unwrap()
+}
+
+/// The owner approves a correction while a plain generate compiles: the lock doesn't speak over them,
+/// and no document of the text they replaced is stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lock_does_not_speak_over_a_tap_made_during_its_compile() {
+    for _ in 0..4 {
+        let server = locked_server().await;
+        let app = server.application("Acme").await;
+        let variant = format!("application-{app}");
+        let jobs =
+            json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
+        let mut with_override = jobs.clone();
+        with_override["profileOverride"] = "An agent's own wording.".into();
+        let held = server.call("generate_tailored_cv", with_override).await;
+        assert_eq!(held.code(), "cv_approval_required");
+        let review = long_draft_in(&server, &variant).await;
+
+        let (generated, in_time) =
+            racing_a_tap(&server, &review, server.call("generate_tailored_cv", jobs)).await;
+        // On a busy machine the tap's compile can outlast an agent's wait for the slot.
+        if !in_time || generated.json()["error"]["code"] == "cv_render_busy" {
+            continue;
+        }
+        assert_eq!(
+            generated.code(),
+            "cv_approval_required",
+            "{:?}",
+            generated.json()
+        );
+        assert_eq!(documents_of(&server, &app).await, Vec::<String>::new());
+        assert_eq!(
+            approvals_by_of(&server, &variant).await,
+            ["dashboard"],
+            "no lock row"
+        );
+        assert_eq!(
+            head_state(&server, &variant).await,
+            "draft",
+            "kept as a draft"
+        );
+        assert!(
+            server.db.blobs().list().unwrap().is_empty(),
+            "no PDF left behind"
+        );
+        return;
+    }
+    panic!("the tap never met a generate in its compile");
+}
+
+/// The same with text that was approved when the generate read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_generate_of_text_the_owner_replaced_during_its_compile_stores_no_document() {
+    for _ in 0..4 {
+        let server = locked_server().await;
+        let app = server.application("Acme").await;
+        let variant = format!("application-{app}");
+        let jobs =
+            json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
+        let first = server.call("generate_tailored_cv", jobs.clone()).await.ok();
+        let kept = first["documentId"].as_str().unwrap().to_owned();
+        let review = long_draft_in(&server, &variant).await;
+
+        let (generated, in_time) =
+            racing_a_tap(&server, &review, server.call("generate_tailored_cv", jobs)).await;
+        if !in_time || generated.json()["error"]["code"] == "cv_render_busy" {
+            continue;
+        }
+        assert_eq!(
+            generated.code(),
+            "cv_approval_required",
+            "{:?}",
+            generated.json()
+        );
+        assert_eq!(
+            documents_of(&server, &app).await,
+            [kept],
+            "the document from before stays"
+        );
+        assert_eq!(
+            approvals_by_of(&server, &variant).await,
+            ["lock", "dashboard"]
+        );
+        assert_eq!(
+            server.db.blobs().list().unwrap().len(),
+            1,
+            "that document's"
+        );
+        return;
+    }
+    panic!("the tap never met a generate in its compile");
+}
+
+/// A revision of approved text, with a draft on top for the owner to tap.
+async fn approved_text_under_a_draft() -> (Server, owner::Review) {
+    let server = locked_server().await;
+    patch(&server, 0, "Backend engineer", "Freight engineer")
+        .await
+        .ok();
+    owner_approve(&server, "default").await;
+    let review = long_draft_in(&server, "default").await;
+    assert_eq!(review.revision, 2);
+    (server, review)
+}
+
+/// A save of approved text, with the owner replacing it during the compile: no document, no real PDF.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_save_of_text_the_owner_replaced_during_its_compile_stores_nothing() {
+    for _ in 0..4 {
+        let (server, review) = approved_text_under_a_draft().await;
+        let app = server.application("Acme").await;
+        let args = json!({"revision": 1, "previewPages": 0, "saveToApplicationId": app});
+        let (rendered, in_time) = racing_a_tap(&server, &review, render(&server, args)).await;
+        if !in_time || rendered.text_json()["error"]["code"] == "cv_render_busy" {
+            continue;
+        }
+        assert_eq!(
+            rendered.text_json()["error"]["code"],
+            "cv_approval_required",
+            "{:?}",
+            rendered.content
+        );
+        assert_eq!(rendered.content.len(), 1, "no PDF in it");
+        assert_eq!(documents_of(&server, &app).await, Vec::<String>::new());
+        assert!(
+            server.db.blobs().list().unwrap().is_empty(),
+            "no PDF left behind"
+        );
+        return;
+    }
+    panic!("the tap never met a render in its compile");
+}
+
+/// The bytes must not leave with no save either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_real_pdf_of_text_the_owner_replaced_during_its_compile_does_not_leave() {
+    for _ in 0..4 {
+        let (server, review) = approved_text_under_a_draft().await;
+        let args = json!({"revision": 1, "previewPages": 1});
+        let (rendered, in_time) = racing_a_tap(&server, &review, render(&server, args)).await;
+        if !in_time || rendered.text_json()["error"]["code"] == "cv_render_busy" {
+            continue;
+        }
+        assert_eq!(
+            rendered.text_json()["error"]["code"],
+            "cv_approval_required",
+            "{:?}",
+            rendered.content
+        );
+        assert_eq!(rendered.content.len(), 1, "no PDF and no clean picture");
+        return;
+    }
+    panic!("the tap never met a render in its compile");
+}
+
 /// Any changed fact invalidates what was built on it. An unlock and relock with no change doesn't.
 #[tokio::test]
 async fn approval_is_bound_to_the_facts_it_was_given_under() {

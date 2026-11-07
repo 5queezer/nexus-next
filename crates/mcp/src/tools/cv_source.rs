@@ -894,13 +894,15 @@ pub async fn list(ctx: &Ctx, args: &Args) -> ToolResult {
     ))
 }
 
-/// Stores a rendered PDF as a normal document linked to an application.
+/// Stores a rendered PDF as a normal document linked to an application, if `base` is still approved
+/// under the write lock: the owner may have approved something else in that variant during the compile.
 async fn save_pdf(
     ctx: &Ctx,
     pdf: Vec<u8>,
     application_id: i64,
     original_name: String,
-    facts_version: i64,
+    state: &FactsState,
+    base: &Base,
 ) -> Result<Result<i64, CallToolResult>, super::Thrown> {
     let bytes = Arc::new(pdf);
     let db = &ctx.state.db;
@@ -919,8 +921,12 @@ async fn save_pdf(
     };
     let stored = async {
         let mut tx = db.begin_write().await?;
-        if facts_moved(&mut tx, facts_version).await? {
-            return nexus_core::Result::Ok(None);
+        if facts_moved(&mut tx, state.version).await? {
+            return nexus_core::Result::Ok(Err(facts_changed_error()));
+        }
+        let source_sha256 = sha256_hex(base.source.as_bytes());
+        if !is_approved(&mut tx, state, Some(base.variant.id), &source_sha256).await? {
+            return Ok(Err(approval_required(&base.variant.name, base.number)));
         }
         // A delete of the same bytes may have removed the file since the put above.
         if !db.blobs().exists(&sha256)? {
@@ -928,13 +934,13 @@ async fn save_pdf(
         }
         let document = documents_repo::create(&mut tx, &new).await?;
         tx.commit().await?;
-        Ok(Some(document.id))
+        Ok(Ok(document.id))
     };
     match stored.await {
-        Ok(Some(id)) => Ok(Ok(id)),
-        Ok(None) => {
+        Ok(Ok(id)) => Ok(Ok(id)),
+        Ok(Err(refused)) => {
             remove_blob_if_unreferenced(db, sha256).await?;
-            Ok(Err(facts_changed_error()))
+            Ok(Err(refused))
         }
         Err(error) => {
             remove_blob_if_unreferenced(db, sha256).await?;
@@ -1009,11 +1015,18 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
-    // An approval holds for the facts it was given under, and a real PDF must not outlive them.
+    // An approval holds for the facts it was given under, and a real PDF must not outlive them. Nor
+    // an approval the owner replaced during the compile. For a save, `save_pdf` asks under the write lock.
     if approved {
         let mut conn = ctx.state.db.conn().await?;
         if facts_moved(&mut conn, state.version).await? {
             return Ok(facts_changed_error());
+        }
+        let source_sha256 = sha256_hex(base.source.as_bytes());
+        if application.is_none()
+            && !is_approved(&mut conn, &state, Some(base.variant.id), &source_sha256).await?
+        {
+            return Ok(approval_required(&base.variant.name, base.number));
         }
     }
     let mut summary = json!({
@@ -1039,7 +1052,7 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
     }
     if let (Some(application), Some(pdf)) = (application, pdf) {
         let original_name = format!("CV - {} - {}.pdf", application.company, application.role);
-        let saved = save_pdf(ctx, pdf, application.id, original_name, state.version).await?;
+        let saved = save_pdf(ctx, pdf, application.id, original_name, &state, &base).await?;
         match saved {
             Ok(id) => summary["savedDocumentId"] = id.to_string().into(),
             Err(error) => return Ok(error),

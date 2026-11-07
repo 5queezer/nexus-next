@@ -4,11 +4,12 @@ use nexus_core::Error;
 use nexus_core::blob::sha256_hex;
 use nexus_core::repo::cv::{self as repo, CvPatchInput, CvProfile, CvProfileInput};
 use nexus_core::repo::cv_approvals::{self as approvals, NewApproval, facts_sha256};
-use nexus_core::repo::cv_facts;
+use nexus_core::repo::cv_facts::{self, FactsState};
 use nexus_core::repo::cv_revisions::{self as revisions, NewRevision};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
 use nexus_tailor::{check, review_text, source_from_profile};
 use serde_json::{Value, json};
+use sqlx::SqliteConnection;
 
 use super::cv_source::{
     application_variant, approval_required, capped_items, compile, content_of, error_with,
@@ -136,6 +137,34 @@ enum Generated {
     Unlocked,
 }
 
+/// How a generated source stands now. `plain` says it is the owner's wording as last locked, in a plain
+/// selection, which the lock speaks for unless the owner has approved something else in this variant,
+/// or a variant has replaced this very text.
+async fn standing_of(
+    conn: &mut SqliteConnection,
+    state: &FactsState,
+    variant_id: Option<i64>,
+    source_sha256: &str,
+    plain: bool,
+) -> nexus_core::Result<Generated> {
+    let owner_approved_here = match variant_id {
+        Some(id) => approvals::newest_approved_by(&mut *conn, id)
+            .await?
+            .is_some_and(|by| by != "lock"),
+        None => false,
+    };
+    let replaced = approvals::is_replaced(&mut *conn, source_sha256).await?;
+    Ok(if !state.is_locked() {
+        Generated::Unlocked
+    } else if is_approved(&mut *conn, state, variant_id, source_sha256).await? {
+        Generated::Approved
+    } else if plain && !owner_approved_here && !replaced {
+        Generated::ApprovedByLock
+    } else {
+        Generated::Draft
+    })
+}
+
 /// Port of `generateAndStoreCv`, with Typst for react-pdf and the integrity check before anything
 /// is stored. Replaces the document the patch last tracked, unless that one was submitted. Unlike old
 /// Nexus, a document also linked to another application stays for that one, and only loses this link.
@@ -195,32 +224,15 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
     ));
     let name = application_variant(application.id);
     let source_sha256 = sha256_hex(source.as_bytes());
+    let plain = profile_override.is_none()
+        && repo::wording_of(&profile) == locked_wording
+        && plain_selection(&profile, &experience_ids, &skill_categories);
     let (standing, known) = {
         let mut conn = ctx.state.db.conn().await?;
         let variant = revisions::get_variant(&mut conn, &name).await?;
         let known = known_to_owner(&mut conn, variant.as_ref(), &state.facts).await?;
         let variant_id = variant.as_ref().map(|variant| variant.id);
-        let owner_approved_here = match variant_id {
-            Some(id) => approvals::newest_approved_by(&mut conn, id)
-                .await?
-                .is_some_and(|by| by != "lock"),
-            None => false,
-        };
-        let replaced = approvals::is_replaced(&mut conn, &source_sha256).await?;
-        let standing = if !state.is_locked() {
-            Generated::Unlocked
-        } else if is_approved(&mut conn, &state, variant_id, &source_sha256).await? {
-            Generated::Approved
-        } else if profile_override.is_none()
-            && repo::wording_of(&profile) == locked_wording
-            && plain_selection(&profile, &experience_ids, &skill_categories)
-            && !owner_approved_here
-            && !replaced
-        {
-            Generated::ApprovedByLock
-        } else {
-            Generated::Draft
-        };
+        let standing = standing_of(&mut conn, &state, variant_id, &source_sha256, plain).await?;
         (standing, known)
     };
     let rendered = match compile(
@@ -310,7 +322,14 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         }
         let (variant_id, revision, added) =
             store_revision(&mut tx, &name, application.id, &new_revision).await?;
-        if standing == Generated::ApprovedByLock {
+        // The owner may have approved or corrected something during the compile. What decides is what
+        // holds now, under the write lock: the revision stays as a draft, with no document and no row.
+        let now = standing_of(&mut tx, &state, Some(variant_id), &source_sha256, plain).await?;
+        if now == Generated::Draft {
+            tx.commit().await?;
+            return Ok(Some(Err((revision, added))));
+        }
+        if now == Generated::ApprovedByLock {
             approvals::record(
                 &mut tx,
                 &NewApproval {
@@ -351,10 +370,17 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
         let document = documents_repo::create(&mut tx, &new).await?;
         repo::set_patch_document_id(&mut tx, tracked.id, Some(document.id)).await?;
         tx.commit().await?;
-        Ok(Some((document, replaced_blob, revision, added)))
+        Ok(Some(Ok((document, replaced_blob, revision, added))))
     };
     let (document, replaced_blob, revision, added) = match stored.await {
-        Ok(Some(done)) => done,
+        Ok(Some(Ok(done))) => done,
+        Ok(Some(Err((revision, added)))) => {
+            let _ = remove_blob_if_unreferenced(db, sha256).await;
+            if added {
+                publish(ctx, &name, &revision, false, report.review_items.len());
+            }
+            return Ok(approval_required(&name, revision.number));
+        }
         Ok(None) => {
             let _ = remove_blob_if_unreferenced(db, sha256).await;
             return Ok(facts_changed_error());
