@@ -57,7 +57,7 @@ Nothing is stored in any of these cases, and the revision stays as it was.
 | **`cv_fact_violation`** | **Stops, and tells the owner exactly which `token` was refused** | **Yes, always** |
 | `cv_facts_not_locked` | Stops, and asks the owner to run `nexus cv-facts lock` | Yes |
 
-**`cv_fact_violation` is now narrow, and it is final.** It no longer means "a number I don't know": those are review items. It means a reader of the PDF would see something other than what the owner reviews, or the owner's own banned phrase: hidden, rotated or mirrored text, an image, an email, URL or phone number the facts don't back, mixed-script words, letters that read as digits. **Never work around one.** Don't reword it, split it, use lookalike letters, or try another tool. A list stops at 50, and `truncated` says how many more there were.
+**`cv_fact_violation` is now narrow, and it is final.** It no longer means "a number I don't know": those are review items. It means a reader of the PDF would see something other than what the owner reviews, or the owner's own banned phrase: hidden or covered text, text too pale to read on what it stands on, a letter the CV's font doesn't have (Chinese, Arabic, Devanagari, or any letter in math), rotated or mirrored text, an image, an email, URL or phone number the facts don't back, mixed-script words, letters that read as digits. **Never work around one.** Don't reword it, split it, use lookalike letters, or try another tool. A list stops at 50, and `truncated` says how many more there were.
 
 ## When a document is asked for
 
