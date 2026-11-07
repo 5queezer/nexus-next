@@ -192,11 +192,14 @@ async fn cv_facts_and_revisions_survive_a_backup_and_a_restore() {
             .await
             .unwrap();
     assert!(still_approved, "an approval survives a restore");
-    let (text, at, _) = cv_approvals::last_approved(&mut conn, &variant, &facts_hash)
+    let baseline = cv_approvals::last_approved(&mut conn, &variant, &facts_hash)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((text.as_str(), at), ("CV", 1));
+    assert_eq!(
+        (baseline.rendered_text.as_str(), baseline.revision),
+        ("CV", 1)
+    );
     let changed = sqlx::query("UPDATE cv_approvals SET rendered_text = 'x'")
         .execute(&mut *conn)
         .await

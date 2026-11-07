@@ -2490,3 +2490,207 @@ async fn a_lock_does_not_speak_over_what_the_owner_approved_under_other_facts() 
     assert_eq!(back.code(), "cv_approval_required");
     assert_eq!(document_count(&server).await, documents);
 }
+
+// The owner's decision: a correction counts everywhere.
+
+const CLAIM_20: (&str, &str) = ("Built the routing service.", "Led a team of 20 engineers.");
+
+async fn new_variant(server: &Server, name: &str, from: &str) -> Value {
+    let (at, _) = head(server, from).await;
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": name, "createFrom": from, "expectedRevision": at,
+                "summary": "New", "edits": []}),
+        )
+        .await
+        .ok()
+}
+
+/// `beta` holds the owner's claim of 20, and `alpha` takes it with no approval of its own. The owner then
+/// corrects it to 12 in `alpha`. The fourth gate review's `d2.py`.
+async fn corrected_in_one_variant(server: &Server) {
+    patch(
+        server,
+        0,
+        "Built the routing service.",
+        "Built the routing engine.",
+    )
+    .await
+    .ok();
+    owner_approve(server, "default").await;
+    new_variant(server, "beta", "default").await;
+    let (at, _) = head(server, "beta").await;
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": "beta", "expectedRevision": at, "summary": "Claim",
+                "edits": [{"oldText": "Built the routing engine.", "newText": CLAIM_20.1}]}),
+        )
+        .await
+        .ok();
+    owner_approve(server, "beta").await;
+    new_variant(server, "alpha", "beta").await;
+    assert_eq!(
+        head_state(server, "alpha").await,
+        "approved",
+        "taken at once"
+    );
+    let (at, _) = head(server, "alpha").await;
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": "alpha", "expectedRevision": at, "summary": "Correct",
+                "edits": [{"oldText": "a team of 20", "newText": "a team of 12"}]}),
+        )
+        .await
+        .ok();
+    owner_approve(server, "alpha").await;
+}
+
+#[tokio::test]
+async fn a_correction_in_one_variant_stops_a_new_variant_taking_the_old_claim() {
+    let server = locked_server().await;
+    corrected_in_one_variant(&server).await;
+    // `beta`'s own approval is untouched.
+    assert_eq!(head_state(&server, "beta").await, "approved");
+    // A new variant from it holds the corrected claim, and has to be read.
+    let gamma = new_variant(&server, "gamma", "beta").await;
+    assert_eq!(gamma["state"], "draft", "{gamma}");
+    assert_eq!(head_state(&server, "gamma").await, "draft");
+    let (_, source) = head(&server, "gamma").await;
+    assert!(source.contains("a team of 20"), "{source}");
+    let rendered = server
+        .call(
+            "render_cv_pdf",
+            json!({"variant": "gamma", "previewPages": 0}),
+        )
+        .await
+        .ok();
+    assert_eq!(rendered["state"], "draft", "stamped: {rendered}");
+    // It reads as all new, so the claim isn't hidden as unchanged.
+    let review = owner::review(server.state.clone(), "gamma").await.unwrap();
+    assert_eq!(review.baseline, None, "{review:?}");
+    assert_eq!(review.baseline_revision, None);
+    // And a tap makes it stand there, as any draft.
+    owner_approve(&server, "gamma").await;
+    assert_eq!(head_state(&server, "gamma").await, "approved");
+}
+
+/// The owner approving the old text again takes it back: it stands, and a new variant may take it.
+#[tokio::test]
+async fn approving_the_old_text_again_takes_the_correction_back() {
+    let server = locked_server().await;
+    corrected_in_one_variant(&server).await;
+    let (at, _) = head(&server, "alpha").await;
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": "alpha", "expectedRevision": at, "summary": "Back",
+                "edits": [{"oldText": "a team of 12", "newText": "a team of 20"}]}),
+        )
+        .await
+        .ok();
+    owner_approve(&server, "alpha").await;
+    let again = new_variant(&server, "again", "beta").await;
+    assert_eq!(again["state"], "approved", "{again}");
+}
+
+/// The honest order: a text nobody has replaced is taken at once, and reads against itself.
+#[tokio::test]
+async fn a_text_nobody_replaced_is_taken_at_once() {
+    let server = locked_server().await;
+    patch(&server, 0, CLAIM_20.0, "Built the routing engine.")
+        .await
+        .ok();
+    owner_approve(&server, "default").await;
+    for name in ["one", "two"] {
+        let made = new_variant(&server, name, "default").await;
+        assert_eq!(made["state"], "approved", "{made}");
+        let rendered = server
+            .call("render_cv_pdf", json!({"variant": name, "previewPages": 0}))
+            .await
+            .ok();
+        assert_eq!(rendered["state"], "approved", "{rendered}");
+    }
+    let (_, source) = head(&server, "two").await;
+    let (at, _) = head(&server, "two").await;
+    let edited = server
+        .call(
+            "patch_cv",
+            json!({"variant": "two", "expectedRevision": at, "summary": "Edit",
+                "edits": [{"oldText": "routing engine", "newText": "routing core"}]}),
+        )
+        .await
+        .ok();
+    assert_eq!(edited["state"], "draft", "{source}");
+    let review = owner::review(server.state.clone(), "two").await.unwrap();
+    assert!(review.baseline.is_some(), "reads against what it took");
+    assert!(!review.baseline_is_own);
+}
+
+/// Facts that change and change back don't bring a replaced text back either, in any variant.
+#[tokio::test]
+async fn a_correction_counts_after_the_facts_change_and_change_back() {
+    let server = locked_server().await;
+    corrected_in_one_variant(&server).await;
+    let german = |level: &str| json!({"languages": [{"name": "German", "level": level}], "bannedPhrases": ["team player"]});
+    for level in ["C2", "C1"] {
+        let mut tx = server.db.begin_write().await.unwrap();
+        cv_facts::unlock(&mut tx, "test").await.unwrap();
+        tx.commit().await.unwrap();
+        owner_set(&server, german(level)).await;
+        owner_lock(&server).await;
+    }
+    assert_eq!(
+        head_state(&server, "beta").await,
+        "approved",
+        "its own stands"
+    );
+    let gamma = new_variant(&server, "gamma", "beta").await;
+    assert_eq!(gamma["state"], "draft", "{gamma}");
+}
+
+/// A lock's own approval isn't the owner's tap, and the page says which it is.
+#[tokio::test]
+async fn a_review_says_when_its_baseline_is_a_locks() {
+    let server = locked_server().await;
+    let app = server.application("Acme").await;
+    let args =
+        json!({"applicationId": app, "experienceIds": ["brightpath"], "skillCategories": []});
+    let generated = server.call("generate_tailored_cv", args).await;
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT v.name FROM cv_approvals a JOIN cv_variants v ON v.id = a.variant_id
+         WHERE a.approved_by = 'lock' ORDER BY a.id DESC LIMIT 1",
+    )
+    .fetch_optional(server.db.pool())
+    .await
+    .unwrap();
+    let Some(name) = name else {
+        panic!("generate wrote no lock approval: {generated:?}");
+    };
+    let (at, source) = head(&server, &name).await;
+    let line = source
+        .lines()
+        .find(|line| line.trim_start().starts_with("- "))
+        .unwrap()
+        .to_owned();
+    server
+        .call(
+            "patch_cv",
+            json!({"variant": name, "expectedRevision": at, "summary": "Edit",
+                "edits": [{"oldText": line, "newText": "  - Built an entirely different engine."}]}),
+        )
+        .await
+        .ok();
+    let review = owner::review(server.state.clone(), &name).await.unwrap();
+    assert!(
+        review.baseline_is_own && review.baseline_is_lock,
+        "{review:?}"
+    );
+    assert!(
+        !review.source_diff.contains("nothing approved yet"),
+        "{}",
+        review.source_diff
+    );
+}

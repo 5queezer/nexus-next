@@ -19,13 +19,30 @@ pub fn facts_sha256(facts: &Facts) -> String {
     sha256_hex(&renderable)
 }
 
+/// SQL saying whether some variant has replaced a source: it held that text, and the owner has since
+/// approved another there. Under any facts, since a correction doesn't stop counting when a fact comes
+/// back. Nothing tells a correction from tailoring, so approving a changed text counts either way. A
+/// variant that approves the text again has taken it back. Its argument is SQL written in this file.
+fn replaced_sql(source: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM cv_approvals newest
+            JOIN cv_revisions held ON held.variant_id = newest.variant_id
+                AND held.number < newest.revision_number
+            WHERE held.source_sha256 = {source} AND newest.source_sha256 <> {source}
+            AND newest.id = (SELECT max(n.id) FROM cv_approvals n
+                WHERE n.variant_id = newest.variant_id))"
+    )
+}
+
 /// SQL saying whether a source is approved in a variant, under these facts. A variant's newest approval
 /// decides, under whichever facts it was made: the text is approved only if that row's source and
 /// facts both match, so an approval the owner has since replaced stops counting, even if the facts
 /// come back to what they were. A variant with no approval of its own takes text from elsewhere, as
-/// long as that is still the newest approval where it was made: a new variant can't bring back what
-/// the owner corrected. Its arguments are SQL written in this file, never data.
+/// long as that is still the newest approval where it was made and no variant has replaced it: the
+/// owner's decision is that a correction counts everywhere, so a new variant can't bring back what they
+/// corrected in any of them. Its arguments are SQL written in this file, never data.
 fn approved_sql(variant: &str, source: &str, facts: &str) -> String {
+    let replaced = replaced_sql(source);
     format!(
         "COALESCE(
             (SELECT own.source_sha256 = {source} AND own.facts_sha256 = {facts} FROM cv_approvals own
@@ -34,6 +51,7 @@ fn approved_sql(variant: &str, source: &str, facts: &str) -> String {
             EXISTS (SELECT 1 FROM cv_approvals a
                 WHERE a.source_sha256 = {source} AND a.facts_sha256 = {facts}
                 AND a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id))
+            AND NOT {replaced}
         )"
     )
 }
@@ -101,31 +119,45 @@ pub async fn record(conn: &mut SqliteConnection, new: &NewApproval<'_>) -> Resul
     Ok(())
 }
 
+/// What a draft is read against. See [`last_approved`].
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct Baseline {
+    pub rendered_text: String,
+    pub revision: i64,
+    /// The approval is this variant's own, not another's text it holds.
+    pub own: bool,
+    /// `cli`, `dashboard` or `lock`.
+    pub approved_by: String,
+}
+
 /// What a variant's next draft is read against, at which revision, and whether the approval is its own.
 /// Its newest approval, if that was made under these facts: under others it is no baseline, since a
 /// line the owner has corrected would read as unchanged. For a variant with none of its own, the newest
-/// approval of a text it holds, if that is still the newest where it was made: replaced text would
-/// read as unchanged too. By approval, not revision number: a revert to older text must not hide the
-/// correction it undoes.
+/// approval of a text it holds, if that is still the newest where it was made and no variant has
+/// replaced it: replaced text would read as unchanged too. By approval, not revision number: a revert to
+/// older text must not hide the correction it undoes.
 pub async fn last_approved(
     conn: &mut SqliteConnection,
     variant: &Variant,
     facts_sha256: &str,
-) -> Result<Option<(String, i64, bool)>> {
-    Ok(sqlx::query_as(
-        "SELECT a.rendered_text, r.number, a.variant_id = ?1
+) -> Result<Option<Baseline>> {
+    let replaced = replaced_sql("a.source_sha256");
+    let sql = format!(
+        "SELECT a.rendered_text, r.number AS revision, a.variant_id = ?1 AS own, a.approved_by
          FROM cv_revisions r JOIN cv_approvals a ON a.source_sha256 = r.source_sha256
          WHERE r.variant_id = ?1 AND a.facts_sha256 = ?2
          AND a.id = (SELECT max(b.id) FROM cv_approvals b WHERE b.variant_id = a.variant_id)
          AND (a.variant_id = ?1
-             OR NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1))
+             OR (NOT EXISTS (SELECT 1 FROM cv_approvals own WHERE own.variant_id = ?1)
+                 AND NOT {replaced}))
          ORDER BY a.id DESC, r.number DESC
-         LIMIT 1",
-    )
-    .bind(variant.id)
-    .bind(facts_sha256)
-    .fetch_optional(conn)
-    .await?)
+         LIMIT 1"
+    );
+    Ok(sqlx::query_as(AssertSqlSafe(sql))
+        .bind(variant.id)
+        .bind(facts_sha256)
+        .fetch_optional(conn)
+        .await?)
 }
 
 /// A variant whose newest revision the owner hasn't approved under today's facts.
