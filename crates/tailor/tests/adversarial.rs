@@ -2952,6 +2952,7 @@ async fn a_mark_drawn_on_text_is_said_and_not_refused() {
     let ordinary = [
         "Plain words and 40 numbers.",
         "#underline[Reduced invoice errors across three depots]",
+        "A word #underline[in] line.",
         "#underline[gypsy jumpy happy pygmy]",
         "#underline(stroke: 1.5pt + blue)[gypsy jumpy happy pygmy]",
         "#strike[Reduced invoice errors]",
