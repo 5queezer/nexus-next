@@ -2572,6 +2572,13 @@ async fn a_correction_in_one_variant_stops_a_new_variant_taking_the_old_claim() 
     let review = owner::review(server.state.clone(), "gamma").await.unwrap();
     assert_eq!(review.baseline, None, "{review:?}");
     assert_eq!(review.baseline_revision, None);
+    // Text the owner approved stands elsewhere: the diff's header doesn't say otherwise.
+    assert!(
+        review.source_diff.contains("no approved text to compare with")
+            && !review.source_diff.contains("nothing approved yet"),
+        "{}",
+        review.source_diff
+    );
     // And a tap makes it stand there, as any draft.
     owner_approve(&server, "gamma").await;
     assert_eq!(head_state(&server, "gamma").await, "approved");
