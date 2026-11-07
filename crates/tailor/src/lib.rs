@@ -34,7 +34,7 @@ pub const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
 /// Far above what ten pages hold, and below what would strain the server, which keeps a copy.
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-/// An honest 10-page CV peaks at 65 MiB on x86-64, with the check's two drawings of each page. Its
+/// An honest 10-page CV peaks at 71 MiB on x86-64, with the check's four drawings of each page. Its
 /// figure on the board is still to come: before those drawings, 9 pages took 48 MB there. The unit's
 /// `MemoryHigh=256M` is the real ceiling, not `MemoryMax`: above it the kernel stalls the whole cgroup,
 /// server included, instead of killing anything. So this limit, the server's own peak, and what a
@@ -143,7 +143,7 @@ pub struct Rendered {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedText {
-    /// Rebuilt by baseline, in reading order. Includes white, tiny, clipped and off-page text.
+    /// Rebuilt by baseline, in reading order. Includes tiny, clipped, off-page and hidden text.
     pub lines: Vec<String>,
     /// The runs among those no reader can see.
     pub hidden: Vec<String>,
@@ -153,6 +153,10 @@ pub struct RenderedText {
     /// What these name that the fonts have no letter for, which draws as a crossed box.
     #[serde(default)]
     pub missing: Vec<String>,
+    /// The words with a small mark drawn on them or right beside them, which can make one read as
+    /// another. Nothing refuses these: the owner is told to read them in the picture.
+    #[serde(default)]
+    pub marked: Vec<String>,
     /// The runs among those a bidi override draws back to front. Typst trims the control character
     /// from a line's ends, while its effect stays.
     pub reversed: Vec<String>,

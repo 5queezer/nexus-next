@@ -4,7 +4,9 @@
 mod common;
 
 use common::{facts_en, render, render_and_check};
-use nexus_tailor::{Contact, Facts, RenderError, RenderRequest, Renderer, Rule, Severity, check};
+use nexus_tailor::{
+    Contact, Facts, RenderError, RenderRequest, Renderer, Rule, Severity, check, default_source,
+};
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
 /// The smallest valid PNG, one pixel.
@@ -2643,4 +2645,175 @@ async fn pale_text_and_strokes_count_as_hidden_and_muted_colours_do_not() {
         let report = render_and_check(&source, &facts_en()).await;
         assert_eq!(report.violations, [], "{colour}");
     }
+}
+
+/// What the check says of a line of a CV: the words no reader can see, and those with a mark on them.
+async fn judged(line: &str) -> (Vec<String>, Vec<String>) {
+    let request = RenderRequest {
+        source: format!("{START}= Work\n#employment(\"brightpath\")[\n- {line}\n- Mentored developers.\n]\n"),
+        facts: facts_en(),
+        pdf: false,
+        preview_pages: 0,
+        stamp: false,
+    };
+    let rendered = Renderer::InProcess.render(request).await.unwrap();
+    (rendered.text.hidden, rendered.text.marked)
+}
+
+/// A line that draws nothing, on any page or in any viewer, and that the widened drawing draws closed up.
+fn nowhere(dx: f64, dy: f64, length: f64, thickness: f64, paint: &str) -> String {
+    format!(
+        "place(top + left, dx: {dx}pt, dy: {dy}pt, line(length: {length}pt, stroke: (paint: {paint}, thickness: {thickness}pt, dash: (array: (0.01pt, 1000pt), phase: 1pt))))"
+    )
+}
+
+/// `glyph` at 11 pt with a grey ground only the widened drawing has, and white patches that really are
+/// on the page. Its box and its advance are in the font's units, thousandths of an em.
+fn erased_on_a_ground_of_no_page(glyph: &str, (x0, y0, x1, y1): (f64, f64, f64, f64), advance: f64, patches: &[(f64, f64, f64, f64)]) -> String {
+    let s = 0.011;
+    let (pad, width, height) = (1.2, (x1 - x0) * s + 2.4, (y1 - y0) * s + 2.4);
+    let ground = nowhere(x0 * s - pad, -y1 * s - pad + height / 2.0, width, height, "rgb(120, 120, 120)");
+    let white: Vec<String> = patches
+        .iter()
+        .map(|(px0, py0, px1, py1)| {
+            format!(
+                "place(top + left, dx: {}pt, dy: {}pt, rect(width: {}pt, height: {}pt, fill: white))",
+                px0 * s - advance * s, -py1 * s, (px1 - px0) * s, (py1 - py0) * s
+            )
+        })
+        .collect();
+    format!(
+        "#box(width: 0pt, height: 0pt, {{ {ground} }})#text(size: 11pt, kerning: false)[{glyph}]#box(width: 0pt, height: 0pt, {{ {} }})",
+        white.join("\n")
+    )
+}
+
+/// The fifth gate review's findings 2 and 3: a ground only the widened drawing has can't make an eraser
+/// look visible, or give white text something to stand on.
+#[tokio::test]
+async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
+    let band = |paint: &str| nowhere(-1.0, 5.0, 19.0, 12.0, paint);
+    let dot = (57.0, -10.0, 163.0, 96.0);
+    let minus = (60.0, 226.0, 490.0, 276.0);
+    let hyphen = (40.0, 223.0, 298.0, 283.0);
+    let comma = (43.0, -133.0, 170.0, 95.0);
+    let plus = (60.0, 41.0, 490.0, 462.0);
+    let colon = (70.0, 7.0, 176.0, 411.0);
+    let e_box = (12.0, -2.0, 528.0, 649.0);
+    let eight = (46.0, -10.0, 419.0, 610.0);
+    let dollar = (29.0, -98.0, 417.0, 695.0);
+    let mesh: Vec<String> = (0..24)
+        .map(|i| format!("#place(top + left, dx: -1pt, dy: {}pt, line(length: 19pt, stroke: 0.001pt + black))", f64::from(i) * 0.5 - 1.0))
+        .collect();
+    let polygons: Vec<String> = (0..24)
+        .map(|i| format!("#place(top + left, dx: -1pt, dy: {}pt, polygon(fill: black, (0pt, 0pt), (19pt, 0pt), (0pt, 0pt)))", f64::from(i) * 0.5 - 1.0))
+        .collect();
+    let cases: Vec<(&str, String)> = vec![
+        ("white on a dash", format!("I am #box[#{}#text(fill: white)[not]] certified.", band("black"))),
+        ("navy on navy, with a white dash", format!("I am #box(fill: navy, outset: 1pt)[#{}#text(fill: navy)[not]] certified.", band("white"))),
+        ("white on a mesh", format!("I am #box[{}#text(fill: white)[not]] certified.", mesh.join("\n"))),
+        ("white on zero-area polygons", format!("I am #box[{}#text(fill: white)[not]] certified.", polygons.join("\n"))),
+        ("a dot", format!("Grew revenue 4{}9 times.", erased_on_a_ground_of_no_page(".", dot, 220.0, &[dot]))),
+        ("a minus", format!("Margin {}5 percent.", erased_on_a_ground_of_no_page("−", minus, 550.0, &[minus]))),
+        ("a hyphen", format!("Range 3{}5 percent.", erased_on_a_ground_of_no_page("-", hyphen, 338.0, &[hyphen]))),
+        ("a comma's tail", format!("Paid 1{}000 euro.", erased_on_a_ground_of_no_page(",", comma, 220.0, &[(43.0, -133.0, 170.0, 22.0)]))),
+        ("a plus's arms", format!("Change {}5 points.", erased_on_a_ground_of_no_page("+", plus, 550.0, &[(210.0, 41.0, 390.0, 170.0), (210.0, 330.0, 390.0, 462.0)]))),
+        ("a colon's top", format!("Time 10{}30.", erased_on_a_ground_of_no_page(":", colon, 236.0, &[(70.0, 250.0, 176.0, 411.0)]))),
+        ("a dollar", format!("Saved {}500 invoices.", erased_on_a_ground_of_no_page("\\$", dollar, 465.0, &[dollar]))),
+        ("E as F", format!("Grade {}.", erased_on_a_ground_of_no_page("E", e_box, 557.0, &[(150.0, -2.0, 528.0, 110.0)]))),
+        ("8 as 3", format!("Saved {}00 invoices.", erased_on_a_ground_of_no_page("8", eight, 465.0, &[(30.0, 50.0, 160.0, 560.0)]))),
+    ];
+    for (name, line) in cases {
+        let (hidden, _) = judged(&line).await;
+        assert!(!hidden.is_empty(), "{name} passed: {line}");
+    }
+    // White on what really is there stays allowed.
+    for line in [
+        "I am #box(fill: black, outset: 1pt)[#text(fill: white)[not]] certified.",
+        "I am #box(fill: gradient.conic(black, rgb(40, 40, 40)), outset: 1pt)[#text(fill: white)[not]] certified.",
+        "I am #box(fill: tiling(size: (0.6pt, 0.6pt), rect(width: 0.6pt, height: 0.6pt, fill: black)), outset: 1pt)[#text(fill: white)[not]] certified.",
+    ] {
+        let (hidden, _) = judged(line).await;
+        assert_eq!(hidden, Vec::<String>::new(), "{line}");
+    }
+}
+
+/// The fifth gate review's finding 1: a line's thickness can run along the axis a stretch doesn't enlarge,
+/// so it stays under a pixel and fades here, and a PDF viewer draws it a whole pixel wide.
+#[tokio::test]
+async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
+    let across = |count: i32, length: f64| -> String {
+        (0..count)
+            .map(|i| format!("place(top + left, dy: {}pt, line(length: {length}pt, stroke: 0.02pt + white))", f64::from(i) * 0.5))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let down: String = (0..38)
+        .map(|i| format!("place(top + left, dx: {}pt, line(angle: 90deg, length: 0.2pt, stroke: 0.02pt + white))", f64::from(i) * 0.5))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let turned: String = (0..20)
+        .map(|i| format!("place(top + left, dx: {}pt, line(angle: 90deg, length: 0.2pt, stroke: 0.02pt + white))", f64::from(i) * 0.5))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let cases = [
+        ("stretched across", format!("I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(x: 10000%, origin: top + left, reflow: false, box(width: 0.2pt, {{\n{}\n}})))] certified.", across(20, 0.2))),
+        ("stretched down", format!("I am #box[not#place(top + left, dx: -1pt, dy: -1pt, scale(y: 10000%, origin: top + left, reflow: false, box(height: 0.2pt, {{\n{down}\n}})))] certified.")),
+        ("turned and stretched", format!("I am #box[not#place(top + left, dx: 8pt, dy: 3pt, rotate(90deg, reflow: false, scale(y: 10000%, origin: top + left, reflow: false, box(width: 10pt, height: 0.2pt, {{\n{turned}\n}}))))] certified.")),
+        ("on a digit", format!("Saved #box[#text(size: 11pt)[8]#place(top + left, dx: -0.5pt, dy: -1pt, scale(x: 1000%, origin: top + left, reflow: false, box(width: 0.3pt, {{\n{}\n}})))]00 invoices.", across(20, 0.3))),
+        ("over a whole line", format!("I am #box(width: 300pt)[#text[not certified as an auditor]#place(top + left, dx: -1pt, dy: -1pt, scale(x: 100000%, origin: top + left, reflow: false, box(width: 0.31pt, {{\n{}\n}})))]", across(20, 0.31))),
+    ];
+    for (name, line) in cases {
+        let (hidden, _) = judged(&line).await;
+        assert!(!hidden.is_empty(), "{name} passed: {line}");
+    }
+    // A stretched rule of honest thickness stays allowed.
+    let (hidden, _) = judged("Work.#v(3pt)#scale(x: 150%, origin: top + left, reflow: false, line(length: 100pt, stroke: 0.5pt))").await;
+    assert_eq!(hidden, Vec::<String>::new());
+}
+
+/// The fifth gate review's finding 5, the owner's decision: a small mark on a number isn't refused, as
+/// nothing is hidden, and the owner is told to read it. Ordinary lines and fills don't set it off.
+#[tokio::test]
+async fn a_mark_drawn_on_text_is_said_and_not_refused() {
+    let marked = [
+        ("3 as 8", "Saved #text(size: 11pt, kerning: false)[3]#box(width: 0pt, height: 0pt, {place(top + left, dx: -5.0pt, dy: -6.8pt, curve(stroke: 0.7pt + black, curve.move((2.4pt, 0.3pt)), curve.cubic((0.3pt, 0.3pt), (0.3pt, 3pt), (2.4pt, 3.4pt)), curve.cubic((0.0pt, 3.8pt), (0.0pt, 7pt), (2.4pt, 7pt))))})00 invoices."),
+        ("15 as 1.5", "Grew revenue #text(size: 11pt, kerning: false)[1]#box(width: 0pt, height: 0pt, place(top + left, dx: 0.4pt, dy: -1.3pt, circle(radius: 0.65pt, fill: black)))#h(0.9pt)#text(size: 11pt)[5] times."),
+        ("5 as minus 5", "Margin#h(3pt)#box(width: 0pt, height: 0pt, place(top + left, dy: -3pt, rect(width: 4.5pt, height: 0.5pt, fill: black)))#h(5pt)5 percent."),
+        ("F as E", "Grade #text(size: 11pt, kerning: false)[F]#box(width: 0pt, height: 0pt, place(top + left, dx: -5pt, dy: -0.6pt, rect(width: 5pt, height: 0.6pt, fill: black))) here."),
+    ];
+    for (name, line) in marked {
+        let (hidden, marks) = judged(line).await;
+        assert_eq!(hidden, Vec::<String>::new(), "{name}");
+        assert!(!marks.is_empty(), "{name} was not said");
+    }
+    let ordinary = [
+        "Plain words and 40 numbers.",
+        "#underline[Reduced invoice errors across three depots]",
+        "#underline[gypsy jumpy happy pygmy]",
+        "#underline(stroke: 1.5pt + blue)[gypsy jumpy happy pygmy]",
+        "#strike[Reduced invoice errors]",
+        "#overline[Reduced invoice errors]",
+        "#highlight[A] and #highlight(fill: rgb(\"#ffe066\"))[a tag]",
+        "#box(fill: rgb(\"#1f3a5f\"), inset: 3pt, radius: 3pt)[#text(fill: white)[Rust]] #box(fill: luma(90%), inset: 2pt, radius: 2pt)[Go]",
+        "#box(stroke: 0.5pt, inset: 2pt)[Inline box gypq]",
+        "Rust #box(width: 1fr, line(length: 100%, stroke: (dash: \"dotted\")))Expert",
+        "Rust #box(width: 1fr, line(length: 100%, stroke: (paint: gray, dash: \"dashed\")))Expert",
+        "#table(columns: 3, fill: (x, y) => if y == 0 { luma(90%) }, stroke: 0.5pt, [*Skill*], [*Years*], [*Level*], [Rust], [5], [Expert])",
+        "#line(length: 100%)\nText after a line.\n#line(length: 100%, stroke: 2pt + rgb(\"#1f3a5f\"))",
+    ];
+    for line in ordinary {
+        let (hidden, marks) = judged(line).await;
+        assert_eq!(hidden, Vec::<String>::new(), "{line}");
+        assert_eq!(marks, Vec::<String>::new(), "{line}");
+    }
+    let request = RenderRequest {
+        source: default_source(&facts_en()),
+        facts: facts_en(),
+        pdf: false,
+        preview_pages: 0,
+        stamp: false,
+    };
+    let rendered = Renderer::InProcess.render(request).await.unwrap();
+    assert_eq!(rendered.text.marked, Vec::<String>::new(), "the template itself");
 }

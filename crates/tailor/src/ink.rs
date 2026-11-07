@@ -1,9 +1,10 @@
 //! Whether each glyph's ink reaches a reader, judged on what the renderer really draws.
 //!
-//! Each page is drawn twice, with its text and without. Where a glyph's outline says ink should be,
-//! the two pictures must differ by what a reader can see. Nothing here models paints, strokes, clips
-//! or gradients, so nothing here can get them wrong: a word painted over draws the same with and
-//! without it, whatever painted over it.
+//! Each page is drawn with its text and without, twice: as it really is, and as the harshest PDF viewer
+//! widens it. Where a glyph's outline says ink should be, each pair of pictures must differ by what a
+//! reader can see. Nothing here models paints, strokes, clips or gradients, so nothing here can get them
+//! wrong: a word painted over draws the same with and without it, whatever painted over it. A glyph has
+//! to arrive in both, as a viewer may draw either, and a paint only the widening draws is on no page.
 
 use std::collections::HashMap;
 
@@ -45,6 +46,14 @@ const MAX_OVERLAID_INK: f32 = 0.33;
 const LATER_INK: f32 = 0.5;
 /// How far around a glyph's box to look for what surrounds it, in pixels.
 const SURROUND: i64 = 2;
+/// How close to a glyph's box a paint must come to count as drawn on it, in pixels: 1.5 pt, so that a mark
+/// in the gap between two digits or a minus set before one counts, and a list's marker or a tag beside a
+/// word doesn't.
+const NEAR: i64 = 3;
+/// A paint under this share of an em high is level enough to be a line, or a piece of one.
+const LINE_HEIGHT: i64 = 4;
+/// Pixels looked at for marks on one page, as a multiple of the page's own. Past it, the page warns.
+const MAX_MARK_PAGES: u64 = 2;
 /// Pixels judged on one page, as a multiple of the page's own: a thousand page-sized glyphs would
 /// otherwise take minutes. Honest text covers a fraction of its page once. Past it, the source is refused.
 const MAX_INK_PAGES: u64 = 16;
@@ -65,10 +74,16 @@ pub(crate) fn render_options(page: &Page) -> RenderOptions {
     }
 }
 
-/// How much `ts` enlarges what it draws, along its wider axis.
+/// How much `ts` enlarges what it draws along its narrower axis: the smaller singular value. A line's
+/// thickness can run along that axis, where a wider one does nothing for it, and a PDF viewer widens it
+/// all the same. A transform that flattens everything draws nothing, and counts as no enlargement.
 fn enlargement(ts: Transform) -> f64 {
     let (sx, sy, kx, ky) = (ts.sx.get(), ts.sy.get(), ts.kx.get(), ts.ky.get());
-    sx.hypot(ky).max(kx.hypot(sy)).max(f64::MIN_POSITIVE)
+    let sum = sx * sx + sy * sy + kx * kx + ky * ky;
+    let det = sx * sy - kx * ky;
+    let wider = ((sum + (sum * sum - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
+    let narrower = det.abs() / wider;
+    if narrower.is_normal() { narrower } else { 1.0 }
 }
 
 /// `stroke` as the harshest PDF viewer draws it: at least `least` wide, and with no dash shorter than
@@ -123,7 +138,8 @@ fn widened(shape: &Shape, least: Abs) -> Vec<Shape> {
 }
 
 /// `frame` as the check draws it, however deep: every shape [`widened`] so that it is at least `least`
-/// wide on the page, and with its text or without. What `ts` does to it is already applied.
+/// wide on the page, and with its text or without. A `least` of zero draws every shape as it is, less
+/// those that paint nothing. What `ts` does to it is already applied.
 fn to_draw(frame: &Frame, ts: Transform, least: Abs, with_text: bool) -> Frame {
     let mut drawn = Frame::new(frame.size(), frame.kind());
     for (pos, item) in frame.items() {
@@ -315,7 +331,8 @@ impl Fate {
 /// The colour most of the box around a glyph has, without its text. Where a lost pixel can't be told
 /// from it, a reader has nothing to see there: its ink is gone with no trace. A thin frame or a dot
 /// beside a glyph doesn't change this, and a paint over most of the box counts as the surroundings,
-/// which errs toward refusing.
+/// which errs toward refusing. Read from the real drawing: a ground only the widening draws is nothing a
+/// reader can see an eraser against.
 fn surroundings(bare: &Drawing, cover: &Coverage, size: (u32, u32)) -> Lab {
     let left = (cover.x - SURROUND).max(0);
     let top = (cover.y - SURROUND).max(0);
@@ -338,10 +355,12 @@ fn surroundings(bare: &Drawing, cover: &Coverage, size: (u32, u32)) -> Lab {
     })
 }
 
-/// Judges one glyph against the two drawings. `later` marks the ink of runs painted after this one.
+/// Judges one glyph against one pair of drawings. `real_bare` is the page as really drawn, without its
+/// text. `later` marks the ink of runs painted after this one.
 fn judge(
     drawn: &Drawing,
     bare: &Drawing,
+    real_bare: &Drawing,
     cover: &Coverage,
     fill: ([f32; 3], f32),
     later: &[bool],
@@ -389,7 +408,7 @@ fn judge(
         }
     }
     if !lost.is_empty() {
-        let around = surroundings(bare, cover, size);
+        let around = surroundings(real_bare, cover, size);
         for (_, share, ground) in lost {
             if difference(ground, around) < MIN_DIFFERENCE {
                 fate.erased += share;
@@ -399,6 +418,88 @@ fn judge(
         }
     }
     fate
+}
+
+/// Whether the page without its text has a small paint on this glyph or right beside it: a mark that can
+/// make a `3` read as an `8`, a `15` as `1.5`, or an `F` as an `E`. Nothing refuses such a mark, as nothing
+/// is hidden, and it is only said. An underline, a strike, a rule, a fill or a frame runs past an em and
+/// isn't one: nor is a level piece with more of its line beside it or under the baseline, as an underline
+/// breaks around a descender, and a dotted leader is all pieces. `budget` runs out on a page of many paints,
+/// which then counts as marked: this only warns, so it needn't be exact there.
+fn has_mark(
+    bare: &Drawing,
+    cover: &Coverage,
+    baseline: i64,
+    em: i64,
+    size: (u32, u32),
+    budget: &mut u64,
+) -> bool {
+    let (width, height) = (i64::from(size.0), i64::from(size.1));
+    let index = |x: i64, y: i64| (y * width + x) as usize;
+    let right = (cover.x + i64::from(cover.mask.width()) + NEAR).min(width);
+    let bottom = (cover.y + i64::from(cover.mask.height()) + NEAR).min(height);
+    let (left, top) = ((cover.x - NEAR).max(0), (cover.y - NEAR).max(0));
+    // Text on a plain page, nearly always: one colour, and nothing to look for.
+    let raw = bare.0.data();
+    let first = &raw[index(left, top) * 4..index(left, top) * 4 + 4];
+    let plain = (top..bottom).all(|y| {
+        raw[index(left, y) * 4..index(right, y) * 4]
+            .chunks_exact(4)
+            .all(|pixel| pixel == first)
+    });
+    if plain {
+        return false;
+    }
+    let around = surroundings(bare, cover, size);
+    let differs = |x: i64, y: i64| {
+        difference(Lab::of_srgb(bare.srgb(index(x, y))), around) >= MIN_DIFFERENCE
+    };
+    // A flood goes no further than it takes to know a paint is past an em.
+    let (from_x, to_x) = ((left - em).max(0), (right + em).min(width));
+    let (from_y, to_y) = ((top - em).max(0), (bottom + em).min(height));
+    let across = (to_x - from_x) as usize;
+    let mut seen = vec![false; across * (to_y - from_y) as usize];
+    let at = |x: i64, y: i64| (y - from_y) as usize * across + (x - from_x) as usize;
+    for y in top..bottom {
+        for x in left..right {
+            if seen[at(x, y)] || !differs(x, y) {
+                continue;
+            }
+            seen[at(x, y)] = true;
+            let mut flood = vec![(x, y)];
+            let (mut low_x, mut high_x, mut low_y, mut high_y) = (x, x, y, y);
+            while let Some((px, py)) = flood.pop() {
+                let Some(left_over) = budget.checked_sub(1) else {
+                    return true;
+                };
+                *budget = left_over;
+                (low_x, high_x) = (low_x.min(px), high_x.max(px));
+                (low_y, high_y) = (low_y.min(py), high_y.max(py));
+                for ny in (py - 1).max(from_y)..=(py + 1).min(to_y - 1) {
+                    for nx in (px - 1).max(from_x)..=(px + 1).min(to_x - 1) {
+                        if !seen[at(nx, ny)] && differs(nx, ny) {
+                            seen[at(nx, ny)] = true;
+                            flood.push((nx, ny));
+                        }
+                    }
+                }
+            }
+            if high_x - low_x >= em || high_y - low_y >= em {
+                continue;
+            }
+            let level = high_y - low_y < em / LINE_HEIGHT;
+            let row = (low_y + high_y) / 2;
+            let line_goes_on = (1..=em)
+                .any(|step| {
+                    (high_x + step < width && differs(high_x + step, row))
+                        || (low_x - step >= 0 && differs(low_x - step, row))
+                });
+            if !(level && (low_y > baseline || line_goes_on)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The word of `text` around a glyph, for saying what is hidden.
@@ -448,21 +549,24 @@ fn to_sk(ts: Transform, scale: f32) -> sk::Transform {
     .post_scale(scale, scale)
 }
 
-/// The words on `page` with a glyph a reader can't read. Called before the stamp is added, so that the
-/// stamp can't refuse a draft. One page's two drawings are dropped before the next page's are made.
-pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>) {
+/// The words on `page` with a glyph a reader can't read, and those with a mark drawn on them. Called before the stamp is added, so that the
+/// stamp can't refuse a draft. One page's drawings are dropped before the next page's are made.
+pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>, marked: &mut Vec<String>) {
     let options = render_options(page);
     let scale = options.pixel_per_pt.get() as f32;
     let least = Abs::pt(LEAST_PIXELS / f64::from(scale));
     let mut to_render = page.clone();
-    to_render.frame = to_draw(&page.frame, Transform::identity(), least, true);
-    let drawn = Drawing(typst_render::render(&to_render, &options));
-    to_render.frame = to_draw(&page.frame, Transform::identity(), least, false);
-    let bare = Drawing(typst_render::render(&to_render, &options));
+    let mut draw = |least: Abs, with_text: bool| {
+        to_render.frame = to_draw(&page.frame, Transform::identity(), least, with_text);
+        Drawing(typst_render::render(&to_render, &options))
+    };
+    let (real, real_bare) = (draw(Abs::zero(), true), draw(Abs::zero(), false));
+    let (wide, wide_bare) = (draw(least, true), draw(least, false));
     drop(to_render);
-    let size = (drawn.0.width(), drawn.0.height());
+    let size = (real.0.width(), real.0.height());
     let pixels = u64::from(size.0) * u64::from(size.1);
     let mut budget = MAX_INK_PAGES * pixels;
+    let mut mark_budget = MAX_MARK_PAGES * pixels;
     let mut later = vec![false; pixels as usize];
     let mut unread = Vec::new();
     let mut ink = Vec::new();
@@ -470,6 +574,7 @@ pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>) {
     // glyphs may touch: kerning and accents do.
     for (text, ts) in runs_of(page).into_iter().rev() {
         let to_page = to_sk(ts, scale);
+        let em = (text.size.to_pt() * enlargement(ts) * f64::from(scale)) as i64;
         let fill = match &text.fill {
             Paint::Solid(color) => {
                 let color = color.to_rgb();
@@ -492,6 +597,8 @@ pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>) {
             );
             x += glyph.x_advance.at(text.size);
             y += glyph.y_advance.at(text.size);
+            let mut baseline = sk::Point::from_xy(at.0, at.1);
+            to_page.map_point(&mut baseline);
             let cover = match coverage(text, glyph, to_page, at, size, &mut budget) {
                 Ok(Some(cover)) => cover,
                 Ok(None) => continue,
@@ -501,12 +608,21 @@ pub(crate) fn unread_words(page: &Page, hidden: &mut Vec<String>) {
                     return;
                 }
             };
-            let fate = judge(&drawn, &bare, &cover, fill, &later, size);
-            if fate.unread(is_letter(glyph)) {
+            let unread_in = |drawn, bare| {
+                judge(drawn, bare, &real_bare, &cover, fill, &later, size)
+                    .unread(is_letter(glyph))
+            };
+            if unread_in(&wide, &wide_bare) || unread_in(&real, &real_bare) {
                 let word = word_at(text, glyph);
                 if last_word.as_ref() != Some(&word) {
                     unread.push(word.clone());
                     last_word = Some(word);
+                }
+            }
+            if has_mark(&real_bare, &cover, baseline.y as i64, em, size, &mut mark_budget) {
+                let word = word_at(text, glyph);
+                if !marked.contains(&word) {
+                    marked.push(word);
                 }
             }
             let width = cover.mask.width() as usize;

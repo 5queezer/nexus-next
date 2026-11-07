@@ -342,7 +342,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
         }
     }
     for page in pages {
-        crate::ink::unread_words(page, &mut result.hidden);
+        crate::ink::unread_words(page, &mut result.hidden, &mut result.marked);
     }
     result.links = read_links(links, &runs);
     result.lines = lines_from_runs(runs, &mut result.transformed);
