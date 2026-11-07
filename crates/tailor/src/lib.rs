@@ -6,6 +6,7 @@
 mod check;
 mod compile;
 mod extract;
+mod ink;
 mod template;
 mod worker;
 
@@ -33,10 +34,12 @@ pub const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
 /// Far above what ten pages hold, and below what would strain the server, which keeps a copy.
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
-/// A 9-page CV peaks at 48 MB on the board and 56 MB on x86-64. The unit's `MemoryHigh=256M` is the real ceiling, not
-/// `MemoryMax`: above it the kernel stalls the whole cgroup, server included, instead of killing
-/// anything. So this limit, the server's own peak of about 85 MiB, and what a compile can allocate
-/// between two polls must fit below it.
+/// An honest 10-page CV peaks at 65 MiB on x86-64, with the check's two drawings of each page. Its
+/// figure on the board is still to come: before those drawings, 9 pages took 48 MB there. The unit's
+/// `MemoryHigh=256M` is the real ceiling, not `MemoryMax`: above it the kernel stalls the whole cgroup,
+/// server included, instead of killing anything. So this limit, the server's own peak, and what a
+/// compile can allocate between two polls must fit below it. The server's peak measured 118 MiB on
+/// x86-64 after four browsers loaded a 10-page approval, also still to be measured on the board.
 pub const DEFAULT_RSS_LIMIT_BYTES: u64 = 128 * 1024 * 1024;
 
 /// The locked facts. [`Facts::renderable`] is served as `/facts.json` for the template library.
@@ -147,6 +150,9 @@ pub struct RenderedText {
     /// The runs among those drawn under anything but a translation and a uniform positive scale, or
     /// squeezed until they draw otherwise than they read.
     pub transformed: Vec<String>,
+    /// What these name that the fonts have no letter for, which draws as a crossed box.
+    #[serde(default)]
+    pub missing: Vec<String>,
     /// The runs among those a bidi override draws back to front. Typst trims the control character
     /// from a line's ends, while its effect stays.
     pub reversed: Vec<String>,

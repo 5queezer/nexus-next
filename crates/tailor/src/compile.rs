@@ -14,7 +14,6 @@ use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
 use typst_layout::{Page, PagedDocument};
 use typst_pdf::PdfOptions;
-use typst_render::RenderOptions;
 
 use crate::{
     Diagnostic, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest,
@@ -30,9 +29,6 @@ const FONT_FILES: [&[u8]; 4] = [
     include_bytes!("../fonts/LibertinusSerif-BoldItalic.otf"),
 ];
 
-/// A preview's scale, and the most pixels one may have: the source sets the page size.
-const PREVIEW_PIXEL_PER_PT: f64 = 2.0;
-const MAX_PREVIEW_PIXELS: f64 = 2_200_000.0;
 const MIN_PAGE_SIDE: f64 = 200.0;
 const MAX_PAGE_SIDE: f64 = 1200.0;
 
@@ -342,15 +338,7 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
         .iter()
         .take(req.preview_pages as usize)
         .map(|page| {
-            let size = page.frame.size();
-            let area = size.x.to_pt().max(1.0) * size.y.to_pt().max(1.0);
-            let options = RenderOptions {
-                pixel_per_pt: PREVIEW_PIXEL_PER_PT
-                    .min((MAX_PREVIEW_PIXELS / area).sqrt())
-                    .into(),
-                ..RenderOptions::default()
-            };
-            typst_render::render(page, &options)
+            typst_render::render(page, &crate::ink::render_options(page))
                 .encode_png()
                 .map_err(|e| RenderError::Worker(e.to_string()))
         })

@@ -1839,6 +1839,373 @@ async fn text_covered_by_a_shape_is_refused() {
     assert_flagged(&cases).await;
 }
 
+/// The fourth gate review's findings 1 to 5: each is a place where a copy of the renderer differed from
+/// the renderer. The check now compares what is drawn, so none of these has a rule of its own.
+#[tokio::test]
+async fn what_is_drawn_decides_not_a_model_of_the_paint() {
+    let laundered = |glyph: &str, at: &str| {
+        format!(
+            "#box[{glyph}#place(top + left, {at}, fill: white))#place(top + left, {at}, fill: rgb(0, 0, 0, 0)))]"
+        )
+    };
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "a tiny rect's mitered stroke",
+            "I am #box[not#place(top + left, dx: 8pt, dy: 3.5pt, rect(width: 0.01pt, height: 0.01pt, stroke: 15pt + white))] certified.".into(),
+        ),
+        (
+            "a tiny rect's round stroke",
+            "I am #box[not#place(top + left, dx: 8pt, dy: 3.5pt, rect(width: 0.01pt, height: 0.01pt, stroke: (paint: white, thickness: 15pt, join: \"round\")))] certified.".into(),
+        ),
+        (
+            "a long miter's tip, clipped to the word",
+            "I am #box[not#place(top + left, box(clip: true, width: 17pt, height: 9pt, place(top + left, curve(stroke: (paint: white, thickness: 16pt, join: \"miter\", miter-limit: 200), curve.move((-150pt, -3pt)), curve.line((-9pt, 4pt)), curve.line((-150pt, 11pt))))))] certified.".into(),
+        ),
+        (
+            "a huge circle's flat edge, clipped to the word",
+            "I am #box[not#place(top + left, box(clip: true, width: 17pt, height: 9pt, place(top + left, dx: -3857pt, dy: -20064pt, circle(radius: 20000pt, fill: white))))] certified.".into(),
+        ),
+        (
+            "a tiny polygon's stroke",
+            "I am #box[not#place(top + left, dx: 8pt, dy: 3.5pt, polygon(stroke: 16pt + white, (0pt, 0pt), (0.01pt, 0pt), (0.01pt, 0.01pt)))] certified.".into(),
+        ),
+        (
+            "a page foreground from anywhere",
+            "#set page(foreground: place(top + left, dx: 80pt, dy: 60pt, rect(width: 0.01pt, height: 0.01pt, stroke: 90pt + white)))\nI am not certified.".into(),
+        ),
+        (
+            "a dot under a transparent paint",
+            format!("Grew 4{}9 times.", laundered(".", "dx: -1pt, dy: 0pt, rect(width: 4pt, height: 8pt")),
+        ),
+        (
+            "a minus sign under a transparent paint",
+            format!("Margin {}5 percent.", laundered("−", "dx: -0.5pt, dy: 0pt, rect(width: 9pt, height: 9pt")),
+        ),
+        (
+            "a dollar sign under a transparent paint",
+            format!("Saved {}500.", laundered("\\$", "dx: -0.5pt, dy: -2pt, rect(width: 6.5pt, height: 12pt")),
+        ),
+        (
+            "8 as 3 under a transparent paint",
+            format!("Saved {}00.", laundered("8", "dx: -0.5pt, dy: -1pt, rect(width: 2.3pt, height: 9pt")),
+        ),
+        (
+            "black under white over a dot",
+            "Grew 4#box[#place(top + left, dx: 0.2pt, dy: 4.6pt, rect(width: 1.8pt, height: 2.6pt, fill: black)).#place(top + left, dx: 0.2pt, dy: 4.6pt, rect(width: 1.8pt, height: 2.6pt, fill: white))]9 times.".into(),
+        ),
+        (
+            "transparent stops over a black bar",
+            "I am #box(fill: black, outset: 2pt)[#box(fill: gradient.linear(rgb(255, 255, 255, 0), rgb(255, 255, 255, 0)), outset: 1pt)[not]] certified.".into(),
+        ),
+        (
+            "text of a gradient's middle colour",
+            "Mark: #box(width: 300pt, height: 11pt, baseline: 2pt, fill: gradient.linear(white, black, space: rgb), align(center + horizon, text(fill: rgb(128, 128, 128))[not])) here".into(),
+        ),
+        (
+            "pale yellow over a dot",
+            "Grew 4#box[.#place(top + left, dx: -0.2pt, dy: 4pt, rect(width: 2.4pt, height: 3.2pt, fill: rgb(255, 255, 140)))]9 times.".into(),
+        ),
+        (
+            "A's crossbar",
+            "Graded #text(size: 11pt, kerning: false)[A]#box(width: 0pt, height: 0pt, place(top + left, dx: -7pt, dy: -2.9pt, rect(width: 5.3pt, height: 0.9pt, fill: white))) here.".into(),
+        ),
+        (
+            "an eraser inside a frame a reader can see",
+            "Saved #box(stroke: 1pt + black, outset: 2pt)[8#place(top + left, dx: -0.5pt, dy: -1pt, rect(width: 2.3pt, height: 9pt, fill: white))]00.".into(),
+        ),
+        (
+            "a black bar on black text, taking half a digit",
+            "Saved #box[8#place(top + left, dx: -0.5pt, dy: -1pt, rect(width: 2.3pt, height: 9pt, fill: black))]00.".into(),
+        ),
+        (
+            "a grey bar a reader can see, reading 8 as 3",
+            "Saved #box[8#place(top + left, dx: -0.5pt, dy: -1pt, rect(width: 2.2pt, height: 9pt, fill: luma(60%)))]00.".into(),
+        ),
+    ];
+    let cases: Vec<(&str, Rule, &str)> = cases
+        .iter()
+        .map(|(name, body)| (*name, Rule::HiddenText, body.as_str()))
+        .collect();
+    assert_flagged(&cases).await;
+}
+
+/// A PDF viewer widens a hairline to a whole pixel: poppler at 144 dpi leaves nothing of a word under
+/// these, while `typst_render` leaves it plainly readable. So the check draws them as such a viewer does.
+#[tokio::test]
+async fn hairlines_are_judged_as_the_harshest_viewer_draws_them() {
+    let over = |dx: f64, dy: f64, shapes: String| {
+        format!("#v({dy}pt)I am#h({dx}pt) #box[not{shapes}] certified.")
+    };
+    let mut cases = Vec::new();
+    // Wherever on the pixel grid they fall. 1 pt apart a word is chopped and still reads, in poppler too,
+    // so that is SPEC's limit.
+    for offset in 0..6 {
+        let (dx, dy) = (f64::from(offset) * 0.09, f64::from(offset) * 0.13);
+        let lines = |step: f64, thick: f64| {
+            over(
+                dx,
+                dy,
+                format!(
+                    "#for i in range(60) {{ place(top + left, dx: i * {step}pt - 1pt, dy: -1pt, line(angle: 90deg, length: 10pt, stroke: (paint: white, thickness: {thick}pt))) }}"
+                ),
+            )
+        };
+        cases.push((
+            "hairlines 0.25 pt apart, leaving most of each gap",
+            lines(0.25, 0.05),
+        ));
+        cases.push(("hairlines 0.5 pt apart", lines(0.5, 0.05)));
+        cases.push((
+            "thin filled rects",
+            over(dx, dy, "#for i in range(60) { place(top + left, dx: i * 0.5pt - 1pt, dy: -1pt, rect(width: 0.05pt, height: 10pt, fill: white)) }".into()),
+        ));
+        cases.push((
+            "specks",
+            over(dx, dy, "#for x in range(42) { for y in range(22) { place(top + left, dx: x * 0.5pt - 1pt, dy: y * 0.5pt - 1pt, rect(width: 0.05pt, height: 0.05pt, fill: white)) } }".into()),
+        ));
+        cases.push((
+            "a dash finer than a pixel",
+            over(dx, dy, "#place(top + left, dy: 4pt, line(length: 20pt, stroke: (paint: white, thickness: 10pt, dash: (0.1pt, 0.1pt))))".into()),
+        ));
+        cases.push((
+            "a thin white stroke on the text",
+            format!("#v({dy}pt)I am#h({dx}pt) #text(stroke: 0.2pt + white)[not] certified."),
+        ));
+    }
+    let cases: Vec<(&str, Rule, &str)> = cases
+        .iter()
+        .map(|(name, body)| (*name, Rule::HiddenText, body.as_str()))
+        .collect();
+    assert_flagged(&cases).await;
+}
+
+/// What can't be checked in its budget is refused, and says so truly, not as a page limit.
+#[tokio::test]
+async fn ink_too_large_to_check_is_refused_as_hidden() {
+    assert_flagged(&[(
+        "page-sized glyphs",
+        Rule::HiddenText,
+        "#set page(width: 1200pt, height: 1200pt, margin: 0pt)\n#for i in range(40) { place(text(size: 1100pt)[M]) }",
+    )])
+    .await;
+}
+
+/// Another run over a run can read as anything, whatever its colour. A mark on its own digits can't.
+/// All wherever on the pixel grid they fall, as a small glyph is only a few pixels.
+#[tokio::test]
+async fn text_over_text_counts_by_its_outline() {
+    let mut attacks = Vec::new();
+    for offset in 0..12 {
+        let at = format!(
+            "#v({}pt)#h({}pt)",
+            f64::from(offset) * 0.11,
+            f64::from(offset) * 0.07
+        );
+        for (name, rule, body) in [
+            (
+                "8 over 3, black on black",
+                Rule::HiddenText,
+                "Rated #box[3#place(top + left, text[8])] here.",
+            ),
+            // Under the limit by its outline at some offsets, and refused as drawn over on its line.
+            (
+                "7 over 1",
+                Rule::Transform,
+                "Rated #box[1#place(top + left, text[7])] here.",
+            ),
+            (
+                "the same word on itself",
+                Rule::HiddenText,
+                "Rated #box[8#place(top + left, text[8])] here.",
+            ),
+            (
+                "a white copy over a word",
+                Rule::HiddenText,
+                "I am #box[not#place(top + left, text(fill: white)[not])] certified.",
+            ),
+        ] {
+            attacks.push((name, rule, format!("{at}{body}")));
+        }
+    }
+    let attacks: Vec<(&str, Rule, &str)> = attacks
+        .iter()
+        .map(|(name, rule, body)| (*name, *rule, body.as_str()))
+        .collect();
+    assert_flagged(&attacks).await;
+    for offset in 0..12 {
+        let (dx, dy) = (f64::from(offset) * 0.07, f64::from(offset) * 0.11);
+        for body in [
+            "Cube root: $root(3, 27)$ and $sqrt(2)$ here.",
+            "Next.\n$ arrow(2) + hat(3) $\nThen.",
+            "Half: $1/2$ and\n$ 1/2 + 3^2 = 9.25 $",
+        ] {
+            let source = format!("{START}#v({dy}pt)#h({dx}pt){body}\n");
+            let report = render_and_check(&source, &facts_en()).await;
+            let hidden: Vec<_> = report
+                .violations
+                .iter()
+                .filter(|violation| violation.rule == Rule::HiddenText)
+                .collect();
+            assert_eq!(hidden, Vec::<&_>::new(), "{offset} {body}");
+        }
+    }
+}
+
+/// The owner's decision: text is judged by whether a reader can see it against what it stands on.
+#[tokio::test]
+async fn light_text_is_judged_against_what_it_stands_on() {
+    let on = |ground: &str, ink: &str| {
+        format!(
+            "#block(fill: rgb(\"{ground}\"), inset: 6pt)[#text(fill: rgb(\"{ink}\"))[Readable words 2019]]"
+        )
+    };
+    let bold =
+        |ink: &str| format!("#text(fill: rgb(\"{ink}\"), weight: \"bold\")[Experience 2019]");
+    let passing = vec![
+        bold("#7dd3fc"),
+        bold("#4ade80"),
+        on("#0f766e", "#99f6e4"),
+        on("#1f3a5f", "#ffffff"),
+        on("#1f3a5f", "#dfe7f2"),
+        on("#222222", "#ffffff"),
+        on("#475569", "#ffffff"),
+        on("#1e293b", "#e2e8f0"),
+        "#box(circle(radius: 6pt, fill: navy, align(center + horizon, text(fill: white, size: 8pt)[in]))) linked".to_owned(),
+        "#table(columns: 2, fill: (x, y) => if y == 0 { rgb(\"#1f3a5f\") }, table.header(text(fill: white)[Skill], text(fill: white)[Years]), [Rust], [5])".to_owned(),
+        "#text(fill: rgb(\"#aaa\"))[Muted 2019]".to_owned(),
+        "#text(fill: rgb(\"#bbb\"))[Muted 2019]".to_owned(),
+        bold("#d4a017"),
+        bold("#eab308"),
+        bold("#fb923c"),
+        bold("#06b6d4"),
+    ];
+    for body in &passing {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts_en()).await;
+        let hidden: Vec<_> = report
+            .violations
+            .iter()
+            .filter(|violation| violation.rule == Rule::HiddenText)
+            .collect();
+        assert_eq!(hidden, Vec::<&_>::new(), "{body}");
+    }
+    let refused = [
+        (
+            "pale yellow",
+            "I am #text(fill: rgb(255, 255, 140))[not] certified.",
+        ),
+        (
+            "pure yellow",
+            "I am #text(fill: rgb(\"#ffff00\"))[not] certified.",
+        ),
+        ("#ccc", "I am #text(fill: rgb(\"#ccc\"))[not] certified."),
+        (
+            "one step off white",
+            "I am #text(fill: rgb(\"#fefefe\"))[not] certified.",
+        ),
+        (
+            "one step off navy",
+            "#block(fill: rgb(\"#1f3a5f\"), inset: 6pt)[#text(fill: rgb(\"#1f3b60\"))[not certified]]",
+        ),
+        (
+            "one step off red",
+            "#block(fill: rgb(\"#c0392b\"), inset: 6pt)[#text(fill: rgb(\"#c13a2c\"))[not certified]]",
+        ),
+        (
+            "near grey on grey",
+            "#block(fill: rgb(\"#808080\"), inset: 6pt)[#text(fill: rgb(\"#8a8a8a\"))[not certified]]",
+        ),
+        (
+            "dark on nearly as dark",
+            "#block(fill: rgb(\"#222\"), inset: 6pt)[#text(fill: rgb(\"#2a2a2a\"))[not certified]]",
+        ),
+        (
+            "a thick pale stroke",
+            "I am #text(stroke: 1pt + luma(85%))[not] certified.",
+        ),
+    ];
+    let refused: Vec<(&str, Rule, &str)> = refused
+        .iter()
+        .map(|(name, body)| (*name, Rule::HiddenText, *body))
+        .collect();
+    assert_flagged(&refused).await;
+}
+
+/// Finding 8: a letter the fonts lack draws as a crossed box while the text reads as the letter.
+#[tokio::test]
+async fn a_letter_the_fonts_lack_is_refused_and_says_which() {
+    assert_flagged(&[
+        ("Chinese", Rule::MissingGlyph, "I am 非 certified."),
+        ("Arabic", Rule::MissingGlyph, "I am ليس certified."),
+        ("Devanagari", Rule::MissingGlyph, "I am नहीं certified."),
+        ("a letter in math", Rule::MissingGlyph, "Model: $x$ here."),
+    ])
+    .await;
+    let source = format!("{START}I am 非 certified.\n");
+    let report = render_and_check(&source, &facts_en()).await;
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|violation| violation.rule == Rule::MissingGlyph && violation.token == "非"),
+        "{:?}",
+        report.violations
+    );
+    for body in [
+        "Ελληνικά and Русский, each in its own word.",
+        "שלום עולם",
+        "Müller, Núñez, Čapek, façade.",
+        "#text(font: \"No Such Font\")[Falls back to an embedded font.]",
+        "#text(weight: \"bold\", style: \"italic\")[Bold italic.]",
+        "Digits in math: $1/2 + 3^2$.",
+    ] {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts_en()).await;
+        let missing: Vec<_> = report
+            .violations
+            .iter()
+            .filter(|violation| violation.rule == Rule::MissingGlyph)
+            .collect();
+        assert_eq!(missing, Vec::<&_>::new(), "{body}");
+    }
+}
+
+/// The review's realistic designs: a false refusal here is a defect.
+#[tokio::test]
+async fn honest_designs_stay_allowed_however_they_are_drawn() {
+    let cases = [
+        "#grid(columns: (30%, 1fr), gutter: 12pt, block(fill: rgb(\"#1f3a5f\"), inset: 8pt, width: 100%, height: 200pt)[#text(fill: white)[Skills\\ Rust\\ Go]], [Body text beside it.])",
+        "#block(fill: rgb(\"#222\"), inset: 10pt, width: 100%)[#text(fill: white, size: 20pt)[Mara Example]]",
+        "#block(fill: gradient.linear(rgb(\"#1f3a5f\"), white), inset: 10pt, width: 100%)[#h(1fr)#text(size: 20pt)[Mara]]",
+        "#table(columns: 3, inset: 1pt, stroke: 0.5pt, [Rust], [5], [Expert], [Go], [2], [gypsy quay])",
+        "#table(columns: 2, inset: 3pt, stroke: 2pt + navy, [Rust], [5 years], [Go], [2 years])",
+        "#table(columns: 3, inset: 1pt, stroke: 0.1pt, [Rust gypsy], [5 years], [Expert quay])",
+        "#table(columns: 3, fill: luma(90%), stroke: 0.25pt + white, inset: 1pt, [Rust gypsy], [5], [quay])",
+        "#underline(stroke: 0.1pt)[Hairline gypsy] and #strike(stroke: 0.1pt)[hairline 2019]",
+        "Line above\n#line(length: 100%, stroke: 0.1pt)\nLine below\n#v(-0.5em)\n#line(length: 100%, stroke: 0.05pt)\nAnd under",
+        "Skill #box(width: 1fr, repeat[.]) Expert\n#line(length: 100%, stroke: (dash: \"dotted\", thickness: 0.3pt))\nNext",
+        "#box(fill: luma(90%))[Tight gypsy] #box(fill: rgb(\"#dbeafe\"), radius: 2pt)[Pill quay] #box(width: 40pt, height: 6pt, fill: navy) after",
+        "#set par(leading: 0em)\nTight gypq lines of text.\\\nOn top of gypq each other.\\\nThird of gypq them.",
+        "#text(size: 7pt)[Small type 2019, gypsy quay.] #text(size: 5pt, fill: rgb(\"#55606e\"))[Smaller still 2022.]",
+        "#text(size: 8pt)[#strike(stroke: 1pt + red)[Struck 2019]]",
+        "#underline(evade: false, offset: 1pt)[Tight gypsy quay]",
+    ];
+    let mut refused = Vec::new();
+    for body in cases {
+        let source = format!("{START}{body}\n");
+        let report = render_and_check(&source, &facts_en()).await;
+        let hidden: Vec<_> = report
+            .violations
+            .iter()
+            .filter(|violation| violation.rule == Rule::HiddenText)
+            .collect();
+        if !hidden.is_empty() {
+            refused.push(format!("{body}\n  {hidden:?}"));
+        }
+    }
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
+
 /// What a normal CV draws must stay allowed, however close to its text it draws it.
 #[tokio::test]
 async fn ordinary_lines_fills_and_borders_near_text_stay_allowed() {

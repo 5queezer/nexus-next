@@ -45,6 +45,8 @@ pub enum Rule {
     ContactDetails,
     /// A word of letters that read as digits, directly before `%` or a time unit: `lOO%`.
     DigitLookalike,
+    /// A letter the fonts don't have, which draws as a crossed box while the text reads as the letter.
+    MissingGlyph,
 }
 
 /// A hard refusal: a reader of the PDF would see something other than what the owner reviews, so no
@@ -1714,6 +1716,15 @@ pub fn check(
             Rule::HiddenText,
             run,
             "white, tiny, clipped, off-page or covered text: a CV shows everything it says"
+                .to_owned(),
+        );
+    }
+    for letter in &text.missing {
+        findings.add(
+            Rule::MissingGlyph,
+            letter,
+            "the CV's font has no such letter, so it draws as a crossed box. It holds Latin, Greek, \
+             Cyrillic and Hebrew letters, and digits but no letters in math"
                 .to_owned(),
         );
     }
