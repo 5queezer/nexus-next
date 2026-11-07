@@ -38,7 +38,8 @@ const MAX_ERASED_INK: f32 = 0.05;
 const MAX_COVERED_INK: f32 = 0.3;
 /// The share of a glyph's ink that may lie under another run's glyphs. The coordinator's number. The `3`
 /// of `$root(3, 27)$` has 0.15 to 0.25 under its root sign, by how its few pixels fall, and lines at no
-/// leading 0.11. A `7` over a `1` takes 0.38 or more, and an `8` over a `3` 0.7.
+/// leading 0.11. An `8` over a `3` takes 0.7. A `7` over a `1` takes about 0.4, and less at some
+/// offsets: on one line, the rule on runs drawn over each other refuses it anyway.
 const MAX_OVERLAID_INK: f32 = 0.33;
 /// How much of a pixel a glyph must cover to count as ink there, for what is painted before it.
 const LATER_INK: f32 = 0.5;
