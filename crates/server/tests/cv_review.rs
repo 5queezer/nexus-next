@@ -529,6 +529,22 @@ async fn a_lock_with_a_cut_value_cannot_be_confirmed_from_the_terminal() {
     assert!(shown.contains("\"lockedAt\": null"), "{shown}");
 }
 
+/// An id long enough to cut where it is named, with every value short.
+#[tokio::test]
+async fn a_lock_naming_a_cut_id_cannot_be_confirmed_from_the_terminal() {
+    let root = tempfile::tempdir().unwrap();
+    let (node, token) = Node::create(root.path(), &[]).await;
+    let agent = Agent::new(node.addr, &token);
+    let mut hostile = profile();
+    hostile["experience"][0]["id"] = json!("y".repeat(500));
+    agent.ok("upsert_cv_profile", hostile).await;
+    let listed = cv_facts(&node.dir, &["lock"]);
+    assert!(!listed.status.success());
+    let told = String::from_utf8_lossy(&listed.stderr);
+    assert!(told.contains("facts page"), "{told}");
+    assert!(!told.contains("--confirm"), "{told}");
+}
+
 /// The same for a draft: a cut line can't be approved from the terminal.
 #[tokio::test]
 async fn an_approval_with_a_cut_line_cannot_be_confirmed_from_the_terminal() {
