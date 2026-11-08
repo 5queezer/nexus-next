@@ -131,6 +131,9 @@ async fn pipeline_escapes_text_and_sets_security_headers() {
             .unwrap()
             .starts_with("text/css")
     );
+    let sheet = String::from_utf8(css.2).unwrap();
+    let motion = sheet.find("prefers-reduced-motion: no-preference").unwrap();
+    assert!(sheet[motion..].contains("@view-transition { navigation: auto; }"));
 }
 
 #[tokio::test]
