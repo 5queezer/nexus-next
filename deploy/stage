@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Build this checkout for the board and run it as staging, next to production.
+#   deploy/stage           keep staging's data
+#   deploy/stage --fresh   start again from a copy of production's data
+# Staging answers on the board's tailnet name, port 8445 (tailnet only), same passphrase as production.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+board=${NEXUS_BOARD:-radxa}
+target=aarch64-unknown-linux-musl
+fresh=no
+[ "${1:-}" = "--fresh" ] && fresh=yes
+
+rev="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)"
+git diff --quiet HEAD || rev="$rev-dirty"
+
+CROSS_CONTAINER_ENGINE=podman lessor hold build --need cores=4 --wait 600 -- \
+    cross build --release -p nexus --target "$target"
+
+scp -q "target/$target/release/nexus" "$board:/tmp/nexus-staging.new"
+scp -q deploy/nexus.service "$board:/tmp/nexus-staging.unit"
+ssh "$board" bash -s -- "$rev" "$fresh" < deploy/board-stage.sh

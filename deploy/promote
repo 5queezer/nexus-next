@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Put the binary that staging runs into production. No rebuild: the same bytes that were tested.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+ssh "${NEXUS_BOARD:-radxa}" bash -s < deploy/board-promote.sh
