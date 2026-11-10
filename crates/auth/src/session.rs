@@ -81,6 +81,13 @@ pub(crate) fn html_page(
     let csp = format!(
         "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}"
     );
+    let label = nexus_core::env_label().map(escape_html);
+    let (prefix, tag) = label.map_or_else(Default::default, |label| {
+        (
+            format!("[{label}] "),
+            format!(r#" <span class="env">{label}</span>"#),
+        )
+    });
     (
         status,
         [
@@ -92,8 +99,8 @@ pub(crate) fn html_page(
         ],
         Html(format!(
             r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css"><title>{}</title></head>
-<body><main><p class="brand">Nexus</p>{body}</main></body></html>"#,
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css"><title>{prefix}{}</title></head>
+<body><main><p class="brand">Nexus{tag}</p>{body}</main></body></html>"#,
             escape_html(title)
         )),
     )

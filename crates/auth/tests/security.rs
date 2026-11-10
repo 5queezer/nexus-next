@@ -1728,6 +1728,11 @@ async fn login_page_escapes_next_and_blocks_framing() {
         .await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(!page.body.contains("<script"), "{}", page.body);
+    assert!(page.body.contains("<title>Log in to Nexus</title>"));
+    assert!(
+        !page.body.contains(r#"class="env""#),
+        "no label in production"
+    );
     assert_eq!(page.field("next"), hostile);
     let csp = page.header("content-security-policy");
     assert!(csp.contains("frame-ancestors 'none'"));

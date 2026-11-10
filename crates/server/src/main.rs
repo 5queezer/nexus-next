@@ -544,6 +544,9 @@ async fn run() -> anyhow::Result<()> {
             println!("{summary}");
         }
         Command::Serve(args) => {
+            if let Some(label) = args.env_label.clone().filter(|label| !label.is_empty()) {
+                nexus_core::set_env_label(label);
+            }
             let config = args
                 .validate()
                 .map_err(|e| anyhow::anyhow!("invalid configuration:\n{e}"))?;

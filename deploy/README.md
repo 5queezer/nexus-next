@@ -79,6 +79,8 @@ ENV
 | `NEXUS_OWNER_PASSPHRASE_HASH_FILE` | Where the hash lives. Default: `<data dir>/owner-passphrase.argon2` |
 | `NEXUS_OWNER_PASSPHRASE_HASH` | The hash itself, instead of a file. Overrides the file, and `set-passphrase` refuses to run while it is set |
 
+`NEXUS_ENV_LABEL` marks a server that is not production, for example `NEXUS_ENV_LABEL=Staging`. Every page, the login included, then shows the label beside the name, and each browser tab starts with `[Staging]`. At most 24 characters of plain text. Leave it unset in production.
+
 ### Trusted IP header: a required step behind a tunnel
 
 Rate limits and login backoff key on the client's address. Behind `cloudflared` or Funnel every connection comes from loopback, so without this setting all of the internet is one client. One attacker request an hour then holds the login at its one-hour backoff, and a loop on the token endpoint gets real clients refused. So with an https base URL, serve refuses to start until this says either a header or `none`.

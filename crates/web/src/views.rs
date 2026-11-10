@@ -61,6 +61,11 @@ pub fn page_with_scripts(
         .map(|name| view! { <script src=format!("/assets/{name}?v={}", *VERSION) defer></script> })
         .collect();
     let current = |tab: Nav| (nav == tab).then_some("page");
+    let label = nexus_core::env_label();
+    let title = match label {
+        Some(label) => format!("[{label}] {title} - Nexus"),
+        None => format!("{title} - Nexus"),
+    };
     let html = view! {
         <html lang="en">
             <head>
@@ -68,7 +73,7 @@ pub fn page_with_scripts(
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <meta name="color-scheme" content="light dark" />
                 <meta name="robots" content="noindex" />
-                <title>{format!("{title} - Nexus")}</title>
+                <title>{title}</title>
                 <meta name="theme-color" content="#1f5f4a" />
                 <link rel="manifest" href="/manifest.webmanifest" />
                 <link rel="icon" type="image/png" href="/icons/icon-192.png" />
@@ -81,6 +86,7 @@ pub fn page_with_scripts(
                 <header class="top">
                     <div>
                         <a class="brand" href="/">"Nexus"</a>
+                        {label.map(|label| view! { <span class="env">{label}</span> })}
                         <nav aria-label="Main">
                             <a href="/" aria-current=current(Nav::Pipeline)>"Pipeline"</a>
                             <a href="/queue" aria-current=current(Nav::FollowUps)>

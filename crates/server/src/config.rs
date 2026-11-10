@@ -15,6 +15,7 @@ use tracing::Level;
 
 const MIN_TOKEN_LEN: usize = 32;
 const MAX_VOICE_SESSION_SECONDS: u64 = 3600;
+const MAX_ENV_LABEL_CHARS: usize = 24;
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
@@ -46,6 +47,10 @@ pub struct ServeArgs {
     /// Needs a loopback --bind.
     #[arg(long)]
     pub insecure_local_only: bool,
+    /// Shown on every page and in its title, such as `Staging`, so that this server is not taken
+    /// for production. Leave it unset or empty in production.
+    #[arg(long, env = "NEXUS_ENV_LABEL", value_parser = env_label)]
+    pub env_label: Option<String>,
     /// Most verbose level logged: error, warn, info, debug or trace.
     #[arg(long, env = "NEXUS_LOG_LEVEL", default_value = "info")]
     pub log_level: Level,
@@ -198,6 +203,16 @@ impl ServeArgs {
     }
 }
 
+fn env_label(raw: &str) -> Result<String, String> {
+    let label = raw.trim();
+    if label.chars().count() > MAX_ENV_LABEL_CHARS || label.chars().any(char::is_control) {
+        return Err(format!(
+            "must be plain text of at most {MAX_ENV_LABEL_CHARS} characters"
+        ));
+    }
+    Ok(label.to_owned())
+}
+
 fn is_loopback_http(url: &str) -> bool {
     url.strip_prefix("http://")
         .and_then(|rest| rest.trim_end_matches('/').rsplit_once(':'))
@@ -264,6 +279,7 @@ mod tests {
             timezone: "Europe/Madrid".into(),
             calendar_token_file: None,
             insecure_local_only: true,
+            env_label: None,
             log_level: Level::INFO,
             openai_api_key_file: None,
             realtime_model: "gpt-realtime-2.1-mini".into(),
@@ -288,6 +304,18 @@ mod tests {
         fs::write(&path, content).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn the_env_label_is_short_plain_text() {
+        assert_eq!(env_label(" Staging ").unwrap(), "Staging");
+        assert_eq!(env_label("").unwrap(), "");
+        assert_eq!(env_label("<b>").unwrap(), "<b>");
+        assert!(env_label(&"x".repeat(MAX_ENV_LABEL_CHARS)).is_ok());
+        assert!(env_label(&"x".repeat(MAX_ENV_LABEL_CHARS + 1)).is_err());
+        for bad in ["Stag\ning", "Stag\u{1b}[31m", "a\tb"] {
+            assert!(env_label(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

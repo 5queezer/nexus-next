@@ -114,6 +114,8 @@ async fn pipeline_escapes_text_and_sets_security_headers() {
     assert!(!body.contains(" style="), "the CSP blocks inline styles");
     assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(body.contains(&format!("#{id}")));
+    assert!(body.contains("<title>Pipeline - Nexus</title>"), "{body}");
+    assert!(!body.contains(r#"class="env""#), "no label in production");
     assert_eq!(headers["x-content-type-options"], "nosniff");
     let csp = headers["content-security-policy"].to_str().unwrap();
     assert!(csp.contains("default-src 'none'") && !csp.contains("unsafe-inline"));

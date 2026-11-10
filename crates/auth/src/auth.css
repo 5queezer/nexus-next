@@ -61,6 +61,8 @@ main {
   text-transform: uppercase;
   color: var(--muted);
 }
+/* Only on a server that is not production. */
+.env { margin-left: 6px; padding: 2px 8px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
 h1 { font-size: 22px; line-height: 1.25; margin: 0 0 16px; letter-spacing: -0.01em; }
 p { margin: 0 0 16px; }
 .hint { color: var(--muted); font-size: 13px; margin: 16px 0 0; }
