@@ -41,16 +41,6 @@
 
 * { box-sizing: border-box; }
 
-/* Cross-document page transition: a short fade between pages, with the header held in place.
-   Browsers without support ignore it and navigate as before. */
-@media (prefers-reduced-motion: no-preference) {
-  @view-transition { navigation: auto; }
-  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) {
-    animation-duration: 140ms;
-    animation-timing-function: ease;
-  }
-}
-
 body {
   margin: 0;
   background: var(--bg);
@@ -68,7 +58,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .top {
   background: var(--surface);
   border-bottom: 1px solid var(--line);
-  view-transition-name: top;
 }
 .top > div {
   max-width: 64rem;
