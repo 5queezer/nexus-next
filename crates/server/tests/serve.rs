@@ -30,6 +30,7 @@ fn auth_config() -> AuthConfig {
         public_base_url: BASE.to_owned(),
         owner_passphrase_hash: "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA"
             .to_owned(),
+        owner_passphrase_file: None,
         trusted_proxy: None,
         redirect_hosts: Vec::new(),
     }

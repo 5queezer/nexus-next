@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,9 @@ pub struct AuthState(pub(crate) Arc<Inner>);
 pub(crate) struct Inner {
     pub(crate) db: Db,
     pub(crate) base_url: String,
-    pub(crate) passphrase_hash: String,
+    /// Replaced when the owner changes the passphrase in the browser.
+    pub(crate) passphrase_hash: Mutex<String>,
+    pub(crate) passphrase_file: Option<PathBuf>,
     trusted_proxy: Option<TrustedProxy>,
     pub(crate) redirect_hosts: Vec<String>,
     /// Signs consent and CSRF tokens. These live for minutes, so a key per process is enough, and
@@ -64,7 +67,8 @@ impl AuthState {
         Ok(Self(Arc::new(Inner {
             db,
             base_url,
-            passphrase_hash: config.owner_passphrase_hash,
+            passphrase_hash: Mutex::new(config.owner_passphrase_hash),
+            passphrase_file: config.owner_passphrase_file,
             trusted_proxy: config.trusted_proxy,
             redirect_hosts: config.redirect_hosts,
             key: random_bytes(),

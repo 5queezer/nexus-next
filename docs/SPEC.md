@@ -108,6 +108,7 @@ Dropped: `User`, `Session`, `Account`, `Verification`, `ShareLink`, `DemoWorkspa
 - Port `lib/mcp-oauth.ts` and `app/api/mcp/{authorize,register,token}`: dynamic client registration, PKCE S256, single-use codes, hashed tokens, refresh rotation, scopes `mcp:tools` and `mcp:submissions`, and the sensitive-consent version.
 - Token routing stays by prefix: `mcp_at_` is OAuth, anything else is checked as an API token.
 - better-auth goes away, so `authorize` needs a new login: one owner passphrase (argon2id) with rate limiting, a session cookie and the existing consent step from the `authorize` route.
+- The logged-in owner changes the passphrase at `/passphrase` by giving the current one, which counts on the login backoff. A change revokes every OAuth grant and the API token and ends every session, and applies without a restart. `nexus set-passphrase` on the host stays for a lost passphrase.
 - rmcp's `auth` features look client-oriented, so assume the authorization server is hand-written in axum. To verify at scaffold time.
 - Hermes Career Ops also connects with OAuth (`auth: oauth` in its config), not only Claude.ai.
 - Registration is open, because Claude.ai registers itself. So a redirect URI must be https to a host in `NEXUS_OAUTH_REDIRECT_HOSTS` (default `claude.ai,claude.com`, Claude.ai's real host still unverified) or loopback (`127.0.0.1` or `localhost`; `http://[::1]` stays refused, as in old Nexus), checked at registration and again at authorize.

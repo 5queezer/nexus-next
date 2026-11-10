@@ -17,8 +17,11 @@ use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use nexus_core::auth::FormToken;
+use tokio::sync::SemaphorePermit;
 
-use crate::admin::verify_passphrase;
+use crate::admin::{
+    MIN_PASSPHRASE_CHARS, PassphraseError, set_owner_passphrase, verify_passphrase,
+};
 use crate::crypto::{escape_html, parse_params, random_bytes, secret_eq, sha256_hex, sign};
 use crate::limit::GLOBAL_KEY;
 use crate::state::{AuthState, ClientKey};
@@ -38,6 +41,7 @@ pub(crate) const MAX_NEXT_BYTES: usize = 8192;
 const LOGIN_CSRF_PURPOSE: &str = "login-csrf";
 const LOGOUT_CSRF_PURPOSE: &str = "logout-csrf";
 const FORM_CSRF_PURPOSE: &str = "form-csrf";
+const PASSPHRASE_CSRF_PURPOSE: &str = "passphrase-csrf";
 const DEVICE_PURPOSE: &str = "known-device";
 /// The limiter bucket of browsers holding the device cookie.
 const DEVICE_KEY: &str = "known-device";
@@ -47,7 +51,8 @@ const DEVICE_KEY: &str = "known-device";
 /// attempts count on a bucket of their own. It grants nothing else: the passphrase is still needed.
 /// Keyed by the stored hash, it survives restarts and dies when the passphrase changes.
 fn device_token(state: &AuthState) -> String {
-    sign(state.0.passphrase_hash.as_bytes(), DEVICE_PURPOSE, "")
+    let hash = state.0.passphrase_hash.lock().unwrap();
+    sign(hash.as_bytes(), DEVICE_PURPOSE, "")
 }
 
 pub(crate) async fn stylesheet() -> impl IntoResponse {
@@ -238,6 +243,61 @@ pub(crate) async fn login_page(
     )
 }
 
+/// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
+/// a change can follow before anyone else's attempt is checked. `Err` carries the wait if the
+/// backoff refused the attempt, and `None` if the passphrase was wrong.
+async fn attempt<'a>(
+    state: &'a AuthState,
+    client: &str,
+    known_device: bool,
+    passphrase: String,
+) -> Result<SemaphorePermit<'a>, Option<u64>> {
+    let source = if known_device { DEVICE_KEY } else { client };
+    let keys: &[&str] = if known_device {
+        &[source]
+    } else {
+        &[source, GLOBAL_KEY]
+    };
+    if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
+        tracing::warn!(
+            event = "login_lockout",
+            source = %client,
+            known_device,
+            retry_after = retry,
+            "login refused by backoff"
+        );
+        return Err(Some(retry));
+    }
+
+    let slot = state.0.hash_slot.acquire().await.map_err(|_| None)?;
+    let hash = state.0.passphrase_hash.lock().unwrap().clone();
+    let verified = tokio::task::spawn_blocking(move || verify_passphrase(&hash, &passphrase))
+        .await
+        .unwrap_or(false);
+    if !verified {
+        tracing::warn!(
+            event = "login_failure",
+            source = %client,
+            known_device,
+            "wrong owner passphrase"
+        );
+        return Err(None);
+    }
+    state.0.login_limit.succeed(source, !known_device);
+    Ok(slot)
+}
+
+fn locked_out(respond: impl Fn(StatusCode, &str) -> Response, retry: u64) -> Response {
+    let mut response = respond(
+        StatusCode::TOO_MANY_REQUESTS,
+        &format!("Too many attempts. Try again in {}.", wait_text(retry)),
+    );
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(retry));
+    response
+}
+
 pub(crate) async fn login(
     State(state): State<AuthState>,
     ClientKey(client): ClientKey,
@@ -250,7 +310,7 @@ pub(crate) async fn login(
         .and_then(|next| safe_next(&state.0.base_url, next));
     let csrf_cookie = cookie_value(&headers, LOGIN_CSRF_COOKIE);
     let respond =
-        |status, message| login_form(&state, status, message, next.as_deref(), csrf_cookie);
+        |status, message: &str| login_form(&state, status, message, next.as_deref(), csrf_cookie);
 
     // A forged POST never reaches the hash or the limiter, so it can't lock the owner out. A stale
     // form (the key changes on restart) lands here too, and gets a fresh one.
@@ -268,51 +328,15 @@ pub(crate) async fn login(
 
     let known_device = cookie_value(&headers, DEVICE_COOKIE)
         .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
-    let source = if known_device { DEVICE_KEY } else { &client };
-    let keys: &[&str] = if known_device {
-        &[source]
-    } else {
-        &[source, GLOBAL_KEY]
-    };
-    if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
-        tracing::warn!(
-            event = "login_lockout",
-            source = %client,
-            known_device,
-            retry_after = retry,
-            "login refused by backoff"
-        );
-        let mut response = respond(
-            StatusCode::TOO_MANY_REQUESTS,
-            &format!("Too many attempts. Try again in {}.", wait_text(retry)),
-        );
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(retry));
-        return response;
-    }
-
     let passphrase = form.get("passphrase").cloned().unwrap_or_default();
-    let verified = {
-        let _slot = state.0.hash_slot.acquire().await;
-        let state = state.clone();
-        tokio::task::spawn_blocking(move || {
-            verify_passphrase(&state.0.passphrase_hash, &passphrase)
-        })
-        .await
-        .unwrap_or(false)
-    };
-    if !verified {
-        tracing::warn!(
-            event = "login_failure",
-            source = %client,
-            known_device,
-            "wrong owner passphrase"
-        );
-        return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
+    match attempt(&state, &client, known_device, passphrase).await {
+        Ok(_) => {}
+        Err(Some(retry)) => return locked_out(respond, retry),
+        Err(None) => {
+            return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
+        }
     }
 
-    state.0.login_limit.succeed(source, !known_device);
     tracing::info!(event = "login_success", source = %client, known_device, "owner logged in");
     let session = create_session(&state);
     let response = redirect_after_login(next.as_deref());
@@ -366,6 +390,137 @@ pub(crate) async fn logout(
     state.0.logouts.send_modify(|count| *count += 1);
     with_cookie(
         Redirect::to("/login").into_response(),
+        SESSION_COOKIE,
+        "",
+        0,
+    )
+}
+
+fn passphrase_form(
+    state: &AuthState,
+    session: &str,
+    status: StatusCode,
+    message: &str,
+) -> Response {
+    let title = "Change the passphrase";
+    if state.0.passphrase_file.is_none() {
+        return html_page(
+            status,
+            title,
+            r#"<h1>Change the passphrase</h1><p>This server takes its passphrase from <code>NEXUS_OWNER_PASSPHRASE_HASH</code>, so it can only be changed on the host.</p><p><a href="/">Back to Nexus</a></p>"#,
+            None,
+        );
+    }
+    let csrf = sign(&state.0.key, PASSPHRASE_CSRF_PURPOSE, session);
+    let message = if message.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<p role="alert">{}</p>"#, escape_html(message))
+    };
+    html_page(
+        status,
+        title,
+        &format!(
+            r#"<h1>Change the passphrase</h1>{message}
+<p>This signs out every connected client, such as Claude.ai and other MCP clients, and revokes the API token. Each client must be authorized again. Every browser session ends too, this one included, and you log in with the new passphrase.</p>
+<form method="post" action="/passphrase"><input type="hidden" name="csrf" value="{csrf}"><label for="current">Current passphrase</label><input id="current" type="password" name="current" autocomplete="current-password" required autofocus><label for="new">New passphrase</label><input id="new" type="password" name="new" autocomplete="new-password" minlength="{MIN_PASSPHRASE_CHARS}" required><label for="repeat">Repeat the new passphrase</label><input id="repeat" type="password" name="repeat" autocomplete="new-password" required><button type="submit">Change passphrase</button></form>
+<p class="hint">At least {MIN_PASSPHRASE_CHARS} characters. <a href="/">Cancel</a></p>"#
+        ),
+        None,
+    )
+}
+
+pub(crate) async fn passphrase_page(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session) = current_session(&state, &headers) else {
+        return Redirect::to("/login?next=/passphrase").into_response();
+    };
+    passphrase_form(&state, &session, StatusCode::OK, "")
+}
+
+/// Changes the passphrase for a logged-in owner who also knows the current one, so a stolen
+/// session alone can't. Guesses at the current one count on the login backoff. Every session ends,
+/// this one included: the owner logs in again, which shows that the new passphrase works.
+pub(crate) async fn change_passphrase(
+    State(state): State<AuthState>,
+    ClientKey(client): ClientKey,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(session) = current_session(&state, &headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    let form = parse_params(&body);
+    let respond = |status, message: &str| passphrase_form(&state, &session, status, message);
+    let csrf_valid = form.get("csrf").is_some_and(|csrf| {
+        secret_eq(csrf, &sign(&state.0.key, PASSPHRASE_CSRF_PURPOSE, &session))
+    });
+    if !csrf_valid {
+        return respond(
+            StatusCode::FORBIDDEN,
+            "Your form expired. Please try again.",
+        );
+    }
+    let Some(path) = &state.0.passphrase_file else {
+        return respond(StatusCode::CONFLICT, "");
+    };
+    let field = |name| form.get(name).cloned().unwrap_or_default();
+    let new = field("new");
+    if new != field("repeat") {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            "The two new passphrases differ. Nothing was changed.",
+        );
+    }
+
+    let known_device = cookie_value(&headers, DEVICE_COOKIE)
+        .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
+    let _slot = match attempt(&state, &client, known_device, field("current")).await {
+        Ok(slot) => slot,
+        Err(Some(retry)) => return locked_out(respond, retry),
+        Err(None) => {
+            return respond(
+                StatusCode::UNAUTHORIZED,
+                "The current passphrase is not correct. Nothing was changed.",
+            );
+        }
+    };
+    let hash = match set_owner_passphrase(&state.0.db, path, &new).await {
+        Ok(hash) => hash,
+        Err(
+            e
+            @ (PassphraseError::TooShort | PassphraseError::Repetitive | PassphraseError::TooLong),
+        ) => {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                &format!("The new {e}. Nothing was changed."),
+            );
+        }
+        Err(e) => {
+            tracing::error!(event = "passphrase_change_failed", error = %e, "could not change the owner passphrase");
+            return respond(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The passphrase was not changed. Connected clients may have been signed out. The server log says why.",
+            );
+        }
+    };
+    *state.0.passphrase_hash.lock().unwrap() = hash;
+    state.0.sessions.lock().unwrap().clear();
+    state.0.logouts.send_modify(|count| *count += 1);
+    tracing::warn!(
+        event = "passphrase_changed",
+        source = %client,
+        "owner passphrase changed in the browser: all sessions ended"
+    );
+    with_cookie(
+        html_page(
+            StatusCode::OK,
+            "Passphrase changed",
+            r#"<h1>Passphrase changed</h1><p>Every session has ended and every connected client is signed out. Authorize each client again when it asks.</p><p><a href="/login">Log in with the new passphrase</a></p>"#,
+            None,
+        ),
         SESSION_COOKIE,
         "",
         0,
@@ -476,6 +631,7 @@ mod tests {
             public_base_url: BASE.to_owned(),
             owner_passphrase_hash: "$argon2id$v=19$m=8,t=1,p=1$c2FsdHNhbHQ$AAAAAAAAAAAAAAAAAAAAAA"
                 .to_owned(),
+            owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
         };
@@ -498,10 +654,12 @@ mod tests {
         let config = |hash: &str| AuthConfig {
             public_base_url: BASE.to_owned(),
             owner_passphrase_hash: hash.to_owned(),
+            owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
         };
-        let restarted = AuthState::new(db.clone(), config(&first.0.passphrase_hash)).unwrap();
+        let restarted =
+            AuthState::new(db.clone(), config(&first.0.passphrase_hash.lock().unwrap())).unwrap();
         assert_ne!(first.0.key, restarted.0.key);
         assert_eq!(device_token(&first), device_token(&restarted));
 

@@ -1,9 +1,9 @@
 //! OAuth 2.1 authorization server for MCP clients and the single-owner login that guards it.
 //!
-//! `router` serves discovery, registration, authorize, token, `/login` and `/logout`.
-//! `require_mcp_auth` and `require_owner_session` are middleware for the routes they protect, used
-//! with `axum::middleware::from_fn_with_state`. Requests must carry `ConnectInfo<SocketAddr>`:
-//! without a peer address, every client shares one rate-limit bucket.
+//! `router` serves discovery, registration, authorize, token, `/login`, `/logout` and
+//! `/passphrase`. `require_mcp_auth` and `require_owner_session` are middleware for the routes they
+//! protect, used with `axum::middleware::from_fn_with_state`. Requests must carry
+//! `ConnectInfo<SocketAddr>`: without a peer address, every client shares one rate-limit bucket.
 
 mod admin;
 mod config;
@@ -59,6 +59,10 @@ pub fn router(state: AuthState) -> Router {
         .route("/auth.css", get(session::stylesheet))
         .route("/login", get(session::login_page).post(session::login))
         .route("/logout", get(session::logout_page).post(session::logout))
+        .route(
+            "/passphrase",
+            get(session::passphrase_page).post(session::change_passphrase),
+        )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
         .with_state(state)
 }

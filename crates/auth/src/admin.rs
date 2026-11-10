@@ -14,7 +14,7 @@ use url::Url;
 use crate::crypto::{generate_token, random_bytes, sha256_hex};
 use crate::oauth::{grant_label, printable_name};
 
-const MIN_PASSPHRASE_CHARS: usize = 16;
+pub(crate) const MIN_PASSPHRASE_CHARS: usize = 16;
 /// Repeating a unit this short adds nothing a guesser would not try first.
 const MAX_TRIVIAL_CYCLE: usize = 8;
 /// `grants list` prints 12 characters. A shorter ID is more likely a slip than a choice.
@@ -157,12 +157,13 @@ pub async fn revoke_grant(db: &Db, id: &str) -> Result<oauth::Revoked, RevokeErr
 /// writes the hash to `path`, mode 600, replacing the file atomically. Credentials go first, so a
 /// failed write can't leave a suspected leak still working. Client registrations stay; each client
 /// authorizes again. Running servers read the hash at startup, so restart them for the new
-/// passphrase to apply, which also ends their sessions.
+/// passphrase to apply, which also ends their sessions. Returns the hash, which the server's own
+/// change form takes up at once instead.
 pub async fn set_owner_passphrase(
     db: &Db,
     path: &Path,
     passphrase: &str,
-) -> Result<(), PassphraseError> {
+) -> Result<String, PassphraseError> {
     let hash = hash_passphrase(passphrase).await?;
 
     let mut tx = db.begin_write().await?;
@@ -178,8 +179,9 @@ pub async fn set_owner_passphrase(
     );
 
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
-        write_private(&path, &hash).map_err(|e| PassphraseError::Io(path, e))
+    tokio::task::spawn_blocking(move || match write_private(&path, &hash) {
+        Ok(()) => Ok(hash),
+        Err(e) => Err(PassphraseError::Io(path, e)),
     })
     .await
     .map_err(|_| PassphraseError::Task)?

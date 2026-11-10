@@ -58,6 +58,9 @@ pub struct AuthConfig {
     pub public_base_url: String,
     /// argon2id PHC string.
     pub owner_passphrase_hash: String,
+    /// The file the hash was read from, which a change in the browser rewrites. `None` when the
+    /// hash came from `NEXUS_OWNER_PASSPHRASE_HASH`, which the server can't change.
+    pub owner_passphrase_file: Option<PathBuf>,
     /// `None` (the default) means rate limits key on the socket address, ignoring forwarded headers.
     pub trusted_proxy: Option<TrustedProxy>,
     /// Hosts an https redirect URI may name, matched exactly. Loopback is always allowed.
@@ -114,10 +117,14 @@ impl AuthConfig {
         data_dir: &Path,
     ) -> Result<Self, ConfigError> {
         let public_base_url = normalize_base_url(public_base_url)?;
-        let owner_passphrase_hash = match var("NEXUS_OWNER_PASSPHRASE_HASH") {
-            Some(hash) => hash,
-            None => read_hash_file(&passphrase_file(&var, data_dir))?,
-        };
+        let (owner_passphrase_hash, owner_passphrase_file) =
+            match var("NEXUS_OWNER_PASSPHRASE_HASH") {
+                Some(hash) => (hash, None),
+                None => {
+                    let path = passphrase_file(&var, data_dir);
+                    (read_hash_file(&path)?, Some(path))
+                }
+            };
         validate_passphrase_hash(&owner_passphrase_hash)?;
         let trusted_header = var("NEXUS_TRUSTED_IP_HEADER");
         if trusted_header.is_none() && public_base_url.starts_with("https://") {
@@ -148,6 +155,7 @@ impl AuthConfig {
         Ok(Self {
             public_base_url,
             owner_passphrase_hash,
+            owner_passphrase_file,
             trusted_proxy,
             redirect_hosts,
         })

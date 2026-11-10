@@ -1838,6 +1838,7 @@ async fn auth_state_refuses_to_build_without_a_valid_hash_or_base_url() {
     let config = |hash: &str, base: &str| AuthConfig {
         public_base_url: base.to_owned(),
         owner_passphrase_hash: hash.to_owned(),
+        owner_passphrase_file: None,
         trusted_proxy: None,
         redirect_hosts: Vec::new(),
     };
@@ -1946,6 +1947,7 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
         AuthConfig {
             public_base_url: BASE.to_owned(),
             owner_passphrase_hash: std::fs::read_to_string(&path).unwrap().trim().to_owned(),
+            owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
         },
@@ -1963,6 +1965,247 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
         .attempt_login(&h, "another passphrase", DEFAULT_IP)
         .await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+}
+
+// ── Changing the passphrase in the browser ───────────────────────────────────
+
+const NEW_PASSPHRASE: &str = "an entirely different passphrase";
+
+fn hash_file(h: &Harness) -> std::path::PathBuf {
+    h.dir.path().join("owner-passphrase.argon2")
+}
+
+/// Fetches the change form and posts it.
+async fn change_passphrase(
+    browser: &mut Browser,
+    h: &Harness,
+    current: &str,
+    new: &str,
+    repeat: &str,
+) -> Reply {
+    let page = browser.send(h, get_req("/passphrase")).await;
+    let body = format!(
+        "csrf={}&current={}&new={}&repeat={}",
+        page.field("csrf"),
+        encode(current),
+        encode(new),
+        encode(repeat)
+    );
+    browser.send(h, form_req("/passphrase", &body)).await
+}
+
+#[tokio::test]
+async fn the_owner_changes_the_passphrase_in_the_browser() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new().await;
+    let id = h.register().await;
+    let tokens = h.grant(&id, "mcp:tools").await;
+    let api_token = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let mut other = Browser::default();
+    other.login(&h).await;
+
+    let page = browser.send(&h, get_req("/passphrase")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert_eq!(page.header("cache-control"), "no-store");
+    for said in [
+        "Each client must be authorized again",
+        "Every browser session ends too, this one included",
+        r#"name="current" autocomplete="current-password""#,
+        r#"name="new" autocomplete="new-password""#,
+        r#"name="repeat" autocomplete="new-password""#,
+    ] {
+        assert!(page.body.contains(said), "{said}");
+    }
+
+    let done =
+        change_passphrase(&mut browser, &h, PASSPHRASE, NEW_PASSPHRASE, NEW_PASSPHRASE).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert!(done.body.contains("Passphrase changed"));
+    assert!(!done.body.contains(NEW_PASSPHRASE));
+    assert!(done.header("set-cookie").contains("Max-Age=0"));
+    assert_eq!(
+        std::fs::metadata(hash_file(&h))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    // Every session is over, the other browser's too, and so is every credential.
+    for session in [&mut browser, &mut other] {
+        let reply = session.send(&h, get_req("/dashboard")).await;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    }
+    assert_eq!(h.whoami(&api_token).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        h.whoami(tokens["access_token"].as_str().unwrap())
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.refresh(&id, tokens["refresh_token"].as_str().unwrap(), None)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid_grant");
+
+    // The new passphrase logs in without a restart, and the old one doesn't.
+    let mut fresh = Browser::default();
+    let old = fresh.attempt_login(&h, PASSPHRASE, DEFAULT_IP).await;
+    assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+    let new = fresh.attempt_login(&h, NEW_PASSPHRASE, DEFAULT_IP).await;
+    assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
+}
+
+#[tokio::test]
+async fn a_refused_passphrase_change_changes_nothing() {
+    let h = Harness::new().await;
+    let api_token = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+
+    for (current, new, repeat, status, says) in [
+        (
+            "not the passphrase at all",
+            NEW_PASSPHRASE,
+            NEW_PASSPHRASE,
+            StatusCode::UNAUTHORIZED,
+            "The current passphrase is not correct",
+        ),
+        (
+            PASSPHRASE,
+            NEW_PASSPHRASE,
+            "another passphrase entirely",
+            StatusCode::BAD_REQUEST,
+            "The two new passphrases differ",
+        ),
+        (
+            PASSPHRASE,
+            "too short",
+            "too short",
+            StatusCode::BAD_REQUEST,
+            "at least 16 characters",
+        ),
+        (
+            PASSPHRASE,
+            "abcabcabcabcabcabc",
+            "abcabcabcabcabcabc",
+            StatusCode::BAD_REQUEST,
+            "one short pattern repeated",
+        ),
+    ] {
+        let reply = change_passphrase(&mut browser, &h, current, new, repeat).await;
+        assert_eq!(reply.status, status, "{}", reply.body);
+        assert!(reply.body.contains(says), "{}", reply.body);
+        for typed in [current, new, repeat] {
+            assert!(!reply.body.contains(typed), "{typed} is echoed");
+        }
+    }
+
+    // Without the form's own token nothing happens, whatever else is right.
+    let fields = format!(
+        "current={}&new={new}&repeat={new}",
+        encode(PASSPHRASE),
+        new = encode(NEW_PASSPHRASE)
+    );
+    let logout_csrf = browser.send(&h, get_req("/logout")).await.field("csrf");
+    for csrf in ["", "csrf=x&", &format!("csrf={logout_csrf}&")] {
+        let forged = browser
+            .send(&h, form_req("/passphrase", &format!("{csrf}{fields}")))
+            .await;
+        assert_eq!(forged.status, StatusCode::FORBIDDEN, "{csrf}");
+    }
+
+    assert!(!hash_file(&h).exists());
+    assert_eq!(h.whoami(&api_token).await.status, StatusCode::OK);
+    assert_eq!(
+        browser.send(&h, get_req("/dashboard")).await.status,
+        StatusCode::OK
+    );
+    Browser::default().login(&h).await;
+}
+
+#[tokio::test]
+async fn changing_the_passphrase_needs_a_session() {
+    let h = Harness::new().await;
+    let page = h.send(get_req("/passphrase")).await;
+    assert_eq!(page.status, StatusCode::SEE_OTHER);
+    assert_eq!(page.location(), "/login?next=/passphrase");
+
+    // Even a real token is worth nothing without the session it belongs to.
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let csrf = browser.send(&h, get_req("/passphrase")).await.field("csrf");
+    let body = format!(
+        "csrf={csrf}&current={}&new={new}&repeat={new}",
+        encode(PASSPHRASE),
+        new = encode(NEW_PASSPHRASE)
+    );
+    let reply = h.send(form_req("/passphrase", &body)).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location(), "/login");
+    assert!(!hash_file(&h).exists());
+    Browser::default().login(&h).await;
+}
+
+#[tokio::test]
+async fn guesses_at_the_current_passphrase_meet_the_login_backoff() {
+    let h = Harness::new().await;
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    for _ in 0..6 {
+        let reply = change_passphrase(
+            &mut browser,
+            &h,
+            "a guess at the passphrase",
+            NEW_PASSPHRASE,
+            NEW_PASSPHRASE,
+        )
+        .await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+    }
+
+    // Now even the right one waits, as at the login.
+    let locked =
+        change_passphrase(&mut browser, &h, PASSPHRASE, NEW_PASSPHRASE, NEW_PASSPHRASE).await;
+    assert_eq!(locked.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(locked.header(RETRY_AFTER.as_str()).parse::<u64>().unwrap() > 0);
+    assert!(locked.body.contains("Too many attempts"));
+    assert!(!hash_file(&h).exists());
+}
+
+#[tokio::test]
+async fn a_passphrase_from_the_environment_cannot_be_changed_in_the_browser() {
+    let harness = Harness::new().await;
+    let state = AuthState::new(
+        harness.db.clone(),
+        AuthConfig {
+            public_base_url: BASE.to_owned(),
+            owner_passphrase_hash: weak_hash(),
+            owner_passphrase_file: None,
+            trusted_proxy: None,
+            redirect_hosts: Vec::new(),
+        },
+    )
+    .unwrap();
+    let h = Harness {
+        app: nexus_auth::router(state),
+        db: harness.db,
+        dir: harness.dir,
+    };
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+
+    let page = browser.send(&h, get_req("/passphrase")).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains("NEXUS_OWNER_PASSPHRASE_HASH"));
+    assert!(!page.body.contains("<form"));
+    let reply = browser.send(&h, form_req("/passphrase", "")).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert!(!reply.body.contains("<form"));
+    Browser::default().login(&h).await;
 }
 
 // ── Redirect allowlist ───────────────────────────────────────────────────────

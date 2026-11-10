@@ -116,7 +116,9 @@ sudo -u nexus /usr/local/bin/nexus set-passphrase --data-dir /var/lib/nexus
 
 It needs at least 16 characters and can't be one short pattern repeated, and this login is on the public internet, so use a long one from the password manager. Only an argon2id hash is stored, at `/var/lib/nexus/owner-passphrase.argon2`, mode 600.
 
-**Changing it** runs the same command, then `sudo systemctl restart nexus`. It revokes every OAuth grant and the API token at once and logs that, so Claude.ai and Hermes must each authorize again and any API token must be reissued. A running server keeps accepting the old passphrase until the restart, so do not skip it. The restart also ends all login sessions; login sessions live in memory, so any restart means logging in again.
+**Changing it** is done in the browser: `Change passphrase` at the foot of every page, or `/passphrase`. It asks for the current passphrase, applies without a restart, ends every login session and revokes every OAuth grant and the API token, as below. It is not offered while `NEXUS_OWNER_PASSPHRASE_HASH` is set.
+
+**Changing it on the host**, for a lost passphrase, runs the same command, then `sudo systemctl restart nexus`. It revokes every OAuth grant and the API token at once and logs that, so Claude.ai and Hermes must each authorize again and any API token must be reissued. A running server keeps accepting the old passphrase until the restart, so do not skip it. The restart also ends all login sessions; login sessions live in memory, so any restart means logging in again.
 
 **Locked out of the login?** Attempts are limited globally, so someone guessing from many addresses can keep the login closed. A browser that has logged in before has its own allowance and is unaffected, but a new phone or cleared cookies gets `Too many attempts`, for up to 5 minutes after the last guess. `sudo systemctl restart nexus` clears the limits at once. It also ends every login session and gives a guesser a fresh allowance, so look at `login_failure` in the log first.
 
@@ -181,7 +183,8 @@ Security events are separate lines with an `event=` field, and carry no secrets 
 
 | Event | Level | Means |
 |---|---|---|
-| `login_failure`, `login_lockout` | warn | A wrong passphrase; an attempt refused by backoff. `source` is the client address |
+| `login_failure`, `login_lockout` | warn | A wrong passphrase, at the login or as the current one on `/passphrase`; an attempt refused by backoff. `source` is the client address |
+| `passphrase_changed`, `passphrase_change_failed` | warn, error | The owner changed the passphrase in the browser, which ended every session; a change that failed after the current passphrase was accepted. Unexpected ones mean the passphrase leaked |
 | `login_success` | info | The owner logged in. Unexpected ones mean the passphrase leaked |
 | `client_registered`, `consent_granted` | info | A new OAuth client; the owner approved one, with its name and where it returns to |
 | `redirect_host_rejected` | warn | A registration or authorization named a host outside `NEXUS_OAUTH_REDIRECT_HOSTS` (section 3) |

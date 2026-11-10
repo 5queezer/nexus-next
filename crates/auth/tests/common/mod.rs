@@ -165,6 +165,7 @@ impl Harness {
             AuthConfig {
                 public_base_url: BASE.to_owned(),
                 owner_passphrase_hash: weak_hash(),
+                owner_passphrase_file: Some(dir.path().join("owner-passphrase.argon2")),
                 trusted_proxy,
                 redirect_hosts: ALLOWED_HOSTS.map(str::to_owned).to_vec(),
             },

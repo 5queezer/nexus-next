@@ -100,6 +100,7 @@ main { max-width: 64rem; margin: 0 auto; padding: 24px 16px 64px; }
   from { opacity: 0.92; }
   to { opacity: 1; }
 }
+.foot { max-width: 64rem; margin: 0 auto; padding: 0 16px 24px; font-size: 13px; color: var(--muted); }
 
 h1 { font-size: 22px; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
 h2 {
