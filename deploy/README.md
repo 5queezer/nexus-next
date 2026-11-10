@@ -305,16 +305,17 @@ Use a key from an OpenAI project made for this, with a budget limit set on the p
 
 **What `voice.conf` gives up.** The unit's `IPAddressDeny=any` stops anything inside Nexus from sending data out. OpenAI's addresses aren't stable enough to list, so the drop-in lifts that filter for every destination. The microphone needs HTTPS: phones refuse it on a plain-HTTP origin.
 
-**What goes to OpenAI**, once you press Connect:
+**What goes to OpenAI**, once you start a conversation:
 
 | Goes | Stays |
 |---|---|
-| Your voice while the button is held, or all the time in hands-free, and its transcript | The API key, which never reaches the browser |
+| Your voice between tapping to talk and tapping to send (or while holding Space), or continuously while hands-free is on and the page is visible, and its transcript | The API key, which never reaches the browser |
 | The CV source of whichever variant the model asks for, its revisions' origins, summaries, warnings and dates, and the facts it renders: name, contact, jobs, dates, education, languages, metrics, allowed tokens and vocabulary | Banned phrases |
-| What `get_application` and `list_applications_filtered` return when the model asks: every field of an application, including **job descriptions, notes, salaries**, ratings, triage and rejection reasons, links, work and visa requirements, stage and next action | Documents, PDFs and preview images. Events name a document only by its id |
+| What `get_application` and `list_applications_filtered` return when the model asks: every field of an application, including **job descriptions, notes, salaries**, ratings, triage and rejection reasons, links, work and visa requirements, stage and next action | Document file contents, PDFs and preview images. Events name a document only by its id |
 | **Other people's details:** each contact's name, **email, phone number**, role and LinkedIn. `get_application` always includes them, `list_applications_filtered` when the model asks | The answers in submission records. Events give only how many there were |
 | What `list_application_events` returns: each event's type, time, source and outcome, **your email address** as its actor, contact ids, and its text: **notes, rejection reasons, interview types, next actions** | |
-| When a session starts: Nexus's instructions to the model, the tool definitions and the name of the variant on screen | |
+| Document metadata and application links returned by the document tools; results of internal updates | |
+| When a session starts: Nexus's instructions to the model, the tool definitions and the selected CV variant or application ID, if any | |
 
 The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass through Nexus. A tool result is cut at 32 KiB, with a marker the model can read.
 
@@ -329,7 +330,12 @@ The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass t
 
 **The limit Nexus can't enforce.** Only the page can close a live connection. A browser that ignores the page's timers (altered, or a debugger, or a machine asleep) could keep talking to OpenAI past the limit or past a logout, until OpenAI ends the session itself, though its tool calls stop working. The project budget limit is the backstop for that.
 
-**What a voice session can do.** Eight tools and no others, enforced on the server: `get_cv_source`, `patch_cv`, `render_cv_pdf` (no saving), `list_cv_revisions`, `revert_cv`, `list_applications_filtered`, `get_application`, `list_application_events`. It can't change an application or mark one applied. Its edits pass the same hard rules as any other, and stay drafts until you approve them on screen: it can't approve, and its preview stays stamped. The log names the tools called, never their arguments.
+**Platform assistant.** Open Assistant from the main navigation. It runs in its own window so the main Nexus page can navigate without ending the conversation. It can start without a CV variant. The server exposes an explicit allowlist of existing internal tools: applications, notes and lifecycle events, contacts, document metadata/links and CV editing. Normal MCP validation still applies. An internal event records something that happened; it does not send a message or submit an application.
+
+CV facts and approvals remain owner-only. Without a selected CV variant, CV operations must name one explicitly. Permanent deletion, bulk destructive operations and external sending are not exposed. A failed tool call must never be described as a successful change. Review the resulting record in Nexus after a spoken update.
+
+**External actions are experimental and not implemented here.** Sending messages and submitting applications need a separate preview/approval workflow, simulated delivery tests, duplicate-send protection and recovery from uncertain delivery results before live use. See `docs/superpowers/plans/2026-11-09-platform-assistant.md`.
+
 
 ## 8. Upgrade and rollback
 

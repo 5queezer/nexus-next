@@ -22,6 +22,7 @@ pub enum Nav {
     Pipeline,
     FollowUps,
     Cv,
+    Assistant,
     None,
 }
 
@@ -92,10 +93,24 @@ pub fn page_with_scripts(
                                     <span class="count" title="CV revisions waiting for your approval">{awaiting}</span>
                                 })}
                             </a>
+                            <a
+                                href="/assistant"
+                                id="nav-assistant"
+                                target="nexus-assistant"
+                                aria-current=current(Nav::Assistant)
+                            >
+                                "Assistant"
+                            </a>
                         </nav>
                     </div>
                 </header>
-                <main>{body}</main>
+                <main>
+                    <p class="banner" id="assistant-update-note" role="status" hidden>
+                        "The assistant updated Nexus. "
+                        <button type="button" class="quiet" id="assistant-refresh">"Reload this page"</button>
+                    </p>
+                    {body}
+                </main>
             </body>
         </html>
     };

@@ -21,9 +21,9 @@ use chrono_tz::Tz;
 use leptos::prelude::*;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
 use nexus_core::blob::sha256_hex;
-use nexus_core::repo::cv_approvals;
 use nexus_core::repo::cv_facts::{self, FactChange, FactsState, LockPreview, OwnerFacts};
 use nexus_core::repo::cv_revisions;
+use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
 use nexus_tailor::{DiffLine, Language, LineChange, Metric, ReviewItem, Rule, review_diff};
@@ -75,6 +75,7 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
     with_form_token(
         Router::new()
             .route("/cv", get(list_page))
+            .route("/assistant", get(assistant_page))
             .route("/cv/facts", get(facts_page).post(facts_save))
             .route("/cv/facts/lock", post(facts_lock))
             .route("/cv/facts/unlock", post(facts_unlock))
@@ -434,6 +435,107 @@ fn csp(config: Option<&VoiceConfig>) -> String {
     format!(
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; manifest-src 'self'; worker-src 'self'; {connect}; {media}base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
     )
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssistantQuery {
+    application_id: Option<i64>,
+    variant: Option<String>,
+}
+
+/// Voice has its own named browser window so the main Nexus page can navigate without ending the
+/// WebRTC connection. Context is reduced to a validated record identifier before it reaches the
+/// model; stored company names, job descriptions and notes are never turned into instructions.
+async fn assistant_page(
+    State(cv): State<Cv>,
+    Query(query): Query<AssistantQuery>,
+    Extension(FormToken(token)): Extension<FormToken>,
+) -> Result<Response, PageError> {
+    let mut conn = cv.db.conn().await?;
+    let mut application_id = None;
+    let mut variant = None;
+    let (context, warning) = match (&query.application_id, &query.variant) {
+        (Some(_), Some(_)) => (
+            "Nexus workspace".to_owned(),
+            Some(
+                "More than one item was selected. Open Assistant from the application or CV you want.",
+            ),
+        ),
+        (Some(id), None) => match applications::get(&mut conn, *id).await? {
+            Some(application) => {
+                application_id = Some(*id);
+                (
+                    format!(
+                        "Application: {} — {}",
+                        application.company, application.role
+                    ),
+                    None,
+                )
+            }
+            None => (
+                "Nexus workspace".to_owned(),
+                Some(
+                    "That application no longer exists. Ask for another application by company or role.",
+                ),
+            ),
+        },
+        (None, Some(name)) => match cv_revisions::get_variant(&mut conn, name).await? {
+            Some(_) => {
+                variant = Some(name.clone());
+                (format!("CV: {name}"), None)
+            }
+            None => (
+                "Nexus workspace".to_owned(),
+                Some("That CV no longer exists. Choose another CV before asking for changes."),
+            ),
+        },
+        (None, None) => ("Nexus workspace".to_owned(), None),
+    };
+    drop(conn);
+    let voice_config = cv.voice.config();
+    let counts = NavCounts {
+        overdue: 0,
+        awaiting: awaiting_count(&cv.db).await?,
+    };
+    let body = view! {
+        <div class="hero">
+            <h1>"Assistant"</h1>
+            <span class="tag">"Experimental"</span>
+        </div>
+        <p class="lede">"Talk through your job search. Keep your next steps moving."</p>
+        <details class="assistant-context">
+            <summary><strong id="assistant-context">{context}</strong></summary>
+            <p class="hint">"Ask about any application or CV in Nexus. To select a specific one, end this conversation and open Assistant from its page."</p>
+            <p class="hint">"Changes stay inside Nexus. Sending messages and applications is not enabled."</p>
+        </details>
+        {warning.map(|warning| view! { <p class="banner warn" role="status">{warning}</p> })}
+        {voice_panel(
+            "Voice assistant",
+            variant.as_deref().unwrap_or_default(),
+            application_id,
+            voice_config,
+            &token,
+        )}
+    };
+    let scripts: &[&str] = if voice_config.is_some() {
+        &["voice.js"]
+    } else {
+        &[]
+    };
+    let html = views::page_with_scripts("Assistant", Nav::Assistant, counts, body, scripts);
+    let mut response = Html(html).into_response();
+    let headers = response.headers_mut();
+    if let Ok(value) = HeaderValue::from_str(&csp(voice_config)) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
+    if voice_config.is_some() {
+        headers.insert(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("microphone=(self)"),
+        );
+    }
+    Ok(response)
 }
 
 async fn variant_page(
@@ -949,10 +1051,20 @@ fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use
 }
 
 fn voice_view(variant: &str, config: Option<&VoiceConfig>, token: &str) -> impl IntoView + use<> {
+    voice_panel("Voice", variant, None, config, token)
+}
+
+fn voice_panel(
+    heading: &'static str,
+    variant: &str,
+    application_id: Option<i64>,
+    config: Option<&VoiceConfig>,
+    token: &str,
+) -> impl IntoView + use<> {
     let Some(config) = config else {
         return view! {
             <section id="voice">
-                <h2>"Voice"</h2>
+                <h2>{heading}</h2>
                 <p class="hint" id="voice-off">
                     "Voice is off: no OpenAI key is configured on this server. Everything else here works without it."
                 </p>
@@ -962,29 +1074,70 @@ fn voice_view(variant: &str, config: Option<&VoiceConfig>, token: &str) -> impl 
     };
     let minutes = config.lifetime.as_secs().div_ceil(60);
     view! {
-        <section id="voice" data-variant=variant.to_owned() data-csrf=token.to_owned()>
-            <h2>"Voice"</h2>
-            <div class="card voice">
-                <p id="voice-status" role="status">
-                    {format!("Not connected. A session lasts at most {minutes} minutes and is sent to OpenAI.")}
-                </p>
-                <noscript><p class="hint">"Voice needs JavaScript. Saving and reverting below don't."</p></noscript>
-                <div class="buttons">
-                    <button type="button" id="voice-connect">"Connect"</button>
-                    <button type="button" id="voice-stop" class="quiet" hidden>"Stop"</button>
-                    <span class="hint" id="voice-remaining" hidden></span>
+        <section
+            id="voice"
+            class="voice-workspace"
+            class:voice-global=heading == "Voice assistant"
+            aria-label=heading
+            data-phase="idle"
+            data-variant=variant.to_owned()
+            data-application-id=application_id.map(|id| id.to_string())
+            data-csrf=token.to_owned()
+        >
+            <h2 class="voice-heading">{heading}</h2>
+            <div class="voice-layout">
+                <div class="voice-stage">
+                    <div class="voice-stage-top">
+                        <span id="voice-mic-state" class="voice-mic-state">"Microphone off"</span>
+                        <span class="hint" id="voice-remaining" hidden></span>
+                    </div>
+                    <div class="voice-state-mark" aria-hidden="true">
+                        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" focusable="false">
+                            <rect x="18" y="7" width="12" height="24" rx="6" />
+                            <path d="M12 24v1a12 12 0 0 0 24 0v-1M24 37v6M18 43h12" />
+                        </svg>
+                    </div>
+                    <h3 id="voice-phase">"Ready when you are"</h3>
+                    <p id="voice-status" role="status" aria-live="polite" aria-atomic="true">"Start a conversation, then tap the microphone to speak."</p>
+                    <noscript><p class="hint">"Voice needs JavaScript. The rest of Nexus works without it."</p></noscript>
+                    <button type="button" id="voice-connect">"Start conversation"</button>
+                    <div id="voice-live" hidden>
+                        <button type="button" id="voice-hold" class="hold" aria-pressed="false" aria-describedby="voice-talk-hint">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" focusable="false">
+                                <rect x="9" y="2" width="6" height="12" rx="3" />
+                                <path d="M6 10v2a6 6 0 0 0 12 0v-2M12 18v4M8 22h8" />
+                            </svg>
+                            <span id="voice-hold-label">"Tap to talk"</span>
+                        </button>
+                        <p class="hint" id="voice-talk-hint">"Tap again to send, or hold Space."</p>
+                        <label class="check voice-handsfree">
+                            <input type="checkbox" id="voice-handsfree" />
+                            <span>"Hands-free"<small>"Keep the microphone on"</small></span>
+                        </label>
+                        <button type="button" id="voice-interrupt" class="secondary" disabled>"Interrupt reply"</button>
+                    </div>
+                    <button type="button" id="voice-stop" class="quiet" hidden>"End conversation"</button>
+                    <p class="voice-privacy">{format!("Audio is sent to OpenAI. Up to {minutes} minutes per session.")}</p>
                 </div>
-                <div id="voice-live" hidden>
-                    <button type="button" id="voice-hold" class="hold" aria-pressed="false">"Hold to talk"</button>
-                    <p class="hint">"Or hold the space bar."</p>
-                    <label class="check">
-                        <input type="checkbox" id="voice-handsfree" />
-                        "Hands-free: the microphone stays on"
-                    </label>
-                    <h3>"Transcript"</h3>
-                    <ol class="transcript" id="voice-transcript" aria-live="polite"></ol>
-                    <h3>"Tool activity"</h3>
-                    <ul class="tool-list" id="voice-tools"></ul>
+                <div class="voice-history">
+                    <section class="voice-conversation" aria-labelledby="voice-conversation-title">
+                        <h3 id="voice-conversation-title">"Conversation"</h3>
+                        <div id="voice-transcript-empty" class="voice-empty">
+                            <p>"What would you like to get done?"</p>
+                            <ul>
+                                <li>"What needs a follow-up?"</li>
+                                <li>"Add a note to this application."</li>
+                                <li>"Help me shorten my CV summary."</li>
+                            </ul>
+                        </div>
+                        <p id="voice-announcement" class="voice-sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+                        <ol class="transcript" id="voice-transcript" role="log" aria-label="Conversation transcript" aria-live="off" aria-relevant="additions"></ol>
+                    </section>
+                    <section class="voice-activity" aria-labelledby="voice-activity-title">
+                        <h3 id="voice-activity-title">"Activity"</h3>
+                        <p id="voice-tools-empty" class="hint">"Actions and their results appear here."</p>
+                        <ul class="tool-list" id="voice-tools" aria-live="polite" aria-relevant="additions"></ul>
+                    </section>
                 </div>
             </div>
         </section>

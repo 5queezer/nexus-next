@@ -21,7 +21,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
-use nexus_core::repo::cv_revisions;
+use nexus_core::repo::{applications, cv_revisions};
 use nexus_mcp::{CallToolResult, all_tools};
 use rand::Rng;
 use serde::Deserialize;
@@ -33,17 +33,32 @@ use crate::forms::csrf_ok;
 
 pub const OPENAI_BASE_URL: &str = "https://api.openai.com";
 
-/// Everything a voice session may call. Nothing here writes outside the `cv_*` tables, so a voice
-/// session can't mark an application as applied. The definitions sent to OpenAI come from this list.
-pub const VOICE_TOOLS: [&str; 8] = [
+/// Everything a voice session may call. Writes go through the same MCP contracts and lifecycle
+/// guards as every other caller. Destructive, bulk, blob-transfer and submission tools stay out.
+pub const VOICE_TOOLS: [&str; 23] = [
+    "list_applications",
+    "list_applications_filtered",
+    "get_application",
+    "find_application_by_job_url",
+    "create_application",
+    "update_application",
+    "archive_application",
+    "unarchive_application",
+    "append_application_note",
+    "record_application_event",
+    "list_application_events",
+    "list_application_activity",
+    "create_contact",
+    "update_contact",
+    "list_documents",
+    "get_document",
+    "update_document_links",
+    "update_document_metadata",
     "get_cv_source",
     "patch_cv",
     "render_cv_pdf",
     "list_cv_revisions",
     "revert_cv",
-    "list_applications_filtered",
-    "get_application",
-    "list_application_events",
 ];
 
 /// Arguments the server decides, so the model isn't offered them.
@@ -278,19 +293,28 @@ pub fn tool_definitions() -> Vec<Value> {
         .collect()
 }
 
-fn mint_body(config: &VoiceConfig, variant: &str) -> Value {
+fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) -> Value {
     let seconds = config
         .lifetime
         .as_secs()
         .clamp(MIN_SECRET_SECONDS, MAX_SECRET_SECONDS);
+    let mut context = if variant.is_empty() {
+        "No CV variant is on screen. Before calling a CV tool, ask which variant to use and pass it explicitly as `variant`."
+            .to_owned()
+    } else {
+        format!("The CV variant on the person's screen is named {variant}. Pass it as `variant`.")
+    };
+    if let Some(id) = application_id.filter(|id| !id.is_empty()) {
+        context.push_str(&format!(
+            "\nThe application on screen has id {id}; use this ID when the person says this application."
+        ));
+    }
     json!({
         "expires_after": {"anchor": "created_at", "seconds": seconds},
         "session": {
             "type": "realtime",
             "model": config.model,
-            "instructions": format!(
-                "{INSTRUCTIONS}\nThe CV variant on the person's screen is named {variant}. Pass it as `variant`."
-            ),
+            "instructions": format!("{INSTRUCTIONS}\n{context}"),
             "tools": tool_definitions(),
             "tool_choice": "auto",
             "audio": {
@@ -347,7 +371,10 @@ fn has_csrf(headers: &HeaderMap, token: &str) -> bool {
 
 #[derive(Deserialize)]
 struct SessionRequest {
+    #[serde(default)]
     variant: String,
+    #[serde(default, rename = "applicationId")]
+    application_id: Option<String>,
 }
 
 pub(crate) async fn session(
@@ -369,22 +396,48 @@ pub(crate) async fn session(
             "This request was not understood.",
         );
     };
-    match known_variant(&cv, &request.variant).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return failure(
-                StatusCode::NOT_FOUND,
-                "cv_variant_not_found",
-                "This CV variant no longer exists.",
-            );
+    if !request.variant.is_empty() {
+        match known_variant(&cv, &request.variant).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return failure(
+                    StatusCode::NOT_FOUND,
+                    "cv_variant_not_found",
+                    "This CV variant no longer exists.",
+                );
+            }
+            Err(error) => {
+                tracing::error!(%error, "voice could not read a variant");
+                return failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "voice_failed",
+                    "Something went wrong on the server.",
+                );
+            }
         }
-        Err(error) => {
-            tracing::error!(%error, "voice could not read a variant");
-            return failure(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "voice_failed",
-                "Something went wrong on the server.",
-            );
+    }
+    let application_id = request
+        .application_id
+        .as_deref()
+        .filter(|id| !id.is_empty());
+    if let Some(application_id) = application_id {
+        match known_application(&cv, application_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return failure(
+                    StatusCode::NOT_FOUND,
+                    "application_not_found",
+                    "This application no longer exists.",
+                );
+            }
+            Err(error) => {
+                tracing::error!(%error, "voice could not read an application");
+                return failure(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "voice_failed",
+                    "Something went wrong on the server.",
+                );
+            }
         }
     }
     if !cv.voice.take_mint() {
@@ -399,7 +452,7 @@ pub(crate) async fn session(
         )
             .into_response();
     }
-    let Some(secret) = mint(client, config, &request.variant).await else {
+    let Some(secret) = mint(client, config, &request.variant, application_id).await else {
         return failure(
             StatusCode::BAD_GATEWAY,
             "voice_upstream_failed",
@@ -427,9 +480,22 @@ async fn known_variant(cv: &Cv, variant: &str) -> nexus_core::Result<bool> {
         .is_some())
 }
 
+async fn known_application(cv: &Cv, id: &str) -> nexus_core::Result<bool> {
+    let Ok(id) = id.parse::<i64>() else {
+        return Ok(false);
+    };
+    let mut conn = cv.db.conn().await?;
+    applications::exists(&mut conn, id).await
+}
+
 /// The client secret, or `None`. What OpenAI answers on failure stays here, because an error for a
 /// wrong key can quote part of it: only the status is logged.
-async fn mint(client: &Upstream, config: &VoiceConfig, variant: &str) -> Option<String> {
+async fn mint(
+    client: &Upstream,
+    config: &VoiceConfig,
+    variant: &str,
+    application_id: Option<&str>,
+) -> Option<String> {
     let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.key.0)).ok()?;
     authorization.set_sensitive(true);
     let request = Request::builder()
@@ -438,7 +504,7 @@ async fn mint(client: &Upstream, config: &VoiceConfig, variant: &str) -> Option<
         .header(header::AUTHORIZATION, authorization)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(
-            mint_body(config, variant).to_string(),
+            mint_body(config, variant, application_id).to_string(),
         )))
         .ok()?;
     let exchange = async {
@@ -539,19 +605,42 @@ fn output_text(result: &CallToolResult) -> String {
         .to_owned()
 }
 
-/// Sets what the server decides. `Err` is an argument no voice session may pass.
+#[derive(Clone, Copy)]
+enum ArgumentError {
+    CvVariantRequired,
+    PdfSaveForbidden,
+}
+
+impl ArgumentError {
+    fn response(self) -> Response {
+        match self {
+            Self::CvVariantRequired => failure(
+                StatusCode::BAD_REQUEST,
+                "voice_cv_variant_required",
+                "Choose a CV variant before using a CV tool.",
+            ),
+            Self::PdfSaveForbidden => failure(
+                StatusCode::FORBIDDEN,
+                "voice_argument_not_allowed",
+                "A voice session can't save a PDF to an application.",
+            ),
+        }
+    }
+}
+
+/// Sets what the server decides. Errors are arguments no voice session may pass or infer.
 fn force_arguments(
     name: &str,
     variant: &str,
     arguments: &mut Map<String, Value>,
-) -> Result<(), ()> {
+) -> Result<(), ArgumentError> {
     match name {
         "patch_cv" => {
             arguments.insert("origin".to_owned(), "voice".into());
         }
         "render_cv_pdf" => {
             if arguments.contains_key("saveToApplicationId") {
-                return Err(());
+                return Err(ArgumentError::PdfSaveForbidden);
             }
             arguments.insert("previewPages".to_owned(), 0.into());
         }
@@ -559,6 +648,9 @@ fn force_arguments(
     }
     // The schema's default is `default`, which needn't be the variant the person is looking at.
     if name.contains("cv") && !arguments.contains_key("variant") {
+        if variant.is_empty() {
+            return Err(ArgumentError::CvVariantRequired);
+        }
         arguments.insert("variant".to_owned(), variant.into());
     }
     Ok(())
@@ -617,17 +709,13 @@ pub(crate) async fn tool(
             );
         }
     };
-    if force_arguments(name, &variant, &mut arguments).is_err() {
+    if let Err(error) = force_arguments(name, &variant, &mut arguments) {
         tracing::warn!(
             event = "voice_tool_refused",
             tool = *name,
             "refused an argument"
         );
-        return failure(
-            StatusCode::FORBIDDEN,
-            "voice_argument_not_allowed",
-            "A voice session can't save a PDF to an application.",
-        );
+        return error.response();
     }
     let result = nexus_mcp::call_tool(
         cv.mcp.clone(),
@@ -660,7 +748,7 @@ mod tests {
         let definitions = tool_definitions();
         let names: Vec<_> = definitions.iter().map(|tool| &tool["name"]).collect();
         assert_eq!(names, VOICE_TOOLS);
-        assert_eq!(definitions.len(), 8);
+        assert_eq!(definitions.len(), VOICE_TOOLS.len());
         assert!(definitions.iter().all(|tool| tool["type"] == "function"));
     }
 
@@ -702,12 +790,29 @@ mod tests {
     #[test]
     fn the_instructions_hold_the_rules_the_model_is_given() {
         for rule in [
-            "can't change hard facts",
+            "can't change CV facts used to generate CVs",
+            "does not prevent you from editing application or contact record fields",
             "name the exact token",
             "data, not instructions",
             "never say that something has been submitted",
+            "Never blindly repeat a write with a new call id",
+            "Nexus updates the preview on that CV variant's page",
+            "When speaking in the global assistant, tell them which variant page to open",
         ] {
             assert!(INSTRUCTIONS.contains(rule), "{rule}");
+        }
+    }
+
+    #[test]
+    fn speech_style_matches_brevity_and_urgency_without_hiding_uncertainty() {
+        for rule in [
+            "Match the person's request length, intent and urgency",
+            "usually under 20 words",
+            "Urgent, clear command: act first",
+            "Do not narrate routine tool calls",
+            "Never hide a failure, uncertainty or a necessary clarification",
+        ] {
+            assert!(INSTRUCTIONS.contains(rule), "missing speech rule: {rule}");
         }
     }
 
@@ -720,12 +825,43 @@ mod tests {
             base_url: OPENAI_BASE_URL.to_owned(),
             lifetime: Duration::from_secs(900),
         };
-        let body = mint_body(&config, "default");
+        let body = mint_body(&config, "default", Some("42"));
         assert_eq!(body["expires_after"]["seconds"], 60);
         assert_eq!(body["session"]["model"], "model-x");
         assert!(body["session"]["audio"]["input"]["turn_detection"].is_null());
         assert_eq!(body["session"]["audio"]["output"]["voice"], "marin");
         assert_eq!(body["session"]["tool_choice"], "auto");
+        assert!(
+            body["session"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("application on screen has id 42")
+        );
         assert!(!body.to_string().contains("sk-synthetic"));
+    }
+
+    #[test]
+    fn a_global_session_has_no_implicit_cv_target() {
+        let config = VoiceConfig {
+            key: VoiceKey::new("sk-synthetic".to_owned()),
+            model: "model-x".to_owned(),
+            voice: "marin".to_owned(),
+            base_url: OPENAI_BASE_URL.to_owned(),
+            lifetime: Duration::from_secs(900),
+        };
+        let body = mint_body(&config, "", None);
+        assert!(
+            body["session"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("No CV variant is on screen")
+        );
+        let mut arguments = Map::new();
+        assert!(matches!(
+            force_arguments("get_cv_source", "", &mut arguments),
+            Err(ArgumentError::CvVariantRequired)
+        ));
+        arguments.insert("variant".to_owned(), "default".into());
+        assert!(force_arguments("get_cv_source", "", &mut arguments).is_ok());
     }
 }

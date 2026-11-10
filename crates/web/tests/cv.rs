@@ -934,6 +934,22 @@ async fn the_microphone_and_openai_are_allowed_only_on_a_variant_page_with_voice
     assert!(page.contains("/assets/cv.js"));
     assert!(!page.contains("sk-synthetic"), "the key isn't in the page");
 
+    let (_, headers, page) = get(&on, "/assistant").await;
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(
+        csp.contains("connect-src 'self' https://api.openai.com"),
+        "{csp}"
+    );
+    assert_eq!(headers["permissions-policy"], "microphone=(self)");
+    assert!(page.contains("/assets/voice.js"));
+    assert!(
+        page.contains("aria-current=\"page\">Assistant</a>"),
+        "{page}"
+    );
+    assert!(page.contains("Nexus workspace"), "{page}");
+    assert!(!page.contains("Working with"));
+    assert!(!page.contains("No page context"));
+
     for path in ["/cv", "/cv/facts"] {
         let (_, headers, page) = get(&on, path).await;
         let csp = headers["content-security-policy"].to_str().unwrap();
@@ -956,16 +972,93 @@ async fn the_microphone_and_openai_are_allowed_only_on_a_variant_page_with_voice
 }
 
 #[tokio::test]
+async fn voice_controls_and_history_are_separate_and_states_are_accessible() {
+    let f = locked().await;
+    let on = build(&f.state, &f.dir, Some(voice()));
+    for path in ["/assistant", VARIANT] {
+        let (_, _, page) = get(&on, path).await;
+        for id in [
+            "voice-phase",
+            "voice-mic-state",
+            "voice-hold-label",
+            "voice-interrupt",
+            "voice-transcript-empty",
+            "voice-tools-empty",
+        ] {
+            assert!(page.contains(&format!("id=\"{id}\"")), "{path}: {id}");
+        }
+        assert!(page.contains("data-phase=\"idle\""));
+        assert!(page.contains("Microphone off"));
+        assert!(page.contains("End conversation"));
+        assert!(page.contains("aria-relevant=\"additions\""));
+        assert!(page.contains("class=\"voice-history\""));
+        let history = page.split("class=\"voice-history\"").nth(1).unwrap();
+        assert!(history.contains("id=\"voice-transcript\""));
+        assert!(history.contains("id=\"voice-tools\""));
+        assert!(!history.contains("id=\"voice-live\""));
+    }
+}
+
+#[tokio::test]
 async fn no_page_has_inline_script_or_style() {
     let f = locked().await;
     let on = build(&f.state, &f.dir, Some(voice()));
-    for path in ["/cv", VARIANT, "/cv/facts"] {
+    for path in ["/cv", VARIANT, "/cv/facts", "/assistant"] {
         let (_, _, page) = get(&on, path).await;
         assert!(!page.contains(" style="), "{path}");
         assert!(!page.contains(" onclick"), "{path}");
         for script in page.split("<script").skip(1) {
             assert!(script.trim_start().starts_with("src="), "{path}: {script}");
         }
+    }
+}
+
+#[tokio::test]
+async fn assistant_validates_and_pins_only_record_ids_as_page_context() {
+    let f = locked().await;
+    let created = nexus_mcp::call_tool(
+        std::sync::Arc::new(f.state.clone()),
+        &[SCOPE_TOOLS],
+        "test",
+        "create_application",
+        json!({
+            "company": "Example & Partners",
+            "role": "Platform <Engineer>",
+            "status": "inbound"
+        }),
+    )
+    .await;
+    assert_ne!(created.is_error, Some(true));
+    let created = created.structured_content.unwrap();
+    let id = created["id"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| created["id"].as_i64().map(|id| id.to_string()))
+        .unwrap();
+    let on = build(&f.state, &f.dir, Some(voice()));
+
+    let (_, _, application) = get(&on, &format!("/assistant?applicationId={id}")).await;
+    assert!(
+        application.contains(&format!("data-application-id=\"{id}\"")),
+        "{application}"
+    );
+    assert!(application.contains("Application: Example &amp; Partners"));
+    assert!(application.contains("Platform &lt;Engineer&gt;"));
+    assert!(!application.contains("data-variant=\"default\""));
+
+    let (_, _, variant) = get(&on, "/assistant?variant=default").await;
+    assert!(variant.contains("CV: default"));
+    assert!(variant.contains("data-variant=\"default\""));
+    assert!(!variant.contains("data-application-id"));
+
+    for uri in [
+        "/assistant?applicationId=999999".to_owned(),
+        format!("/assistant?applicationId={id}&variant=default"),
+    ] {
+        let (_, _, page) = get(&on, &uri).await;
+        assert!(page.contains("Nexus workspace"), "{uri}: {page}");
+        assert!(!page.contains("data-application-id"), "{uri}: {page}");
+        assert!(!page.contains("data-variant=\"default\""), "{uri}: {page}");
     }
 }
 

@@ -1,6 +1,6 @@
-//! The gate of SPEC section 9b: a voice session reaches the eight allowed tools and nothing else, so
-//! it can't mark an application `applied`. Runs the real router behind the real login on a real
-//! socket, against a local stand-in for OpenAI. All data is invented.
+//! The voice gate: a session reaches the explicit internal-management tools and nothing else.
+//! Runs the real router behind the real login on a real socket, against a local stand-in for
+//! OpenAI. All data is invented.
 
 mod support;
 
@@ -433,7 +433,7 @@ const UNKNOWN_NAMES: [&str; 10] = [
 ];
 
 #[tokio::test(flavor = "multi_thread")]
-async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the_cv_tables() {
+async fn the_allowlist_permits_internal_updates_but_keeps_destructive_and_external_tools_out() {
     assert_eq!(all_tools().len(), 40);
     let h = start(Duration::from_secs(900), true).await;
     let id = h.seed().await;
@@ -473,7 +473,10 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
         assert_eq!(facts_and_history(&h.db).await, facts, "{name}");
         refused += 1;
     }
-    assert_eq!(refused, 32 + UNKNOWN_NAMES.len());
+    assert_eq!(
+        refused,
+        all_tools().len() - VOICE_TOOLS.len() + UNKNOWN_NAMES.len()
+    );
 
     // The allowed ones, each carrying the same attempt to change an application.
     let with_attempt = |name: &str, own: Value| {
@@ -655,7 +658,8 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
     );
     run("list_application_events", json!({})).await;
 
-    // The refused arguments were live: run directly, they do what the gate kept out.
+    // Recording an event updates the private Nexus history and lifecycle. It does not perform any
+    // external submission; the prompt says that distinction explicitly.
     let status_now = |db: Db, id: String| async move {
         applications::get(&mut db.conn().await.unwrap(), id.parse().unwrap())
             .await
@@ -664,15 +668,15 @@ async fn no_tool_but_the_allowed_ones_runs_and_no_allowed_one_writes_outside_the
             .status
     };
     assert_eq!(status_now(h.db.clone(), id.clone()).await, "inbound");
-    let control = nexus_mcp::call_tool(
-        control_state(&h.db),
-        &[SCOPE_TOOLS],
-        "mcp",
-        "record_application_event",
-        lifecycle_arguments(&id, &expected, "record_application_event"),
-    )
-    .await;
-    assert_ne!(control.is_error, Some(true), "{:?}", control.content);
+    let (status, recorded) = login
+        .tool(
+            &voice,
+            "record_application_event",
+            lifecycle_arguments(&id, &expected, "record_application_event"),
+        )
+        .await;
+    assert_eq!(status, 200, "{recorded}");
+    assert_eq!(recorded["isError"], false, "{recorded}");
     assert_eq!(status_now(h.db.clone(), id.clone()).await, "applied");
     assert_ne!(
         outside_cv(&h.db, h.dir.path()).await,
@@ -690,6 +694,32 @@ async fn only_a_live_session_of_this_login_with_its_token_gets_through() {
     assert_ne!(first.csrf, second.csrf);
     let voice = first.voice_id().await;
     let baseline = outside_cv(&h.db, h.dir.path()).await;
+
+    // A platform-wide session needs no CV context, but may receive a validated application id from
+    // the page. The model gets only the server-generated id context, not stored application text.
+    let (status, global) = first
+        .post(
+            "/api/voice/session",
+            &[("cookie", &first.cookies), ("x-nexus-csrf", &first.csrf)],
+            json!({"applicationId": id}).to_string(),
+        )
+        .await;
+    assert_eq!(status, 200, "{global}");
+    let global_voice = global["voiceSessionId"].as_str().unwrap();
+    let instructions = h.stub.bodies.lock().unwrap().last().unwrap()["session"]["instructions"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(instructions.contains("No CV variant is on screen"));
+    assert!(instructions.contains(&format!("application on screen has id {id}")));
+    assert!(!instructions.contains("Gate Co"));
+    let (status, body) = first.tool(global_voice, "get_cv_source", json!({})).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "voice_cv_variant_required");
+    let (status, body) = first
+        .tool(global_voice, "get_cv_source", json!({"variant": "default"}))
+        .await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
 
     let patch = json!({
         "name": "patch_cv",
@@ -813,6 +843,18 @@ async fn only_a_live_session_of_this_login_with_its_token_gets_through() {
         hits,
         "nothing was minted"
     );
+    let (status, body) = first
+        .post(
+            "/api/voice/session",
+            &[("cookie", &first.cookies), ("x-nexus-csrf", &first.csrf)],
+            json!({"applicationId": "999999"}).to_string(),
+        )
+        .await;
+    assert_eq!(
+        (status, &body["error"]["code"]),
+        (404, &json!("application_not_found"))
+    );
+    assert_eq!(h.stub.hits.load(Ordering::SeqCst), hits);
 
     // The same call does get through with everything in order, so the refusals above meant it.
     let (status, body) = first
