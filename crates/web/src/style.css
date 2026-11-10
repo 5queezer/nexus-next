@@ -92,6 +92,15 @@ nav a:hover { color: var(--ink); }
 }
 
 main { max-width: 64rem; margin: 0 auto; padding: 24px 16px 64px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .top + main { animation: page-enter 160ms ease-out; }
+}
+@keyframes page-enter {
+  from { opacity: 0.92; }
+  to { opacity: 1; }
+}
+
 h1 { font-size: 22px; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
 h2 {
   font-size: 12px;

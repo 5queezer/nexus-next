@@ -8,7 +8,12 @@ async (page) => {
   }
   const context = page.context();
   await context.addInitScript(() => {
-    window.__navigation = { transition: false, frames: [] };
+    window.__navigation = { transition: false, frames: [], pageFades: 0 };
+    document.addEventListener('animationstart', event => {
+      if (event.animationName === 'page-enter' && event.target.matches('.top + main')) {
+        window.__navigation.pageFades++;
+      }
+    });
     window.addEventListener('pagereveal', event => {
       window.__navigation.transition = !!event.viewTransition;
       let remaining = 12;
@@ -46,6 +51,9 @@ async (page) => {
           await page.waitForFunction(() => window.__navigation.frames.length === 12);
           const probe = await page.evaluate(() => window.__navigation);
           if (probe.transition) throw new Error(`Page transition overlays destination page: ${path}`);
+          if (probe.pageFades !== (reducedMotion === 'reduce' ? 0 : 1)) {
+            throw new Error(`Unexpected number of page fades: ${path} (${reducedMotion})`);
+          }
           const background = colorScheme === 'light' ? 'rgb(246, 245, 241)' : 'rgb(20, 22, 26)';
           if (probe.frames.some(f => !f.font.startsWith('system-ui') || f.background !== background || f.headerHeight !== 53)) {
             throw new Error(`Unstyled navigation frame: ${path}`);
