@@ -34,7 +34,10 @@ fi
 grep -q '^NEXUS_ENV_LABEL=' /etc/nexus-staging/nexus.env || echo 'NEXUS_ENV_LABEL=Staging' >> /etc/nexus-staging/nexus.env
 
 systemctl stop nexus-staging 2>/dev/null || true
-if [ "$fresh" = yes ] || [ ! -f "$data/nexus.db" ]; then
+grep -q '^NEXUS_OWNER_ID=' /etc/nexus-staging/nexus.env \
+    || printf '%s\n' 'NEXUS_OWNER_ID=staging-owner' 'NEXUS_OWNER_EMAIL=owner@example.org' >> /etc/nexus-staging/nexus.env
+if [ "$fresh" = from-prod ]; then
+    # Real data and the real passphrase, for a check that needs them. Run --fresh afterwards.
     install -d -m 0700 -o nexus -g nexus "$data"
     rm -f "$data/nexus.db" "$data/nexus.db-wal" "$data/nexus.db-shm"
     sudo -u nexus python3 -c '
@@ -45,7 +48,14 @@ src.backup(dst)
 ' "$prod" "$data"
     rsync -a --delete "$prod/blobs/" "$data/blobs/"
     install -m 0600 -o nexus -g nexus "$prod/owner-passphrase.argon2" "$data/owner-passphrase.argon2"
-    echo "staging data: fresh copy of production"
+    echo "staging data: a copy of production. It is real data behind a second login: run deploy/stage --fresh when done."
+elif [ "$fresh" = yes ] || [ ! -f "$data/nexus.db" ]; then
+    # Empty, with a passphrase of its own: a guess at staging's login must say nothing about production's.
+    install -d -m 0700 -o nexus -g nexus "$data"
+    rm -rf "$data/nexus.db" "$data/nexus.db-wal" "$data/nexus.db-shm" "$data/blobs" "$data/cache" "$data/owner-passphrase.argon2" "$data/openai-api-key"
+    pass=$(openssl rand -base64 24)
+    printf '%s\n' "$pass" | sudo -u nexus /usr/local/bin/nexus-staging set-passphrase --data-dir "$data" >/dev/null
+    echo "staging data: empty. Its passphrase, shown once: $pass"
 fi
 
 install -d -m 0755 /usr/local/share/nexus

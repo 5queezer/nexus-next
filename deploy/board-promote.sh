@@ -32,6 +32,8 @@ for _ in $(seq 30); do
     if curl -fsS -o /dev/null http://127.0.0.1:8091/healthz; then
         echo "$rev" > "$share/prod.rev"
         chmod 0644 "$share/prod.rev"
+        # Each snapshot is a plain copy of the database: the newest three are enough to go back.
+        ls -1d /var/lib/nexus/pre-upgrade-2* | sort | head -n -3 | xargs -r rm -rf --
         echo "production runs $rev. Snapshot: $snap"
         exit 0
     fi

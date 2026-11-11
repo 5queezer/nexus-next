@@ -346,6 +346,10 @@ CV facts and approvals remain owner-only. Without a selected CV variant, CV oper
 
 Upgrade: `sudo systemctl start nexus-backup.service`, install the new binary (keeping `nexus.prev`), `sudo systemctl restart nexus`, check healthz.
 
+### Staging and promote
+
+`deploy/stage` builds this checkout, installs it as `nexus-staging` on the board beside production (port 8092, `tailscale serve` on 8445) and keeps staging's data. `deploy/stage --fresh` starts it empty with a new passphrase of its own, printed once. `deploy/stage --from-prod` gives it a copy of production's data and passphrase for a check that needs real data: that is real data behind a second login, so run `--fresh` when the check is done. `deploy/promote` installs the staged binary as production after a database snapshot, goes back to the previous binary if production does not answer, and keeps the newest three snapshots.
+
 Rollback: `sudo systemctl stop nexus`, `sudo install -m 0755 /usr/local/bin/nexus.prev /usr/local/bin/nexus`, start. Database migrations only move forward. If the new version migrated the database, an older binary may refuse it; restore the pre-upgrade backup (section 6) with `--force --keep-credentials`.
 
 ## 9. Cutover checklist (SPEC section 7)
