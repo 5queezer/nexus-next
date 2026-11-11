@@ -52,7 +52,7 @@ const REVIEW = `<!doctype html><meta charset="utf-8">
     }
     if (url.pathname.endsWith("/try")) {
       tried.push(new URLSearchParams(route.request().postData()).get("source"));
-      return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 2, layout: ["2 pages.", "A note."] } });
+      return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 2, layout: ["2 pages.", "A note."], words: [] } });
     }
     if (url.pathname.endsWith("/fit")) {
       const source = new URLSearchParams(route.request().postData()).get("source");

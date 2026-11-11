@@ -36,6 +36,9 @@ pub const MAX_RENDER_RESULT_BYTES: usize = 12 * 1024 * 1024;
 /// Far above what ten pages hold, and below what would strain the server, which keeps a copy.
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Completions are for someone typing: later than this they are of no use, and their child must
+/// not hold the one compile's place for longer.
+pub const COMPLETE_TIMEOUT: Duration = Duration::from_secs(3);
 /// An honest 10-page CV peaks at 71 MiB on x86-64, with the check's four drawings of each page. Its
 /// figure on the board is still to come: before those drawings, 9 pages took 48 MB there. The unit's
 /// `MemoryHigh=256M` is the real ceiling, not `MemoryMax`: above it the kernel stalls the whole cgroup,
@@ -130,6 +133,35 @@ pub struct RenderRequest {
     pub stamp: bool,
 }
 
+/// Asks what the compiler can write at a place in a source: see [`Renderer::complete`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompleteRequest {
+    pub source: String,
+    pub facts: Facts,
+    /// In UTF-16 units, as a browser counts a textarea's text.
+    pub cursor: u32,
+    /// Whether the owner asked, with Ctrl+Space, or only typed.
+    pub explicit: bool,
+}
+
+/// The choices at a caret, and where the text they replace starts, counted as the caret was.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Completions {
+    pub from: u32,
+    pub items: Vec<Completion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Completion {
+    pub label: String,
+    /// What to write if not the label, with `${...}` where the caret can go.
+    pub apply: Option<String>,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rendered {
@@ -172,6 +204,11 @@ pub struct RenderedText {
     /// No check reads these and no approval stores them. Empty for a document of too many words.
     #[serde(default)]
     pub places: Vec<LinePlace>,
+    /// Where `/main.typ` writes each word of `places`, in UTF-16 units, or none for a word the facts
+    /// or the template library wrote: the editor's caret goes there from a click on the word in the
+    /// preview. Advice like `places`, and only there when a preview was asked for.
+    #[serde(default)]
+    pub sources: Vec<Vec<Option<u32>>>,
     /// How the pages are filled, and where a line or a page breaks badly. Advice like `places`: no
     /// check reads it and no approval stores it.
     #[serde(default)]
@@ -318,6 +355,27 @@ impl Renderer {
                 timeout,
             } => worker::render_in_child(exe, *rss_limit_bytes, *timeout, &req).await,
             Self::InProcess => tokio::task::spawn_blocking(move || compile::render(&req))
+                .await
+                .map_err(|e| RenderError::Worker(e.to_string()))?,
+        }
+    }
+
+    /// What Typst offers at a caret in `req.source`, in a child with the compile's memory limit and
+    /// [`COMPLETE_TIMEOUT`]. Nothing is laid out.
+    pub async fn complete(&self, req: CompleteRequest) -> Result<Completions, RenderError> {
+        if req.source.len() > MAX_SOURCE_BYTES {
+            return Err(RenderError::SourceTooLarge);
+        }
+        match self {
+            Self::Subprocess {
+                exe,
+                rss_limit_bytes,
+                timeout,
+            } => {
+                let timeout = COMPLETE_TIMEOUT.min(*timeout);
+                worker::complete_in_child(exe, *rss_limit_bytes, timeout, &req).await
+            }
+            Self::InProcess => tokio::task::spawn_blocking(move || compile::complete(&req))
                 .await
                 .map_err(|e| RenderError::Worker(e.to_string()))?,
         }

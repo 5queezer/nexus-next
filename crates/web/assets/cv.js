@@ -396,12 +396,83 @@
       byId("cv-find-miss").hidden = false;
       return;
     }
+    select(editor, at, at + word.length);
+  }
+
+  function select(editor, from, to) {
     editor.focus();
-    editor.setSelectionRange(at, at + word.length);
+    editor.setSelectionRange(from, to);
     // A textarea doesn't scroll to its selection by itself: the word's line goes to the middle.
     const line = parseFloat(getComputedStyle(editor).lineHeight) || 1.4 * parseFloat(getComputedStyle(editor).fontSize);
-    const above = editor.value.slice(0, at).split("\n").length - 1;
+    const above = editor.value.slice(0, from).split("\n").length - 1;
     editor.scrollTop = Math.max(0, above * line - editor.clientHeight / 2);
+  }
+
+  // The words of the last text drawn for the editor: for each its page from 0, its box as shares of
+  // the page, and where `text` writes it, or null for a word the facts or the template wrote.
+  let placed = { text: null, words: [] };
+
+  // A click on a word in the preview selects it where the editor's text writes it, or says that the
+  // text doesn't. And the word the caret stands in or after is marked in the preview. Both read the
+  // words of the editor's text as it is, which costs one compile if the preview shows the stored one.
+  function leadToSource() {
+    const pages = byId("cv-preview-pages");
+    const editor = byId("cv-source");
+    if (!pages || !editor) return;
+    const mark = document.createElement("span");
+    mark.className = "picture-mark";
+    pages.classList.add("leads");
+    pages.addEventListener("click", async (event) => {
+      const page = [...pages.children].indexOf(event.target);
+      if (page < 0) return;
+      const box = event.target.getBoundingClientRect();
+      const x = (event.clientX - box.left) / box.width;
+      const y = (event.clientY - box.top) / box.height;
+      if (placed.text !== editor.value) {
+        const text = editor.value;
+        const form = new URLSearchParams({ csrf: editor.form.elements.csrf.value, source: text });
+        try {
+          const response = await fetch(`${base}/try`, { method: "POST", body: form });
+          if (response.ok) placed = { text, words: (await response.json()).words };
+        } catch {
+          // No words, so the click finds none.
+        }
+      }
+      if (placed.text !== editor.value) return;
+      const word = placed.words.find(([on, left, top, width, height]) => on === page && x >= left && x <= left + width && y >= top && y <= top + height);
+      if (!word) return;
+      byId("cv-find-miss").hidden = word[5] !== null;
+      if (word[5] === null) return;
+      const written = /^[\p{L}\p{N}]*/u.exec(editor.value.slice(word[5]))[0];
+      select(editor, word[5], word[5] + written.length);
+      follow();
+    });
+    const follow = () => {
+      const at = editor.selectionStart;
+      // The last word written on the caret's line at or before it.
+      const line = editor.value.lastIndexOf("\n", at - 1);
+      let word = null;
+      if (placed.text === editor.value && document.activeElement === editor) {
+        for (const next of placed.words) {
+          if (next[5] !== null && next[5] > line && next[5] <= at && (!word || next[5] > word[5])) word = next;
+        }
+      }
+      const image = word && pages.children[word[0]];
+      if (!image) {
+        mark.remove();
+        return;
+      }
+      const [, left, top, width, height] = word;
+      Object.assign(mark.style, {
+        left: `${image.offsetLeft + left * image.offsetWidth}px`,
+        top: `${image.offsetTop + top * image.offsetHeight}px`,
+        width: `${width * image.offsetWidth}px`,
+        height: `${height * image.offsetHeight}px`,
+      });
+      pages.after(mark);
+    };
+    for (const kind of ["keyup", "mouseup", "blur"]) editor.addEventListener(kind, follow);
+    root.addEventListener("cv-compiled", follow);
   }
 
   // What the preview is to the editor's text, said beside the Compile button. A `problem` with a line
@@ -455,6 +526,7 @@
       compileState(placed ? "Does not compile:" : first ? `Does not compile: ${first.message}` : note, placed);
       return;
     }
+    placed = { text: editor.value, words: body.words };
     compileState("Preview is up to date", null);
     setNote(byId("cv-preview-note"), "");
     byId("cv-preview-unsaved").hidden = false;
@@ -604,6 +676,7 @@
   guardTyping();
   chooseTemplate();
   findInSource();
+  leadToSource();
   loadPreview(shown);
   connect();
 })();

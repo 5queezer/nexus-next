@@ -12,12 +12,13 @@ use typst::syntax::{FileId, RootedPath, Source, Span, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
+use typst_ide::Jump;
 use typst_layout::{Page, PagedDocument};
 use typst_pdf::PdfOptions;
 
 use crate::{
-    Diagnostic, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest,
-    Rendered, Severity,
+    CompleteRequest, Completion, Completions, Diagnostic, LinePlace, MAX_PAGES, MAX_PDF_BYTES,
+    MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest, Rendered, Severity,
 };
 
 const NEXUS_TYP: &str = include_str!("nexus.typ");
@@ -173,6 +174,46 @@ impl World for CvWorld {
     }
 }
 
+impl typst_ide::IdeWorld for CvWorld {
+    fn upcast(&self) -> &dyn World {
+        self
+    }
+}
+
+/// For each placed word, where `/main.typ` writes it, as the compiler's own jump from a click on the
+/// word's start finds it. In UTF-16 units, as a browser counts a textarea's text. None for a word that
+/// the facts or the template library wrote.
+fn word_sources(
+    world: &CvWorld,
+    document: &PagedDocument,
+    places: &[LinePlace],
+) -> Vec<Vec<Option<u32>>> {
+    let source_of = |page: &Page, [x, y, width, height]: [f32; 4]| {
+        let size = page.frame.size();
+        // Inside the first letter's left half, where the jump lands before it.
+        let click = Point::new(
+            size.x * f64::from(x + width.min(height) / 8.0),
+            size.y * f64::from(y + height / 2.0),
+        );
+        match typst_ide::jump_from_click_in_frame(world, document, &page.frame, click)? {
+            Jump::File(id, byte) if id == world.main.id() => {
+                u32::try_from(world.main.lines().byte_to_utf16(byte)?).ok()
+            }
+            _ => None,
+        }
+    };
+    places
+        .iter()
+        .map(|place| {
+            let Some(page) = document.pages().get(place.page as usize) else {
+                return Vec::new();
+            };
+            let words = place.words.iter();
+            words.map(|word| source_of(page, *word)).collect()
+        })
+        .collect()
+}
+
 fn no_such_file(id: FileId) -> FileError {
     FileError::Other(Some(
         format!(
@@ -181,6 +222,15 @@ fn no_such_file(id: FileId) -> FileError {
         )
         .into(),
     ))
+}
+
+fn bounded(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut bounded: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if chars.next().is_some() {
+        bounded.push('…');
+    }
+    bounded
 }
 
 fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
@@ -195,14 +245,6 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
             .map(|point| typst::syntax::DiagSpan::from(point.span))
             .find(|span| in_main(*span))
             .unwrap_or(diag.span)
-    };
-    let bounded = |text: &str| {
-        let mut chars = text.chars();
-        let mut bounded: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
-        if chars.next().is_some() {
-            bounded.push('…');
-        }
-        bounded
     };
     let mut result = Diagnostic {
         severity: match diag.severity {
@@ -238,6 +280,39 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
         }
     }
     result
+}
+
+/// Typst offers every name in scope after a `#`, a few hundred. More than this crosses to no editor.
+const MAX_COMPLETIONS: usize = 1000;
+
+/// What Typst itself offers at the caret, in the same three files. It reads the syntax and evaluates
+/// what the caret stands in, without laying anything out. That is still the source's own code, which
+/// can run for ever, so it runs where a compile does.
+pub(crate) fn complete(req: &CompleteRequest) -> Result<Completions, RenderError> {
+    let world = CvWorld::new(&req.source, &req.facts)?;
+    let lines = world.main.lines();
+    let offered = lines.utf16_to_byte(req.cursor as usize).and_then(|cursor| {
+        let document = None::<&PagedDocument>;
+        typst_ide::autocomplete(&world, document, &world.main, cursor, req.explicit)
+    });
+    let Some((from, items)) = offered else {
+        return Ok(Completions::default());
+    };
+    let from = lines
+        .byte_to_utf16(from)
+        .and_then(|at| u32::try_from(at).ok());
+    let items = items
+        .into_iter()
+        .take(MAX_COMPLETIONS)
+        .map(|item| Completion {
+            label: bounded(&item.label),
+            apply: item.apply.as_deref().map(bounded),
+            detail: item.detail.as_deref().map(bounded),
+        });
+    Ok(Completions {
+        from: from.unwrap_or(req.cursor),
+        items: items.collect(),
+    })
 }
 
 /// One stamp, translucent so that the CV stays readable beneath it. Its own document, so that nothing
@@ -317,6 +392,10 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     refuse_odd_pages(&world, &document)?;
     let mut text = crate::extract::rendered_text(&document)?;
     text.layout = crate::layout::layout(&document, &text, crate::template::pages_of(&req.source));
+    // Only a picture is clicked on.
+    if req.preview_pages > 0 {
+        text.sources = word_sources(&world, &document, &text.places);
+    }
     let document = if req.stamp {
         stamped(&document)?
     } else {

@@ -94,6 +94,11 @@ const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="co
 </section></div></div></div></main>
 <script src="/assets/editor.js" defer></script><script src="/assets/cv.js" defer></script>`;
 
+// Where a compile would say the words of a text stand: each on its own line of the page, at a tenth
+// of its height a line, written where the text holds it. A word in capitals comes from the facts.
+const words_of = (text) =>
+  [...text.matchAll(/\p{L}+/gu)].map((word, line) => [0, 0.1, 0.1 * (line + 1), 0.2, 0.05, word[0] === word[0].toUpperCase() ? null : word.index]);
+
 const asset = (name) => fs.readFileSync(path.join(__dirname, name), "utf8");
 
 // What the tokenizer makes of a source: each coloured stretch as "kinds:text", plain text left out.
@@ -127,6 +132,7 @@ const CASES = [
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   let source = SOURCE;
   const tried = [];
+  const asked = [];
   // While set, an answer to `/try` waits for it.
   let held = null;
   await page.route("**/*", async (route) => {
@@ -137,13 +143,28 @@ const CASES = [
       return route.fulfill({ contentType: "text/javascript", body: asset(`..${url.pathname}`) });
     }
     if (url.pathname.endsWith("/preview.json")) return route.fulfill({ json: { revision: 1, state: "draft", pages: 1 } });
+    if (url.pathname.endsWith("/complete")) {
+      const form = new URLSearchParams(route.request().postData());
+      asked.push([form.get("source").slice(0, Number(form.get("cursor"))), form.has("explicit")]);
+      await held;
+      // As the compiler answers: every name from where the word starts, or the arguments of a call.
+      const word = /[a-z]*$/.exec(asked.at(-1)[0])[0];
+      const items = asked.at(-1)[0].endsWith("(")
+        ? [{ label: "size", apply: "size: ${}", detail: "The size of the glyphs." }]
+        : [
+            { label: "text", apply: "text(${})", detail: "Customizes the look of text." },
+            { label: "table", apply: "table(\n\t${}\n)", detail: "A table of items." },
+            { label: "emph", apply: "emph[${}]", detail: null },
+          ];
+      return route.fulfill({ json: { from: Number(form.get("cursor")) - word.length, items } });
+    }
     if (url.pathname.endsWith("/try")) {
       const text = new URLSearchParams(route.request().postData()).get("source");
       tried.push(text);
       await held;
       // A text with `#broken` in it doesn't compile, at that word.
       const line = text.split("\n").findIndex((row) => row.includes("#broken"));
-      if (line < 0) return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 1, layout: [] } });
+      if (line < 0) return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 1, layout: [], words: words_of(text) } });
       const problem = { severity: "error", message: "unknown variable: broken", file: "/main.typ", line: line + 1, column: text.split("\n")[line].indexOf("#broken") + 2, hints: ["Is it spelled right?"] };
       return route.fulfill({ status: 422, json: { message: "This text doesn't compile.", tokens: [], diagnostics: [problem] } });
     }
@@ -347,6 +368,8 @@ const CASES = [
     await page.keyboard.type("#");
     assert.deepEqual(await offered(), [], text);
   }
+  await page.waitForTimeout(400);
+  assert.deepEqual([await offered(), asked], [[], []]);
 
   // In the page setup come its arguments, without the ones written, and then their values. The
   // select beside the editor follows what a choice writes.
@@ -406,6 +429,68 @@ const CASES = [
   // Elsewhere there is nothing to offer, and asking says so by showing nothing.
   await put("Plain text (in brackets|)");
   await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), []);
+
+  // Where the editor's own list has nothing, the compiler is asked after a pause in the typing,
+  // and its one answer serves while the word goes on.
+  await put("|");
+  await page.keyboard.type("#he");
+  assert.deepEqual([await offered(), asked], [["#header"], []]);
+  await page.keyboard.press("Escape");
+  await put("Some |");
+  await page.keyboard.type("#t");
+  assert.deepEqual(await offered(), []);
+  await page.locator("#cv-complete li").first().waitFor();
+  assert.deepEqual([await offered(), asked], [["text", "table"], [["Some #t", false]]]);
+  assert.equal(await picked(), "textCustomizes the look of text.");
+  await page.keyboard.type("a");
+  assert.deepEqual(await offered(), ["table"]);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("e");
+  assert.deepEqual(await offered(), ["text"]);
+  // The caret goes where the compiler would have an editor stop, and a tab in its text is two spaces.
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "Some #text(|)");
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), "Some #te");
+  await put("Some #t|");
+  await page.keyboard.type("a");
+  assert.deepEqual(await offered(), ["table"]);
+  await page.keyboard.press("Tab");
+  assert.equal(await seen(), "Some #table(\n  |\n)");
+  assert.equal(asked.length, 1);
+  // Asked for with Ctrl+Space where the list has nothing, it says so to the compiler.
+  await put("#text(|)");
+  await page.keyboard.press("Control+Space");
+  await page.locator("#cv-complete li").first().waitFor();
+  assert.deepEqual([await offered(), asked.at(-1)], [["size"], ["#text(", true]]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#text(size: |)");
+  // Asked for where the list has choices, the compiler's come after them.
+  await put("|");
+  await page.keyboard.type("#e");
+  assert.deepEqual(await offered(), ["#employment", "#education"]);
+  await page.keyboard.press("Control+Space");
+  await page.locator("#cv-complete li").nth(2).waitFor();
+  assert.deepEqual([await offered(), asked.at(-1)], [["#employment", "#education", "emph"], ["#e", true]]);
+  await page.keyboard.type("mph");
+  assert.deepEqual(await offered(), ["emph"]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#emph[|]");
+  // Plain typing asks nothing, and an answer that comes after the caret has left is dropped.
+  await put("|");
+  await page.keyboard.type("Plain words (and more");
+  await page.waitForTimeout(400);
+  assert.equal(asked.length, 3);
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.keyboard.type(" #t");
+  while (asked.length < 4) await page.waitForTimeout(20);
+  await page.keyboard.type(" on");
+  release();
+  await page.waitForTimeout(100);
   assert.deepEqual(await offered(), []);
 
   // The text with \u27e6 and \u27e7 round the selection, for the keys that move it.
@@ -526,6 +611,43 @@ const CASES = [
   assert.equal(await seen(), "#header()\nx|");
   await page.keyboard.press("Control+s");
   assert.deepEqual(await page.evaluate(() => window.sent), ["cv-save", "#header()\nx"]);
+
+  // A click on a word in the preview selects it in the editor, with one compile for where the words
+  // stand if the picture is not of this text. A word from the facts shows the line that says so.
+  const picture = page.locator("#cv-preview-pages img");
+  const click = (line) => picture.click({ position: { x: 0.2 * 100, y: (0.1 * line + 0.02) * 100 * (297 / 210) } });
+  await picture.evaluate((image) => {
+    image.style.width = "100px";
+  });
+  await editor.fill("alpha FACTS \u00fcber gamma\n");
+  const before = tried.length;
+  await click(3);
+  await page.waitForFunction(() => document.activeElement.id === "cv-source");
+  assert.equal(await selected(), "alpha FACTS \u27e6\u00fcber\u27e7 gamma\n");
+  assert.equal(await page.locator("#cv-find-miss").isHidden(), true);
+  await click(2);
+  await page.locator("#cv-find-miss").waitFor();
+  assert.equal(await selected(), "alpha FACTS \u27e6\u00fcber\u27e7 gamma\n");
+  await click(1);
+  await page.waitForFunction(() => document.getElementById("cv-find-miss").hidden);
+  assert.equal(await selected(), "\u27e6alpha\u27e7 FACTS \u00fcber gamma\n");
+  assert.equal(tried.length, before + 1);
+  // The word at the caret is marked in the picture while the picture is of this text.
+  const mark = () =>
+    page.evaluate(() => {
+      const mark = document.querySelector("#cv-preview > .picture-mark");
+      const image = document.querySelector("#cv-preview-pages img");
+      return mark && Math.round((mark.offsetTop - image.offsetTop) / image.offsetHeight * 10);
+    });
+  assert.equal(await mark(), 1);
+  await page.keyboard.press("End");
+  assert.equal(await mark(), 4);
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await mark(), null);
+  await page.keyboard.type("x");
+  assert.equal(await mark(), null);
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.equal(await mark(), 5);
 
   // The selects beside the editor still write its setup line, and the copy follows them.
   await editor.fill(SOURCE);

@@ -363,6 +363,9 @@ button:disabled { opacity: 0.6; cursor: progress; }
 mark { background: var(--mark-bg); color: var(--mark-ink); padding: 0 3px; border-radius: 3px; overflow-wrap: anywhere; }
 h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 16px 0 4px; }
 .preview-pages { display: grid; gap: 12px; justify-items: center; }
+/* With cv.js a word in the picture leads to the editor, and the caret's word is marked over it. */
+#cv-preview { position: relative; }
+.preview-pages.leads img { cursor: pointer; }
 .preview-pages img {
   display: block;
   width: 100%;

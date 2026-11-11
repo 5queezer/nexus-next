@@ -12,8 +12,8 @@ use tokio::sync::Semaphore;
 use tokio::time::MissedTickBehavior;
 
 use crate::{
-    Diagnostic, MAX_RENDER_RESULT_BYTES, MAX_TEXT_BYTES, RenderError, RenderRequest, Rendered,
-    RenderedText,
+    CompleteRequest, Completions, Diagnostic, MAX_RENDER_RESULT_BYTES, MAX_TEXT_BYTES, RenderError,
+    RenderRequest, Rendered, RenderedText,
 };
 
 /// Above what a limited compile returns: a result at its limit, the text at its limit, and a full
@@ -54,7 +54,21 @@ fn next_frame<'a>(output: &mut &'a [u8]) -> Result<&'a [u8], RenderError> {
     Ok(frame)
 }
 
-/// What `nexus __render` runs. Reads one JSON [`RenderRequest`] from stdin and answers on stdout.
+/// What a child is asked for. A render's JSON is its [`RenderRequest`] and nothing around it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Job {
+    Render(RenderRequest),
+    Complete(CompleteRequest),
+}
+
+enum Done {
+    Rendered(Box<Rendered>),
+    Completions(Completions),
+}
+
+/// What `nexus __render` runs. Reads one JSON [`RenderRequest`] or [`CompleteRequest`] from stdin and
+/// answers on stdout.
 pub fn run_worker() -> ! {
     // Under memory pressure the kernel takes the compile, never the server. Worth trying, not worth
     // failing a render for: the parent's RSS watch is the real limit.
@@ -67,13 +81,25 @@ pub fn run_worker() -> ! {
         .and_then(|_| {
             serde_json::from_slice(&input).map_err(|e| RenderError::Worker(e.to_string()))
         })
-        .and_then(|req: RenderRequest| crate::compile::render(&req));
+        .and_then(|job: Job| match job {
+            Job::Render(req) => {
+                crate::compile::render(&req).map(|rendered| Done::Rendered(Box::new(rendered)))
+            }
+            Job::Complete(req) => crate::compile::complete(&req).map(Done::Completions),
+        });
     let mut out = std::io::stdout().lock();
+    let json_frame = |out: &mut std::io::StdoutLock, json: serde_json::Result<Vec<u8>>| {
+        let json = json.map_err(std::io::Error::other)?;
+        write_frame(out, &json)
+    };
     let written = match result {
-        Ok(rendered) => write_rendered(&mut out, rendered),
-        Err(error) => serde_json::to_vec(&Err::<Head, _>(error))
-            .map_err(std::io::Error::other)
-            .and_then(|json| write_frame(&mut out, &json)),
+        Ok(Done::Rendered(rendered)) => write_rendered(&mut out, *rendered),
+        Ok(Done::Completions(completions)) => {
+            let answer = Ok::<_, RenderError>(completions);
+            json_frame(&mut out, serde_json::to_vec(&answer))
+        }
+        // The same frame says why to whichever the parent asked for.
+        Err(error) => json_frame(&mut out, serde_json::to_vec(&Err::<Head, _>(error))),
     };
     let flushed = written.and_then(|()| out.flush());
     std::process::exit(i32::from(flushed.is_err()))
@@ -133,8 +159,31 @@ pub(crate) async fn render_in_child(
     timeout: Duration,
     req: &RenderRequest,
 ) -> Result<Rendered, RenderError> {
-    let worker_error = |e: std::io::Error| RenderError::Worker(e.to_string());
     let input = serde_json::to_vec(req).map_err(|e| RenderError::Worker(e.to_string()))?;
+    parse_output(&run_child(exe, rss_limit_bytes, timeout, &input).await?)
+}
+
+pub(crate) async fn complete_in_child(
+    exe: &Path,
+    rss_limit_bytes: u64,
+    timeout: Duration,
+    req: &CompleteRequest,
+) -> Result<Completions, RenderError> {
+    let input = serde_json::to_vec(req).map_err(|e| RenderError::Worker(e.to_string()))?;
+    let output = run_child(exe, rss_limit_bytes, timeout, &input).await?;
+    serde_json::from_slice(next_frame(&mut output.as_slice())?)
+        .map_err(|e| RenderError::Worker(format!("bad output: {e}")))?
+}
+
+/// One job in a child of its own, which ends with this future, within the limits. Gives what the
+/// child wrote.
+async fn run_child(
+    exe: &Path,
+    rss_limit_bytes: u64,
+    timeout: Duration,
+    input: &[u8],
+) -> Result<Vec<u8>, RenderError> {
+    let worker_error = |e: std::io::Error| RenderError::Worker(e.to_string());
     let _one_compile = ONE_COMPILE
         .acquire()
         .await
@@ -166,7 +215,7 @@ pub(crate) async fn render_in_child(
     let exchange = async {
         let write = async {
             // The child may die before reading it all. Its exit status tells why.
-            let _ = stdin.write_all(&input).await;
+            let _ = stdin.write_all(input).await;
             drop(stdin);
         };
         let mut output = Vec::new();
@@ -215,5 +264,5 @@ pub(crate) async fn render_in_child(
     if !status.success() {
         return Err(RenderError::Worker(format!("worker ended with {status}")));
     }
-    parse_output(&output)
+    Ok(output)
 }

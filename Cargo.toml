@@ -59,6 +59,7 @@ tracing-subscriber = { version = "0.3.23", default-features = false, features = 
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 ttf-parser = "0.25"
 typst = "=0.15.1"
+typst-ide = "=0.15.1"
 typst-layout = "=0.15.1"
 typst-pdf = "=0.15.1"
 typst-render = "=0.15.1"

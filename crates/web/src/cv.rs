@@ -27,8 +27,9 @@ use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
 use nexus_tailor::{
-    DiffLine, Facts, HELPERS, Language, Layout, LayoutKind, LineChange, Metric, ReviewItem, Rule,
-    TEMPLATES, pages_of, review_diff, template_of, with_density, with_pages, with_template,
+    DiffLine, Facts, HELPERS, Language, Layout, LayoutKind, LineChange, LinePlace, Metric,
+    ReviewItem, Rule, TEMPLATES, pages_of, review_diff, template_of, with_density, with_pages,
+    with_template,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -90,6 +91,7 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route("/cv/variants/{variant}/preview.json", get(preview_json))
             .route("/cv/variants/{variant}/try", post(try_source))
             .route("/cv/variants/{variant}/try.png", get(try_png))
+            .route("/cv/variants/{variant}/complete", post(complete))
             .route("/cv/variants/{variant}/fit", post(fit))
             .route("/cv/variants/{variant}/cv.pdf", get(pdf))
             .route("/api/cv/{variant}/head", get(head))
@@ -2207,7 +2209,48 @@ async fn try_source(
             std::iter::once(fill_text(layout)).chain(notes)
         })
         .collect();
-    Json(json!({"key": key, "version": version, "pages": count, "layout": notes})).into_response()
+    // Each word of the pictures: its page from 0, its box as shares of the page, and where the
+    // text writes it, or null for one the facts or the template wrote. A click on it leads there.
+    let places: Vec<LinePlace> =
+        serde_json::from_value(told.value["places"].clone()).unwrap_or_default();
+    let sources: Vec<Vec<Option<u32>>> =
+        serde_json::from_value(told.value["sources"].clone()).unwrap_or_default();
+    let words: Vec<Value> = places
+        .iter()
+        .zip(&sources)
+        .flat_map(|(place, sources)| {
+            let words = place.words.iter().zip(sources);
+            words.map(|([x, y, w, h], source)| json!([place.page, x, y, w, h, source]))
+        })
+        .collect();
+    Json(json!({
+        "key": key,
+        "version": version,
+        "pages": count,
+        "layout": notes,
+        "words": words,
+    }))
+    .into_response()
+}
+
+/// What the compiler can write at the editor's caret, for when the editor's own list has nothing:
+/// Typst's names, a function's arguments, the fields of a value. The caret and the answer's `from`
+/// count as the textarea does. Nothing is stored, and an answer that would take too long is empty.
+async fn complete(
+    State(cv): State<Cv>,
+    Path(_variant): Path<String>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    Form(form): Form<Typed>,
+) -> Response {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(cursor) = form.get("cursor").and_then(|cursor| cursor.parse().ok()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let source = form.get("source").map_or("", String::as_str);
+    let explicit = form.contains_key("explicit");
+    Json(owner::complete_unsaved(cv.mcp.clone(), source, cursor, explicit).await).into_response()
 }
 
 /// The densities a fit tries, the source's own first: five compiles at the most.
