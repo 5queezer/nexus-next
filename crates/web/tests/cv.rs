@@ -2076,6 +2076,35 @@ async fn each_view_draws_the_picture_once() {
     }
 }
 
+/// A word on a line of the picture says where it stands there, for `cv.js` to mark it. One that is on
+/// no line says nothing.
+#[tokio::test]
+async fn a_word_to_check_carries_its_place_in_the_picture() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let education = source.lines().find(|line| line.starts_with("#education("));
+    agent_patch(&f, 1, education.unwrap(), "Zanzibar School 77").await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let list = page.split("id=\"cv-review-items\"").nth(1).unwrap();
+    let chip = |token: &str| {
+        // The line's own text marks the word too, without a rule.
+        let end = list.find(&format!("\">{token}</mark>"));
+        let end = end.unwrap_or_else(|| panic!("{token}: {list}"));
+        &list[list[..end].rfind("<mark").unwrap()..end]
+    };
+    let boxes = chip("77").split("data-boxes=\"").nth(1).expect("its place");
+    let boxes = boxes.split('"').next().unwrap();
+    let (page_number, shares) = boxes.split_once(':').unwrap();
+    assert_eq!(page_number, "1", "{boxes}");
+    let shares: Vec<f32> = shares.split(',').map(|s| s.parse().unwrap()).collect();
+    assert_eq!(shares.len(), 4, "{boxes}");
+    assert!(shares.iter().all(|s| (0.0..1.0).contains(s)), "{boxes}");
+    // One word of the line, not the line.
+    assert!(shares[2] > 0.0 && shares[2] < 0.1, "{boxes}");
+    assert_ne!(chip("Zanzibar"), chip("77"));
+    assert!(!chip("Nordsee University").contains("data-boxes"), "{list}");
+}
+
 /// What a rule asks is said once, with its count. The words stand by the line they are on.
 #[tokio::test]
 async fn a_rule_is_said_once_and_its_words_stand_by_their_line() {
@@ -2110,8 +2139,11 @@ async fn a_rule_is_said_once_and_its_words_stand_by_their_line() {
         4,
         "{list}"
     );
+    let zanzibar = list.split("\">Zanzibar</mark>").next().unwrap();
+    let zanzibar = zanzibar.rsplit("<mark").next().unwrap();
     assert!(
-        list.contains("aria-describedby=\"cv-rule-newWords\" class=\"new\">Zanzibar</mark>"),
+        zanzibar.starts_with(" aria-describedby=\"cv-rule-newWords\" ")
+            && zanzibar.ends_with(" class=\"new"),
         "{list}"
     );
     assert!(

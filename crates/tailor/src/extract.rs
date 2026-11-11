@@ -3,14 +3,14 @@
 use typst::foundations::NativeElement;
 use typst::foundations::Smart;
 use typst::introspection::Introspector;
-use typst::layout::{Frame, FrameItem, Point, Size, Transform};
+use typst::layout::{Abs, Frame, FrameItem, Point, Size, Transform};
 use typst::model::{Destination, Document, HeadingElem, Numbering};
 use typst::text::{Glyph, TextItem};
 use typst::visualize::Paint;
 use typst_layout::PagedDocument;
 use unicode_normalization::char::is_combining_mark;
 
-use crate::{MAX_TEXT_BYTES, RenderError, RenderedLink, RenderedText};
+use crate::{LinePlace, MAX_TEXT_BYTES, RenderError, RenderedLink, RenderedText};
 
 /// Layout memoization can make a small source repeat a frame exponentially often.
 const MAX_RUNS: usize = 200_000;
@@ -45,6 +45,11 @@ const MIN_ADVANCE: f64 = 0.05;
 const MAX_ADVANCE_ADDED: f64 = 1.0;
 /// A stroke thicker than this, in ems, closes the gaps that tell one letter from another.
 const MAX_STROKE: f64 = 0.1;
+/// How far above and below its baseline a word's box reaches, in ems: over an ascender and a descender.
+const WORD_ASCENT: f64 = 0.8;
+const WORD_DESCENT: f64 = 0.25;
+/// Lines and words whose places cross to the parent. Ten full pages hold fewer, and past this none do.
+const MAX_PLACED: usize = 12_000;
 /// How far a transform may stray from a uniform scale through rounding alone, as in `rotate(360deg)`.
 const TRANSFORM_TOLERANCE: f64 = 1e-6;
 
@@ -56,6 +61,8 @@ struct Run {
     end_x: f64,
     size: f64,
     text: String,
+    /// Where each character of `text` starts and ends across the page, in points.
+    spans: Vec<(f32, f32)>,
 }
 
 /// What of a page shows, in page coordinates. Empty in a tiling: its tiles repeat text at any size.
@@ -196,6 +203,35 @@ fn joinable_text(text: &TextItem) -> String {
     )
 }
 
+/// Where each character of a run's joinable text stands across the page. Characters drawn as one glyph
+/// share its width, and those of a run drawn back to front share the run's.
+fn char_spans(text: &TextItem, pos: Point, ts: Transform) -> Vec<(f32, f32)> {
+    let span = |from: Abs, to: Abs| {
+        let a = (pos + Point::with_x(from)).transform(ts).x.to_pt() as f32;
+        let b = (pos + Point::with_x(to)).transform(ts).x.to_pt() as f32;
+        (a.min(b), a.max(b))
+    };
+    let whole = span(Abs::zero(), text.width());
+    let mut bytes = vec![(f32::INFINITY, f32::NEG_INFINITY); text.text.len()];
+    let mut along = Abs::zero();
+    for glyph in text.glyphs.iter() {
+        let next = along + glyph.x_advance.at(text.size);
+        let (from, to) = span(along, next);
+        for byte in bytes.get_mut(glyph.range()).into_iter().flatten() {
+            *byte = (byte.0.min(from), byte.1.max(to));
+        }
+        along = next;
+    }
+    let forwards = !drawn_backwards(text);
+    joinable_text(text)
+        .char_indices()
+        .map(|(at, _)| match bytes.get(at) {
+            Some(span) if forwards && span.0 <= span.1 => *span,
+            _ => whole,
+        })
+        .collect()
+}
+
 /// The first and last points of a run's baseline and the corners of its glyphs' ink, on the page.
 fn run_points(text: &TextItem, pos: Point, ts: Transform) -> Vec<Point> {
     let mut points = vec![pos, pos + Point::with_x(text.width())];
@@ -318,6 +354,7 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                         end_x: end.x.to_pt(),
                         size: size.max(1.0),
                         text: joinable_text(text),
+                        spans: char_spans(text, *pos, ts),
                     });
                 }
                 FrameItem::Shape(shape, _) => {
@@ -345,7 +382,9 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
         crate::ink::unread_words(page, &mut result.hidden, &mut result.marked);
     }
     result.links = read_links(links, &runs);
-    result.lines = lines_from_runs(runs, &mut result.transformed);
+    let sizes: Vec<Size> = pages.iter().map(|page| page.frame.size()).collect();
+    let places;
+    (result.lines, places) = lines_from_runs(runs, &sizes, &mut result.transformed);
     let info = document.info();
     result
         .metadata
@@ -383,6 +422,14 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
     let bytes = serde_json::to_vec(&result).map_err(|e| RenderError::Worker(e.to_string()))?;
     if bytes.len() > MAX_TEXT_BYTES {
         return Err(RenderError::TooManyPages);
+    }
+    // Added after the size is judged, so that no document is refused for where its words stand.
+    let placed = places
+        .iter()
+        .map(|place| 1 + place.words.len())
+        .sum::<usize>();
+    if placed <= MAX_PLACED {
+        result.places = places;
     }
     Ok(result)
 }
@@ -426,7 +473,7 @@ impl PageLink {
             .cloned()
             .collect();
         inside.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
-        join_line(inside)
+        join_line(inside).0
     }
 
     fn height(&self) -> f64 {
@@ -511,18 +558,43 @@ fn overlapping(line: &[Run]) -> impl Iterator<Item = &str> {
         .map(|run| run.text.as_str())
 }
 
-fn lines_from_runs(mut runs: Vec<Run>, drawn_over: &mut Vec<String>) -> Vec<String> {
+/// The lines, and for each where its words stand as shares of its page, one of `sizes`.
+fn lines_from_runs(
+    mut runs: Vec<Run>,
+    sizes: &[Size],
+    drawn_over: &mut Vec<String>,
+) -> (Vec<String>, Vec<LinePlace>) {
     runs.sort_by(|a, b| {
         (a.bucket, a.y, a.x)
             .partial_cmp(&(b.bucket, b.y, b.x))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut lines = Vec::new();
+    let mut places = Vec::new();
     let mut line: Vec<Run> = Vec::new();
     let mut finish = |mut line: Vec<Run>| {
         line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
         drawn_over.extend(overlapping(&line).map(str::to_owned));
-        lines.push(join_line(line));
+        let page = line[0].bucket;
+        let (text, words) = join_line(line);
+        // Not `clamp`: this turns a share that is no number into 0, which JSON can carry.
+        #[allow(clippy::manual_clamp)]
+        let share = |at: f32, of: Abs| (f64::from(at) / of.to_pt()).max(0.0).min(1.0);
+        let short = |share: f64| (share * 1e4).round() as f32 / 1e4;
+        let words = sizes.get(page).map_or_else(Vec::new, |size| {
+            words
+                .into_iter()
+                .map(|[x0, y0, x1, y1]| {
+                    let (x, y) = (share(x0, size.x), share(y0, size.y));
+                    [x, y, share(x1, size.x) - x, share(y1, size.y) - y].map(short)
+                })
+                .collect()
+        });
+        lines.push(text);
+        places.push(LinePlace {
+            page: page as u32,
+            words,
+        });
     };
     for run in runs {
         let same_line = line.first().is_some_and(|first: &Run| {
@@ -537,12 +609,15 @@ fn lines_from_runs(mut runs: Vec<Run>, drawn_over: &mut Vec<String>) -> Vec<Stri
     if !line.is_empty() {
         finish(line);
     }
-    lines
+    (lines, places)
 }
 
-/// Joins runs in the order given, which is where they start on the page.
-fn join_line(line: Vec<Run>) -> String {
+/// Joins runs in the order given, which is where they start on the page. With the text comes a box for
+/// each of its words: left, top, right and bottom in points.
+fn join_line(line: Vec<Run>) -> (String, Vec<[f32; 4]>) {
     let mut text = String::new();
+    // Where each character of `text` stands.
+    let mut stands: Vec<[f32; 4]> = Vec::new();
     let mut end = f64::NEG_INFINITY;
     for run in line {
         // A run of only spaces says nothing the gap to the next run doesn't, and a tiny one draws none.
@@ -552,14 +627,37 @@ fn join_line(line: Vec<Run>) -> String {
         let gap = run.x - end;
         if gap > WORD_GAP * run.size && !text.is_empty() && !text.ends_with(' ') {
             text.push(' ');
+            stands.push([0.0; 4]);
         }
         text.push_str(&run.text);
+        let top = (run.y - WORD_ASCENT * run.size) as f32;
+        let bottom = (run.y + WORD_DESCENT * run.size) as f32;
+        stands.extend(run.spans.iter().map(|(x0, x1)| [*x0, top, *x1, bottom]));
         end = end.max(run.end_x);
+    }
+    // Trimming and the hyphen below change no word's place among the words.
+    let mut words: Vec<[f32; 4]> = Vec::new();
+    let mut inside = false;
+    for (c, at) in text.chars().zip(&stands) {
+        if c.is_whitespace() {
+            inside = false;
+        } else if let Some(word) = words.last_mut().filter(|_| inside) {
+            *word = [
+                word[0].min(at[0]),
+                word[1].min(at[1]),
+                word[2].max(at[2]),
+                word[3].max(at[3]),
+            ];
+        } else {
+            words.push(*at);
+            inside = true;
+        }
     }
     // Typst writes the hyphen of a broken word as a soft hyphen at the end of the run.
     let text = text.trim();
-    match text.strip_suffix('\u{ad}') {
+    let text = match text.strip_suffix('\u{ad}') {
         Some(rest) => format!("{rest}-"),
         None => text.to_owned(),
-    }
+    };
+    (text, words)
 }

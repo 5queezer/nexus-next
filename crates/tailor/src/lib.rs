@@ -166,6 +166,21 @@ pub struct RenderedText {
     /// what the PDF says beyond its pages.
     pub metadata: Vec<String>,
     pub image_count: u32,
+    /// Where the words of each of `lines` stand, one entry a line, for marking them in the picture.
+    /// No check reads these and no approval stores them. Empty for a document of too many words.
+    #[serde(default)]
+    pub places: Vec<LinePlace>,
+}
+
+/// Where a line's words stand on its page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinePlace {
+    /// From 0.
+    pub page: u32,
+    /// A box for each word the line's text holds between its spaces, in that order: left, top, width
+    /// and height as shares of the page's. None for a line that stands on no page, as in a tiling.
+    pub words: Vec<[f32; 4]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

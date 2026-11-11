@@ -529,7 +529,11 @@ main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin: 12px 16px; 
 .cv-panel { background: var(--surface); border-top: 1px solid var(--line); }
 .cv-panel h2 { margin: 0 0 8px; }
 .picture-pages { display: grid; gap: 12px; justify-items: center; margin: 8px 0 0; min-width: 0; }
-.picture-page { display: block; width: 100%; max-width: 50rem; }
+.picture-page { display: block; position: relative; width: 100%; max-width: 50rem; }
+/* Where a word of the list stands. The paper is white in either theme, so these colours are fixed. */
+.picture-mark { --at: 255 196 0; position: absolute; margin: -3px; padding: 3px; border-radius: 3px; background: rgb(var(--at) / .3); outline: 2px solid #b26a00; box-shadow: 0 0 0 7px rgb(var(--at) / .25); pointer-events: none; }
+.picture-mark.serious { --at: 214 60 20; outline-color: #a8340f; }
+.picture-mark.new { --at: 40 100 210; outline-color: #1d3f7a; }
 .picture-page img {
   display: block;
   width: 100%;
@@ -558,6 +562,8 @@ main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin: 12px 16px; 
 .chips mark { padding: 2px 8px; border-radius: 5px; font-size: 13px; }
 mark.serious { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
 mark.new { background: var(--new-bg); color: var(--new-ink); }
+.chips mark[tabindex] { cursor: pointer; }
+.chips mark[tabindex]:hover { outline: 2px solid currentColor; }
 .approval-foot { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; padding: 12px 16px 16px; background: var(--surface); border-top: 1px solid var(--line); }
 .approval-foot > * { min-width: 0; grid-column: 1 / -1; }
 .approval-foot > details:not([open]) { grid-column: auto; }

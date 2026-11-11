@@ -1119,6 +1119,7 @@ pub(crate) async fn review(
         facts_version: state.version,
         rendered_text: String::new(),
         previews: Vec::new(),
+        places: Vec::new(),
         baseline,
         baseline_revision,
         baseline_is_own,
@@ -1165,6 +1166,7 @@ pub(crate) async fn review(
     review.previews = rendered.previews;
     review.items = report.review_items;
     review.marked = rendered.text.marked;
+    review.places = rendered.text.places;
     Ok(Ok(review))
 }
 

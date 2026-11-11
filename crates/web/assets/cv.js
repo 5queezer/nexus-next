@@ -232,6 +232,66 @@
     watcher.observe(end);
   }
 
+  // A word in the list shows where it stands in the picture while the pointer or the focus is on it.
+  // A finger has neither, so a tap shows it and a second tap takes it away.
+  function markInPicture() {
+    const pane = byId("cv-picture-pane");
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let marks = [];
+    let marked = null;
+    let tapped = null;
+    const clear = () => {
+      for (const mark of marks) mark.remove();
+      marks = [];
+      marked = null;
+    };
+    const show = (chip) => {
+      if (marked === chip) return;
+      clear();
+      marked = chip;
+      for (const place of chip.dataset.boxes.split(";")) {
+        const [page, box] = place.split(":");
+        const picture = byId(`cv-page-${page}`);
+        if (!picture) continue;
+        const [left, top, width, height] = box.split(",").map((share) => `${share * 100}%`);
+        const mark = document.createElement("span");
+        mark.className = `picture-mark ${chip.className}`;
+        Object.assign(mark.style, { left, top, width, height });
+        picture.append(mark);
+        marks.push(mark);
+      }
+      if (!marks.length) return;
+      // Only the picture's own side scrolls: on a narrow screen it has none, and the page stays put.
+      const at = marks[0].getBoundingClientRect();
+      const seen = pane.getBoundingClientRect();
+      const margin = 24;
+      const up = Math.min(0, at.top - margin - seen.top);
+      const down = Math.max(0, at.bottom + margin - seen.bottom);
+      if (up || down) pane.scrollBy({ top: up || down, behavior: still.matches ? "auto" : "smooth" });
+    };
+    for (const chip of document.querySelectorAll("#cv-approval mark[data-boxes]")) {
+      chip.tabIndex = 0;
+      chip.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") show(chip);
+      });
+      chip.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "mouse") clear();
+      });
+      chip.addEventListener("focus", () => show(chip));
+      chip.addEventListener("blur", clear);
+      // The tap's focus comes before its click, so what the tap found is kept from before both.
+      chip.addEventListener("pointerdown", (event) => {
+        tapped = event.pointerType === "mouse" ? null : marked === chip;
+      });
+      chip.addEventListener("click", () => {
+        if (tapped === null) return;
+        if (tapped) clear();
+        else show(chip);
+        tapped = null;
+      });
+    }
+  }
+
   // A view is another page, so leaving the editor with unsaved text asks first.
   function guardTyping() {
     const editor = byId("cv-source");
@@ -254,6 +314,7 @@
   });
 
   holdApproval();
+  markInPicture();
   guardTyping();
   loadPreview(shown);
   connect();
