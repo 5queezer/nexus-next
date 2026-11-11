@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::sync::{Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 
-pub use http::router;
+pub use http::{LARGE_RESULT_TOOLS, MAX_LARGE_RESULTS, router};
 pub use nexus_tailor::Renderer;
 pub use owner::Review;
 pub use rmcp::model::CallToolResult;

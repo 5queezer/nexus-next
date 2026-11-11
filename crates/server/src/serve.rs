@@ -26,7 +26,7 @@ use hyper_util::server::graceful::GracefulShutdown;
 use nexus_auth::{AuthState, require_mcp_auth, require_owner_session};
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
-use nexus_mcp::McpState;
+use nexus_mcp::{LARGE_RESULT_TOOLS, McpState};
 use nexus_web::CutConnection;
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -89,8 +89,7 @@ pub const LARGE_BODY_BYTES: u64 = 1024 * 1024;
 /// Calls moving a whole document at once, whichever way. One costs far more than its body, because
 /// the transport holds several copies of it. They wait outside the MCP pool, so slow uploads can't
 /// take every slot from ordinary tool calls.
-pub const MAX_LARGE_BODIES: usize = 2;
-const LARGE_RESULT_TOOLS: [&str; 2] = ["download_document_content", "render_cv_pdf"];
+pub const MAX_LARGE_BODIES: usize = nexus_mcp::MAX_LARGE_RESULTS;
 pub const LARGE_BODY_WAIT: Duration = Duration::from_secs(30);
 /// 14 MB in 300 s is 373 kbit/s, against 1.9 Mbit/s under the 60 s deadline.
 pub const LARGE_BODY_DEADLINE: Duration = Duration::from_secs(300);
