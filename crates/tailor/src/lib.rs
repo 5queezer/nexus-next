@@ -20,8 +20,8 @@ pub use check::{
     review_text, unverified_urls,
 };
 pub use template::{
-    CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, default_source,
-    source_from_profile,
+    CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, TEMPLATES, default_source,
+    source_from_profile, template_of, with_template,
 };
 pub use worker::run_worker;
 

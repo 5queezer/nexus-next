@@ -26,7 +26,10 @@ use nexus_core::repo::cv_revisions;
 use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
-use nexus_tailor::{DiffLine, Language, LineChange, Metric, ReviewItem, Rule, review_diff};
+use nexus_tailor::{
+    DiffLine, Language, LineChange, Metric, ReviewItem, Rule, TEMPLATES, review_diff, template_of,
+    with_template,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -1453,7 +1456,38 @@ fn editor_view(
                     </button>
                 </div>
             </form>
+            {template_view(variant, token, text, expected)}
         </section>
+    }
+}
+
+/// Another design for the stored source: a draft whose `#show: cv` line alone differs. A line this
+/// can't read is the editor's to change.
+fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl IntoView + use<> {
+    let current = template_of(text).map(str::to_owned);
+    let unreadable = current.is_none();
+    view! {
+        <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-template-form">
+            <input type="hidden" name="csrf" value=token.to_owned() />
+            <input type="hidden" name="expected" value=expected.to_string() />
+            <div class="cv-save-row">
+                <label>"Template"
+                    <select name="template" id="cv-template" disabled=unreadable>
+                        {TEMPLATES.iter().map(|&name| view! {
+                            <option value=name selected=current.as_deref() == Some(name)>{name}</option>
+                        }).collect::<Vec<_>>()}
+                    </select>
+                </label>
+                <button type="submit" class="secondary" disabled=unreadable>"Save draft in this template"</button>
+            </div>
+            <p class="hint">
+                {if unreadable {
+                    "This source sets up its page in its own way, so change the template in its #show: cv line by hand."
+                } else {
+                    "Stores the saved source with only its #show: cv line changed, as a draft for you to approve. Text typed above and not saved is left out."
+                }}
+            </p>
+        </form>
     }
 }
 
@@ -1630,7 +1664,8 @@ async fn save(
     }
     let base = call(&cv, "get_cv_source", read).await;
     let from_base = form.contains_key("fromBase");
-    let kept = Outcome {
+    let template = form.get("template");
+    let mut kept = Outcome {
         typed_source: Some(source.clone()),
         typed_summary: Some(typed_summary),
         kept_expected: Some(expected),
@@ -1639,7 +1674,7 @@ async fn save(
         ..Outcome::default()
     };
     if base.is_error {
-        if base.code() == "cv_variant_not_found" {
+        if base.code() == "cv_variant_not_found" || template.is_some() {
             return Err(PageError(StatusCode::NOT_FOUND));
         }
         let (status, outcome) = refused(&base, kept);
@@ -1649,6 +1684,18 @@ async fn save(
         ));
     }
     let base_source = base.value["source"].as_str().unwrap_or_default();
+    // The template form sends no text: its source is the base in another template, and with no mark of
+    // a base it stores a draft.
+    let (source, summary) = match template {
+        Some(template) => {
+            let Some(source) = with_template(base_source, template) else {
+                return Err(PageError(StatusCode::BAD_REQUEST));
+            };
+            kept.typed_source = Some(source.clone());
+            (source, format!("Template: {template}"))
+        }
+        None => (source, summary),
+    };
     // The caller is what grants this: the owner's session, in this handler. Not `origin`, which is
     // text any caller can send. It approves only on an approved base, and only with the mark of a form
     // whose text came from there. Anything else stores a draft, so a lost mark can approve nothing.

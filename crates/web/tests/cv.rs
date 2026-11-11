@@ -2151,3 +2151,61 @@ async fn a_rule_is_said_once_and_its_words_stand_by_their_line() {
         "the tab counts lines: {page}"
     );
 }
+
+async fn save_template(f: &Fixture, expected: i64, template: &str) -> StatusCode {
+    let fields = [
+        ("csrf", TOKEN),
+        ("expected", &expected.to_string()),
+        ("template", template),
+    ];
+    post(&f.app, &format!("{VARIANT}/save"), &fields).await.0
+}
+
+#[tokio::test]
+async fn another_template_is_a_draft_with_only_the_show_line_changed() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert!(page.contains("value=\"classic\" selected"), "{page}");
+
+    assert_eq!(save_template(&f, 1, "modern").await, StatusCode::SEE_OTHER);
+    let rows = revision_rows(&f.db).await;
+    assert_eq!(
+        rows[1].1,
+        source.replace(
+            "cv.with(lang: \"en\")",
+            "cv.with(lang: \"en\", template: \"modern\")"
+        )
+    );
+    assert_ne!(rows[1].1, source);
+    assert_eq!(rows[1].3, "Template: modern");
+    assert_eq!(
+        approvals(&f.db).await,
+        1,
+        "the owner's save approves, this doesn't"
+    );
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert_eq!(badge(&page), "Draft, not approved");
+    assert!(page.contains("value=\"modern\" selected"), "{page}");
+
+    assert_eq!(save_template(&f, 2, "fancy").await, StatusCode::BAD_REQUEST);
+    assert_eq!(save_template(&f, 1, "banner").await, StatusCode::CONFLICT);
+    assert_eq!(revision_rows(&f.db).await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_show_line_written_by_hand_turns_the_template_control_off() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let own = source.replace("cv.with(lang: \"en\")", "cv.with(lang: \"en\") // mine");
+    assert_ne!(own, source);
+    assert_eq!(save(&f, 0, &own).await.0, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert!(page.contains("id=\"cv-template\" disabled"), "{page}");
+    assert!(page.contains("by hand"), "{page}");
+    assert_eq!(
+        save_template(&f, 1, "modern").await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(revision_rows(&f.db).await.len(), 1);
+}

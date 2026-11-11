@@ -22,11 +22,15 @@ use crate::{
 
 const NEXUS_TYP: &str = include_str!("nexus.typ");
 
-const FONT_FILES: [&[u8]; 4] = [
+const FONT_FILES: [&[u8]; 8] = [
     include_bytes!("../fonts/LibertinusSerif-Regular.otf"),
     include_bytes!("../fonts/LibertinusSerif-Bold.otf"),
     include_bytes!("../fonts/LibertinusSerif-Italic.otf"),
     include_bytes!("../fonts/LibertinusSerif-BoldItalic.otf"),
+    include_bytes!("../fonts/Inter-Regular.ttf"),
+    include_bytes!("../fonts/Inter-Bold.ttf"),
+    include_bytes!("../fonts/Inter-Italic.ttf"),
+    include_bytes!("../fonts/Inter-BoldItalic.ttf"),
 ];
 
 const MIN_PAGE_SIDE: f64 = 200.0;
