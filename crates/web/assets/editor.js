@@ -456,6 +456,10 @@
   const measure = document.createElement("canvas").getContext("2d");
   let offered = null;
   let chosen = 0;
+  // The compiler's last answer, the question on its way, and the pause before one is sent.
+  let answer = null;
+  let asking = null;
+  let pause = null;
 
   function choose(index) {
     chosen = (index + offered.items.length) % offered.items.length;
@@ -480,7 +484,10 @@
     list.style.top = `${top + list.offsetHeight > box.clientHeight && over >= 0 ? over : top}px`;
   }
 
+  // Closing also calls off a question to the compiler that is still on its way.
   function close() {
+    clearTimeout(pause);
+    if (asking) asking.abort();
     offered = null;
     list.hidden = true;
     editor.removeAttribute("aria-activedescendant");
@@ -506,12 +513,75 @@
     choose(0);
   }
 
-  // A single choice that is already written is no choice.
-  function suggest(asked) {
-    const found = completions(asked);
-    const written = found && found.items.length === 1 && found.items[0].text === editor.value.slice(found.from, found.to);
-    if (found && found.items.length && !written) offer(found);
+  // Behind this file's own choices stand the compiler's: Typst's names, a function's arguments, the
+  // fields of a value. One answer serves for as long as the caret stays in the word it was asked for.
+  const ASK_MS = 250;
+
+  function answered() {
+    const text = editor.value;
+    const at = editor.selectionStart;
+    if (!answer || at < answer.from || at !== editor.selectionEnd || text.slice(0, answer.from) !== answer.head) return null;
+    const typed = text.slice(answer.from, at).toLowerCase();
+    if (/[^\p{L}\p{N}_-]/u.test(typed)) return null;
+    return { from: answer.from, to: at, items: answer.items.filter((item) => item.label.toLowerCase().startsWith(typed)) };
+  }
+
+  // One question at a time, after a pause in the typing. The server gives up within seconds, and an
+  // answer that comes after the caret has left its word is dropped.
+  function ask(asked) {
+    clearTimeout(pause);
+    pause = setTimeout(async () => {
+      if (asking) asking.abort();
+      asking = new AbortController();
+      const text = editor.value;
+      const form = new URLSearchParams({ csrf: editor.form.elements.csrf.value, source: text, cursor: editor.selectionStart });
+      if (asked) form.set("explicit", "1");
+      let body;
+      try {
+        const variant = encodeURIComponent(document.getElementById("cv-workspace").dataset.variant);
+        const response = await fetch(`/cv/variants/${variant}/complete`, { method: "POST", body: form, signal: asking.signal });
+        if (!response.ok) return;
+        body = await response.json();
+      } catch {
+        return;
+      }
+      answer = {
+        head: text.slice(0, body.from),
+        from: body.from,
+        // Where the compiler would have an editor stop for a value, the first takes the caret.
+        items: body.items.map(({ label, apply, detail }) => {
+          const snippet = (apply || label).replaceAll("\t", "  ");
+          const stop = snippet.indexOf("${");
+          return { label, detail: detail || "", text: snippet.replace(/\$\{[^}]*\}/g, ""), caret: stop < 0 ? undefined : stop };
+        }),
+      };
+      if (document.activeElement === editor) suggest(asked, false);
+    }, ASK_MS);
+  }
+
+  // What there is to choose from, or null: a single choice that is already written is no choice.
+  function worth(found) {
+    if (!found || !found.items.length) return null;
+    const written = found.items.length === 1 && found.items[0].text === editor.value.slice(found.from, found.to);
+    return written ? null : found;
+  }
+
+  // This file's choices first, and after them the compiler's for the same word, if it has answered.
+  // It is asked when the owner asks, or while a name after a `#` or a `.` is typed that this file
+  // knows nothing for, but not by the call that its answer makes.
+  function suggest(asked, mayAsk = true) {
+    const at = editor.selectionStart;
+    const known = answered();
+    const own = worth(completions(asked));
+    const more = known && own && own.from === known.from
+      ? known.items.filter((item) => !own.items.some((had) => had.name === item.label || had.label === item.label))
+      : [];
+    const found = own ? { ...own, items: own.items.concat(more) } : worth(known);
+    if (found) offer(found);
     else close();
+    if (!mayAsk || known || at !== editor.selectionEnd) return;
+    const name = /#[\p{L}\p{N}_.-]*$/u.exec(editor.value.slice(editor.value.lastIndexOf("\n", at - 1) + 1, at));
+    if (asked || (!own && name && startsCode(editor.value, at - name[0].length))) ask(asked);
   }
 
   // Writes a choice, and offers what it leads to: the ids inside a new call, the values after a name.
@@ -519,7 +589,8 @@
     const { from, to, skip = 0 } = offered;
     close();
     edit(from, to, item.text, from + (item.caret ?? item.text.length + skip));
-    suggest(true);
+    const next = worth(completions(true));
+    if (next) offer(next);
   }
 
   // A press on the list must not take the focus, and with it the caret, from the textarea.

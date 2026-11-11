@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use nexus_tailor::{Layout, LinePlace, MAX_PAGES, ReviewItem};
+use nexus_tailor::{Completions, Layout, LinePlace, MAX_PAGES, ReviewItem};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -181,6 +181,17 @@ pub async fn draw_unsaved(
     pictures: bool,
 ) -> CallToolResult {
     outcome(tools::draw_unsaved(&ctx(state), variant, source, pictures).await)
+}
+
+/// What the compiler offers at a caret in text the owner is typing, for the editor's list. Nothing
+/// is stored, and nothing comes when it would take too long.
+pub async fn complete_unsaved(
+    state: Arc<McpState>,
+    source: &str,
+    cursor: u32,
+    explicit: bool,
+) -> Completions {
+    tools::complete_unsaved(&ctx(state), source, cursor, explicit).await
 }
 
 /// A revision's PDF for the owner to download: the real one when approved, the stamped one otherwise.

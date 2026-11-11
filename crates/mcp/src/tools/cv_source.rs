@@ -16,9 +16,9 @@ use nexus_core::repo::cv_facts::{self, FactsState};
 use nexus_core::repo::cv_revisions::{self as repo, NewRevision, Revision, Variant};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
 use nexus_tailor::{
-    CvContent, CvEmployment, CvProject, CvSkills, Facts, Layout, MAX_PAGES, RenderError,
-    RenderRequest, Rendered, Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source,
-    review_text, source_from_profile,
+    COMPLETE_TIMEOUT, CompleteRequest, Completions, CvContent, CvEmployment, CvProject, CvSkills,
+    Facts, Layout, MAX_PAGES, RenderError, RenderRequest, Rendered, Report, ReviewItem,
+    TEMPLATE_HELP, Violation, check, default_source, review_text, source_from_profile,
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Value, json};
@@ -1147,6 +1147,34 @@ pub(crate) async fn draw_unsaved(
     Ok(result)
 }
 
+/// What the compiler offers at a caret in text the owner is typing. Its child takes the one
+/// compile's place, so memory stays one job's, and the whole call ends within [`COMPLETE_TIMEOUT`],
+/// waiting included: no preview or save stands behind it for longer, and while a compile holds the
+/// place for longer than that it gives nothing, which someone typing no longer waits for anyway.
+pub(crate) async fn complete_unsaved(
+    ctx: &Ctx,
+    source: &str,
+    cursor: u32,
+    explicit: bool,
+) -> Completions {
+    let work = async {
+        let facts = {
+            let mut conn = ctx.state.db.conn().await.ok()?;
+            cv_facts::get(&mut conn).await.ok()?.facts
+        };
+        let _slot = ctx.state.render_slot.clone().acquire_owned().await.ok()?;
+        let request = CompleteRequest {
+            source: source.to_owned(),
+            facts: facts.renderable(),
+            cursor,
+            explicit,
+        };
+        ctx.state.renderer.complete(request).await.ok()
+    };
+    let found = tokio::time::timeout(COMPLETE_TIMEOUT, work).await;
+    found.ok().flatten().unwrap_or_default()
+}
+
 /// What the owner looks at before approving a variant's head. `Err` is why it can't be looked at.
 pub(crate) async fn review(
     ctx: &Ctx,
@@ -1340,6 +1368,35 @@ mod tests {
 
     use super::*;
     use crate::McpState;
+
+    #[tokio::test]
+    async fn a_completion_gives_nothing_while_a_compile_holds_its_place_and_ends_in_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path()).await.unwrap();
+        let state = Arc::new(McpState::new(
+            db,
+            "owner".to_owned(),
+            "owner@example.test".to_owned(),
+            Renderer::InProcess,
+        ));
+        let ctx = Ctx {
+            state: state.clone(),
+            can_access_submissions: false,
+            source: OWNER_SOURCE,
+            client_gone: CancellationToken::new(),
+        };
+        let found = complete_unsaved(&ctx, "#te", 3, false).await;
+        assert!(found.items.iter().any(|item| item.label == "text"));
+        assert_eq!(found.from, 1);
+
+        let held = state.render_slot.clone().acquire_owned().await.unwrap();
+        tokio::time::pause();
+        let started = tokio::time::Instant::now();
+        let found = complete_unsaved(&ctx, "#te", 3, false).await;
+        assert_eq!(found, Completions::default());
+        assert!((COMPLETE_TIMEOUT..COMPLETE_TIMEOUT * 2).contains(&started.elapsed()));
+        drop(held);
+    }
 
     #[tokio::test]
     async fn waiting_for_a_render_ends_in_a_clear_error() {

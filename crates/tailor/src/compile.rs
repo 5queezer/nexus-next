@@ -17,8 +17,8 @@ use typst_layout::{Page, PagedDocument};
 use typst_pdf::PdfOptions;
 
 use crate::{
-    Diagnostic, LinePlace, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError,
-    RenderRequest, Rendered, Severity,
+    CompleteRequest, Completion, Completions, Diagnostic, LinePlace, MAX_PAGES, MAX_PDF_BYTES,
+    MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest, Rendered, Severity,
 };
 
 const NEXUS_TYP: &str = include_str!("nexus.typ");
@@ -224,6 +224,15 @@ fn no_such_file(id: FileId) -> FileError {
     ))
 }
 
+fn bounded(text: &str) -> String {
+    let mut chars = text.chars();
+    let mut bounded: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if chars.next().is_some() {
+        bounded.push('…');
+    }
+    bounded
+}
+
 fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
     // An error inside the template library is the caller's: point at the call in /main.typ.
     let in_main = |span: typst::syntax::DiagSpan| span.id() == Some(world.main.id());
@@ -236,14 +245,6 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
             .map(|point| typst::syntax::DiagSpan::from(point.span))
             .find(|span| in_main(*span))
             .unwrap_or(diag.span)
-    };
-    let bounded = |text: &str| {
-        let mut chars = text.chars();
-        let mut bounded: String = chars.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
-        if chars.next().is_some() {
-            bounded.push('…');
-        }
-        bounded
     };
     let mut result = Diagnostic {
         severity: match diag.severity {
@@ -279,6 +280,39 @@ fn to_diagnostic(world: &CvWorld, diag: &SourceDiagnostic) -> Diagnostic {
         }
     }
     result
+}
+
+/// Typst offers every name in scope after a `#`, a few hundred. More than this crosses to no editor.
+const MAX_COMPLETIONS: usize = 1000;
+
+/// What Typst itself offers at the caret, in the same three files. It reads the syntax and evaluates
+/// what the caret stands in, without laying anything out. That is still the source's own code, which
+/// can run for ever, so it runs where a compile does.
+pub(crate) fn complete(req: &CompleteRequest) -> Result<Completions, RenderError> {
+    let world = CvWorld::new(&req.source, &req.facts)?;
+    let lines = world.main.lines();
+    let offered = lines.utf16_to_byte(req.cursor as usize).and_then(|cursor| {
+        let document = None::<&PagedDocument>;
+        typst_ide::autocomplete(&world, document, &world.main, cursor, req.explicit)
+    });
+    let Some((from, items)) = offered else {
+        return Ok(Completions::default());
+    };
+    let from = lines
+        .byte_to_utf16(from)
+        .and_then(|at| u32::try_from(at).ok());
+    let items = items
+        .into_iter()
+        .take(MAX_COMPLETIONS)
+        .map(|item| Completion {
+            label: bounded(&item.label),
+            apply: item.apply.as_deref().map(bounded),
+            detail: item.detail.as_deref().map(bounded),
+        });
+    Ok(Completions {
+        from: from.unwrap_or(req.cursor),
+        items: items.collect(),
+    })
 }
 
 /// One stamp, translucent so that the CV stays readable beneath it. Its own document, so that nothing

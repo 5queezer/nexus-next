@@ -5,8 +5,8 @@ mod common;
 
 use common::{content_de, content_en, facts_de, facts_en, render, render_and_check};
 use nexus_tailor::{
-    CvContent, Facts, MAX_PAGES, RenderError, RenderRequest, RenderedText, Renderer, Rule, check,
-    default_source, source_from_profile,
+    CompleteRequest, CvContent, Facts, MAX_PAGES, RenderError, RenderRequest, RenderedText,
+    Renderer, Rule, check, default_source, source_from_profile,
 };
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
@@ -767,4 +767,70 @@ async fn each_word_of_a_preview_names_where_the_source_writes_it() {
         render(0, false).await.unwrap().text.sources,
         Vec::<Vec<_>>::new()
     );
+}
+
+/// What the editor asks when its own list has nothing: Typst's names, the helpers a source imports,
+/// a function's arguments and the fields of the facts, from the text and a caret counted as a
+/// browser counts.
+#[tokio::test]
+async fn the_compiler_offers_what_can_be_written_at_a_caret() {
+    let offered = |text: &str, explicit| {
+        let source = format!("{START}= Über 😀\n{}", text.replace('|', ""));
+        let typed = text.split('|').next().unwrap().encode_utf16().count();
+        let start = source.encode_utf16().count() - text.replace('|', "").encode_utf16().count();
+        let request = CompleteRequest {
+            source,
+            facts: facts_en(),
+            cursor: (start + typed) as u32,
+            explicit,
+        };
+        async move {
+            let found = Renderer::InProcess.complete(request).await.unwrap();
+            let labels: Vec<String> = found.items.iter().map(|item| item.label.clone()).collect();
+            ((found.from as usize).saturating_sub(start), labels, found)
+        }
+    };
+    let has = |labels: &[String], label: &str| labels.iter().any(|l| l == label);
+
+    let (from, labels, found) = offered("Some #te| here", false).await;
+    assert_eq!(from, "Some #".len());
+    assert!(
+        has(&labels, "text") && has(&labels, "employment"),
+        "{labels:?}"
+    );
+    assert!(labels.len() < 1000, "{}", labels.len());
+    let text = found
+        .items
+        .iter()
+        .find(|item| item.label == "text")
+        .unwrap();
+    assert!(
+        text.apply
+            .as_deref()
+            .is_some_and(|apply| apply.contains("${")),
+        "{text:?}"
+    );
+    assert!(text.detail.is_some(), "{text:?}");
+
+    let (from, labels, _) = offered("#text(|)[x]", true).await;
+    assert_eq!(from, "#text(".len());
+    assert!(has(&labels, "size") && has(&labels, "fill"), "{labels:?}");
+
+    let (_, labels, _) = offered("#facts.|", false).await;
+    assert!(
+        has(&labels, "name") && has(&labels, "employment"),
+        "{labels:?}"
+    );
+
+    // Prose, a comment and a caret beyond the text offer nothing.
+    assert_eq!(offered("Plain wor|ds", false).await.1, [""; 0]);
+    assert_eq!(offered("// a #te|", true).await.1, [""; 0]);
+    let beyond = CompleteRequest {
+        source: START.to_owned(),
+        facts: facts_en(),
+        cursor: 9999,
+        explicit: true,
+    };
+    let nothing = Renderer::InProcess.complete(beyond).await.unwrap();
+    assert_eq!(nothing, nexus_tailor::Completions::default());
 }

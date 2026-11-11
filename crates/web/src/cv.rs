@@ -91,6 +91,7 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route("/cv/variants/{variant}/preview.json", get(preview_json))
             .route("/cv/variants/{variant}/try", post(try_source))
             .route("/cv/variants/{variant}/try.png", get(try_png))
+            .route("/cv/variants/{variant}/complete", post(complete))
             .route("/cv/variants/{variant}/fit", post(fit))
             .route("/cv/variants/{variant}/cv.pdf", get(pdf))
             .route("/api/cv/{variant}/head", get(head))
@@ -2230,6 +2231,26 @@ async fn try_source(
         "words": words,
     }))
     .into_response()
+}
+
+/// What the compiler can write at the editor's caret, for when the editor's own list has nothing:
+/// Typst's names, a function's arguments, the fields of a value. The caret and the answer's `from`
+/// count as the textarea does. Nothing is stored, and an answer that would take too long is empty.
+async fn complete(
+    State(cv): State<Cv>,
+    Path(_variant): Path<String>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    Form(form): Form<Typed>,
+) -> Response {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(cursor) = form.get("cursor").and_then(|cursor| cursor.parse().ok()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let source = form.get("source").map_or("", String::as_str);
+    let explicit = form.contains_key("explicit");
+    Json(owner::complete_unsaved(cv.mcp.clone(), source, cursor, explicit).await).into_response()
 }
 
 /// The densities a fit tries, the source's own first: five compiles at the most.

@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nexus_tailor::{
-    Contact, Employment, Facts, RenderError, RenderRequest, Renderer, check, default_source,
+    COMPLETE_TIMEOUT, CompleteRequest, Contact, Employment, Facts, RenderError, RenderRequest,
+    Renderer, check, default_source,
 };
 
 /// `children` sees this whole process, so the tests here take turns.
@@ -183,4 +184,40 @@ async fn a_good_render_follows_a_killed_one() {
             .await
             .is_ok()
     );
+}
+
+/// The editor's question to the compiler runs the source's own code, so it goes to the child too:
+/// with the answer for an honest text, and cut off within seconds for one that never ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn completions_come_from_the_child_and_a_source_that_never_ends_is_cut_off() {
+    let _turn = ONE_TEST.lock().await;
+    let request = |source: String| CompleteRequest {
+        cursor: source.encode_utf16().count() as u32,
+        source,
+        facts: facts(),
+        explicit: false,
+    };
+    const START: &str = "#import \"/nexus.typ\": *\n";
+    let found = renderer().complete(request(format!("{START}#te"))).await;
+    let found = found.unwrap();
+    let has = |label: &str| found.items.iter().any(|item| item.label == label);
+    assert!(has("text") && has("employment"), "{found:?}");
+    let found = renderer()
+        .complete(request(format!("{START}#facts.")))
+        .await;
+    let found = found.unwrap();
+    assert!(
+        found.items.iter().any(|item| item.label == "name"),
+        "{found:?}"
+    );
+
+    let before = own_rss_kib();
+    let started = Instant::now();
+    let never = renderer()
+        .complete(request(format!("{START}{SLOW}#facts.")))
+        .await;
+    assert_eq!(never, Err(RenderError::Timeout));
+    assert!(started.elapsed() < COMPLETE_TIMEOUT + Duration::from_secs(2));
+    assert!(own_rss_kib().saturating_sub(before) < 32 * 1024);
+    assert_eq!(children(), Vec::<String>::new(), "a child was left behind");
 }

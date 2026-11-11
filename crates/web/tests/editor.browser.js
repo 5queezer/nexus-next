@@ -132,6 +132,7 @@ const CASES = [
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   let source = SOURCE;
   const tried = [];
+  const asked = [];
   // While set, an answer to `/try` waits for it.
   let held = null;
   await page.route("**/*", async (route) => {
@@ -142,6 +143,21 @@ const CASES = [
       return route.fulfill({ contentType: "text/javascript", body: asset(`..${url.pathname}`) });
     }
     if (url.pathname.endsWith("/preview.json")) return route.fulfill({ json: { revision: 1, state: "draft", pages: 1 } });
+    if (url.pathname.endsWith("/complete")) {
+      const form = new URLSearchParams(route.request().postData());
+      asked.push([form.get("source").slice(0, Number(form.get("cursor"))), form.has("explicit")]);
+      await held;
+      // As the compiler answers: every name from where the word starts, or the arguments of a call.
+      const word = /[a-z]*$/.exec(asked.at(-1)[0])[0];
+      const items = asked.at(-1)[0].endsWith("(")
+        ? [{ label: "size", apply: "size: ${}", detail: "The size of the glyphs." }]
+        : [
+            { label: "text", apply: "text(${})", detail: "Customizes the look of text." },
+            { label: "table", apply: "table(\n\t${}\n)", detail: "A table of items." },
+            { label: "emph", apply: "emph[${}]", detail: null },
+          ];
+      return route.fulfill({ json: { from: Number(form.get("cursor")) - word.length, items } });
+    }
     if (url.pathname.endsWith("/try")) {
       const text = new URLSearchParams(route.request().postData()).get("source");
       tried.push(text);
@@ -352,6 +368,8 @@ const CASES = [
     await page.keyboard.type("#");
     assert.deepEqual(await offered(), [], text);
   }
+  await page.waitForTimeout(400);
+  assert.deepEqual([await offered(), asked], [[], []]);
 
   // In the page setup come its arguments, without the ones written, and then their values. The
   // select beside the editor follows what a choice writes.
@@ -411,6 +429,68 @@ const CASES = [
   // Elsewhere there is nothing to offer, and asking says so by showing nothing.
   await put("Plain text (in brackets|)");
   await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), []);
+
+  // Where the editor's own list has nothing, the compiler is asked after a pause in the typing,
+  // and its one answer serves while the word goes on.
+  await put("|");
+  await page.keyboard.type("#he");
+  assert.deepEqual([await offered(), asked], [["#header"], []]);
+  await page.keyboard.press("Escape");
+  await put("Some |");
+  await page.keyboard.type("#t");
+  assert.deepEqual(await offered(), []);
+  await page.locator("#cv-complete li").first().waitFor();
+  assert.deepEqual([await offered(), asked], [["text", "table"], [["Some #t", false]]]);
+  assert.equal(await picked(), "textCustomizes the look of text.");
+  await page.keyboard.type("a");
+  assert.deepEqual(await offered(), ["table"]);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("e");
+  assert.deepEqual(await offered(), ["text"]);
+  // The caret goes where the compiler would have an editor stop, and a tab in its text is two spaces.
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "Some #text(|)");
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), "Some #te");
+  await put("Some #t|");
+  await page.keyboard.type("a");
+  assert.deepEqual(await offered(), ["table"]);
+  await page.keyboard.press("Tab");
+  assert.equal(await seen(), "Some #table(\n  |\n)");
+  assert.equal(asked.length, 1);
+  // Asked for with Ctrl+Space where the list has nothing, it says so to the compiler.
+  await put("#text(|)");
+  await page.keyboard.press("Control+Space");
+  await page.locator("#cv-complete li").first().waitFor();
+  assert.deepEqual([await offered(), asked.at(-1)], [["size"], ["#text(", true]]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#text(size: |)");
+  // Asked for where the list has choices, the compiler's come after them.
+  await put("|");
+  await page.keyboard.type("#e");
+  assert.deepEqual(await offered(), ["#employment", "#education"]);
+  await page.keyboard.press("Control+Space");
+  await page.locator("#cv-complete li").nth(2).waitFor();
+  assert.deepEqual([await offered(), asked.at(-1)], [["#employment", "#education", "emph"], ["#e", true]]);
+  await page.keyboard.type("mph");
+  assert.deepEqual(await offered(), ["emph"]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#emph[|]");
+  // Plain typing asks nothing, and an answer that comes after the caret has left is dropped.
+  await put("|");
+  await page.keyboard.type("Plain words (and more");
+  await page.waitForTimeout(400);
+  assert.equal(asked.length, 3);
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.keyboard.type(" #t");
+  while (asked.length < 4) await page.waitForTimeout(20);
+  await page.keyboard.type(" on");
+  release();
+  await page.waitForTimeout(100);
   assert.deepEqual(await offered(), []);
 
   // The text with \u27e6 and \u27e7 round the selection, for the keys that move it.

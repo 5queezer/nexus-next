@@ -2563,3 +2563,72 @@ async fn the_editor_gets_the_ids_in_the_facts_and_no_value_breaks_out() {
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
     assert!(!page.contains("data-complete"), "{page}");
 }
+
+/// Behind the editor's own list stands the compiler's: the same owner-only form as the preview's,
+/// which stores nothing and reads only the text, the template library and the facts.
+#[tokio::test]
+async fn the_compiler_completes_at_the_editors_caret_and_stores_nothing() {
+    let f = locked().await;
+    let uri = format!("{VARIANT}/complete");
+    let source = "#import \"/nexus.typ\": *\n= Über 😀\n#te";
+    let cursor = source.encode_utf16().count().to_string();
+    let fields = [("source", source), ("cursor", cursor.as_str())];
+    assert_eq!(post(&f.app, &uri, &fields).await.0, StatusCode::FORBIDDEN);
+
+    let asked = |fields: Vec<(&'static str, String)>| {
+        let (app, uri) = (f.app.clone(), uri.clone());
+        async move {
+            let mut all = vec![("csrf", TOKEN)];
+            all.extend(fields.iter().map(|(name, value)| (*name, value.as_str())));
+            let (status, _, body) = post(&app, &uri, &all).await;
+            (
+                status,
+                serde_json::from_str::<Value>(&body).unwrap_or_default(),
+            )
+        }
+    };
+    let (status, told) = asked(vec![
+        ("source", source.to_owned()),
+        ("cursor", cursor.clone()),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(told["from"], source.encode_utf16().count() - 2, "{told}");
+    let items = told["items"].as_array().unwrap();
+    let item = |label: &str| items.iter().find(|item| item["label"] == label);
+    assert!(item("employment").is_some(), "{told}");
+    let text = item("text").expect("Typst's own names");
+    assert!(text["apply"].as_str().unwrap().contains("${"), "{text}");
+    assert!(text["detail"].is_string(), "{text}");
+
+    // Asked for inside a call, it names the arguments. A file outside the three is not there to read.
+    let call = "#text()";
+    let (_, told) = asked(vec![
+        ("source", call.to_owned()),
+        ("cursor", "6".to_owned()),
+        ("explicit", "1".to_owned()),
+    ])
+    .await;
+    assert!(
+        told["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "size"),
+        "{told}"
+    );
+    let outside = "#import \"/etc/passwd\": ";
+    let (status, told) = asked(vec![
+        ("source", outside.to_owned()),
+        ("cursor", outside.len().to_string()),
+        ("explicit", "1".to_owned()),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!told.to_string().contains("root"), "{told}");
+
+    // No caret is no question.
+    let (status, _) = asked(vec![("source", source.to_owned())]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(revision_rows(&f.db).await.is_empty());
+}
