@@ -109,7 +109,14 @@ impl AuthState {
             .trusted_proxy
             .as_ref()
             .filter(|proxy| proxy.peers.iter().any(|p| p.to_canonical() == peer))
-            .and_then(|proxy| headers.get(&proxy.header)?.to_str().ok())
+            .and_then(|proxy| {
+                headers
+                    .get_all(&proxy.header)
+                    .iter()
+                    .next_back()?
+                    .to_str()
+                    .ok()
+            })
             .and_then(|value| value.rsplit(',').next()?.trim().parse().ok());
         address_key(forwarded.unwrap_or(peer))
     }

@@ -88,6 +88,8 @@ Rate limits and login backoff key on the client's address. Behind `cloudflared` 
 - **Cloudflare tunnel:** `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`.
 - **Tailscale Funnel:** not confirmed yet. Check what Funnel really sends before relying on it; `X-Forwarded-For` works if Funnel appends the client address, because the last entry is the one used.
 
+Of a header sent on several lines or as a list, the last entry of the last line is the one believed, since the nearest proxy appends. So run one ingress per instance: behind two proxies in a row that entry is the outer proxy, not the client.
+
 The header is only believed on connections from `NEXUS_TRUSTED_PROXY_PEERS`, so keep the bind on loopback and let nothing else on the board reach port 8091 with forged headers. Verify it after the first public request: failed-login log lines must show `source=<your real address>`, not `source=127.0.0.1`.
 
 ### OAuth redirect hosts

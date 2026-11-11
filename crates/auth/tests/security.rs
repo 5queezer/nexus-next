@@ -1672,6 +1672,56 @@ async fn a_configured_proxy_header_is_trusted_only_from_its_peers() {
     );
 }
 
+/// A proxy appends what it saw, so whatever the client sent comes before it.
+#[tokio::test]
+async fn the_proxys_own_entry_is_the_last_of_the_last_header_line() {
+    let h = Harness::with_proxy(Some(TrustedProxy {
+        header: HeaderName::from_static("x-forwarded-for"),
+        peers: vec!["127.0.0.1".parse().unwrap()],
+    }))
+    .await;
+    let (form, cookie) = login_form_and_cookie(&h).await;
+    let guess = |lines: Vec<String>| {
+        let mut request = with_ip(
+            form_req(
+                "/login",
+                &format!("csrf={}&passphrase=wrong", form.field("csrf")),
+            ),
+            "127.0.0.1",
+        );
+        request
+            .headers_mut()
+            .insert(COOKIE, cookie.parse().unwrap());
+        for line in lines {
+            request
+                .headers_mut()
+                .append("x-forwarded-for", line.parse().unwrap());
+        }
+        h.send(request)
+    };
+    for i in 0..3 {
+        let sent = format!("192.0.2.{i}");
+        let status = guess(vec![sent.clone(), "198.51.100.7".to_owned()])
+            .await
+            .status;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let status = guess(vec![format!("{sent}, 198.51.100.7")]).await.status;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let status = guess(vec!["192.0.2.99".to_owned(), "198.51.100.7".to_owned()])
+        .await
+        .status;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a line of the client's own changes nothing"
+    );
+    let status = guess(vec!["198.51.100.7".to_owned(), "198.51.100.8".to_owned()])
+        .await
+        .status;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "another client");
+}
+
 #[tokio::test]
 async fn login_next_cannot_redirect_off_site() {
     let h = Harness::new().await;

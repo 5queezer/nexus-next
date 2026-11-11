@@ -47,7 +47,8 @@ pub enum ConfigError {
 #[derive(Debug, Clone)]
 pub struct TrustedProxy {
     /// Must be stripped and set by the proxy, e.g. `cf-connecting-ip`. With a list such as
-    /// `x-forwarded-for`, the last entry is used: it is the one the proxy itself appended.
+    /// `x-forwarded-for`, the last entry of the last header line is used: it is the one the proxy
+    /// itself appended.
     pub header: HeaderName,
     pub peers: Vec<IpAddr>,
 }
