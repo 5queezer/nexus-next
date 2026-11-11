@@ -2460,7 +2460,10 @@ async fn the_editor_script_comes_with_the_edit_view_and_before_the_page_script()
     );
     assert!(page.contains("id=\"cv-error\" hidden"), "{page}");
     assert!(page.contains("id=\"cv-keys\" hidden"), "{page}");
-    assert!(page.contains("Press Escape and then Tab to leave the editor."), "{page}");
+    assert!(
+        page.contains("Press Escape and then Tab to leave the editor."),
+        "{page}"
+    );
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
     assert!(!page.contains("/assets/editor.js"), "{page}");
     assert!(page.contains("/assets/cv.js"), "{page}");

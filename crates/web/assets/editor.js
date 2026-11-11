@@ -532,6 +532,7 @@
   function indent(out) {
     const text = editor.value;
     const { selectionStart: a, selectionEnd: b } = editor;
+    close();
     if (!out && a === b) return edit(a, b, "  ", a + 2);
     const from = text.lastIndexOf("\n", a - 1) + 1;
     // A selection that ends at the start of a line doesn't hold that line.
