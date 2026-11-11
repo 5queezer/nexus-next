@@ -1516,7 +1516,7 @@ fn editor_view(
 /// Another design for the source, and how many full pages it aims for. With `cv.js` the choice rewrites the `#show: cv` line in the editor,
 /// shows in the preview, and is saved with the text. Without it the form stores the saved source in
 /// that template as a draft. A line this can't read is the editor's to change.
-fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl IntoView + use<> {
+fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> AnyView {
     let current = template_of(text).map(str::to_owned);
     let unreadable = current.is_none();
     let pages = pages_of(text);
@@ -1549,6 +1549,7 @@ fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl 
             </p>
         </form>
     }
+    .into_any()
 }
 
 fn diff_view(diff: &str) -> impl IntoView + use<> {
