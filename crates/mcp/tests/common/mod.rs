@@ -18,6 +18,7 @@ pub const OWNER_ID: &str = "owner-synthetic";
 pub const OWNER_EMAIL: &str = "owner@example.test";
 pub const FULL: &str = "full-token";
 pub const TOOLS_ONLY: &str = "tools-token";
+pub const SUBMISSIONS_ONLY: &str = "submissions-token";
 pub const API_TOKEN: &str = "api-token";
 
 async fn test_auth(mut request: Request, next: Next) -> Response {
@@ -30,7 +31,8 @@ async fn test_auth(mut request: Request, next: Next) -> Response {
     let context = match bearer.as_deref() {
         Some(FULL) => Some((AuthType::OAuth, vec![SCOPE_TOOLS, SCOPE_SUBMISSIONS])),
         Some(TOOLS_ONLY) => Some((AuthType::OAuth, vec![SCOPE_TOOLS])),
-        Some(API_TOKEN) => Some((AuthType::ApiToken, vec![])),
+        Some(SUBMISSIONS_ONLY) => Some((AuthType::OAuth, vec![SCOPE_SUBMISSIONS])),
+        Some(API_TOKEN) => Some((AuthType::ApiToken, vec![SCOPE_TOOLS, SCOPE_SUBMISSIONS])),
         _ => None,
     };
     if let Some((auth_type, scopes)) = context {

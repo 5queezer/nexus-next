@@ -9,7 +9,7 @@ mod zod;
 use std::sync::{Arc, LazyLock};
 
 use nexus_core::Db;
-use nexus_core::auth::{AuthContext, AuthType, SCOPE_TOOLS};
+use nexus_core::auth::{AuthContext, AuthType};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, Implementation, ProtocolVersion, ServerCapabilities,
     ServerConfig,
@@ -41,9 +41,6 @@ pub async fn call_tool(
         auth_type: AuthType::OAuth,
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
     };
-    if !auth.has_scope(SCOPE_TOOLS) {
-        return tools::code_error("insufficient_scope");
-    }
     tools::call(
         state,
         &auth,

@@ -337,7 +337,7 @@ A hard refusal on any of these is `{"error":{"code":"cv_fact_violation","violati
 - A parent killed outright leaves its child to systemd's cgroup kill. `OOMPolicy=continue` hasn't been exercised by a real kernel OOM kill.
 - A client lost during a compile stops it, and nothing is stored. Lost after the compile, in the moments before the commit, the revision is stored with no one told, and a proxy may not pass on a disconnect at all. `expectedRevision` then refuses the retry, and `get_cv_source` tells.
 
-**Tools.** Additive, in `contract/mcp-tools.additive.json`, checked by a second golden test. `tools/list` is the 35 frozen tools, in order, then these. All need `mcp:tools`.
+**Tools.** Additive, in `contract/mcp-tools.additive.json`, checked by a second golden test. `tools/list` is the 35 frozen tools, in order, then these. All need `mcp:tools`, like every tool: a token without it gets `insufficient_scope` from any call.
 
 | Tool | Behaviour |
 |---|---|

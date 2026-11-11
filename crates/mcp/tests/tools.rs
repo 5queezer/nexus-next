@@ -1577,6 +1577,29 @@ async fn submission_policy_and_conflict_rules() {
 }
 
 #[tokio::test]
+async fn a_token_without_the_tools_scope_calls_no_tool() {
+    let server = Server::start().await;
+    let id = server.application("Acme").await;
+    for (tool, args) in [
+        ("list_applications", json!({})),
+        ("delete_application", json!({"id": id})),
+        ("list_application_submissions", json!({"applicationId": id})),
+        ("no_such_tool", json!({})),
+    ] {
+        let reply = server.call_as(SUBMISSIONS_ONLY, tool, args).await;
+        assert!(reply.is_error, "{tool}");
+        assert_eq!(
+            reply.json(),
+            json!({"error": {"code": "insufficient_scope"}}),
+            "{tool}"
+        );
+    }
+    let listed = server.call("list_applications", json!({})).await;
+    assert!(!listed.is_error, "nothing was deleted: {}", listed.text);
+    assert!(listed.text.contains("Acme"), "{}", listed.text);
+}
+
+#[tokio::test]
 async fn submission_scope_is_enforced_per_tool() {
     let server = Server::start().await;
     let id = server.application("Acme").await;
