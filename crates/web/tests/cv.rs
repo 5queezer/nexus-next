@@ -2344,3 +2344,43 @@ async fn a_page_target_is_chosen_beside_the_template_and_the_preview_says_how_fa
     let (_, _, page) = get(&f.app, "/cv/variants/default?view=review").await;
     assert!(page.contains("Aiming for 2 full pages"), "{page}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fit_gives_back_the_text_at_the_density_closest_to_its_pages() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let uri = format!("{VARIANT}/fit");
+    let (status, _, _) = post(&f.app, &uri, &[("source", &source)]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &source)]).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("Choose how many pages"), "{body}");
+
+    // One page with room to spare: the loosest fills it most.
+    let aimed = source.replace("cv.with(lang: \"en\")", "cv.with(lang: \"en\", pages: 1)");
+    let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &aimed)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let told: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(told["density"], -2, "{told}");
+    assert_eq!(
+        told["source"],
+        aimed.replace("pages: 1", "pages: 1, density: -2")
+    );
+    let message = told["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Density -2. Aiming for 1 full page: page 1 is"),
+        "{message}"
+    );
+
+    // Two pages are out of reach, which it says with what is missing.
+    let far = aimed.replace("pages: 1", "pages: 2");
+    let (_, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &far)]).await;
+    let told: Value = serde_json::from_str(&body).unwrap();
+    let message = told["message"].as_str().unwrap();
+    assert!(message.starts_with("No density reaches it. The closest is -2. Aiming for 2 full pages: the CV ends on page 1"), "{message}");
+    assert!(
+        message.contains("lines more fill them") || message.contains("more fill them"),
+        "{message}"
+    );
+    assert!(revision_rows(&f.db).await.is_empty());
+}

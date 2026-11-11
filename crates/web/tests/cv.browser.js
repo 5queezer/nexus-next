@@ -17,6 +17,7 @@ const PAGE = `<!doctype html><meta charset="utf-8">
     <select id="cv-template"><option>classic</option><option>modern</option><option>banner</option></select>
     <select id="cv-pages"><option value="">no target</option><option>1</option><option>2</option></select>
     <button id="cv-template-save">Save draft in this template</button>
+    <button type="button" id="cv-fit" hidden>Fit</button><p id="cv-fit-note" hidden></p>
     <p id="cv-template-unreadable" hidden>By hand.</p><p id="cv-template-hint"></p></form>
 </div><script src="/assets/cv.js"></script>`;
 
@@ -34,6 +35,10 @@ const PAGE = `<!doctype html><meta charset="utf-8">
     if (url.pathname.endsWith("/try")) {
       tried.push(new URLSearchParams(route.request().postData()).get("source"));
       return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 2, layout: ["2 pages.", "A note."] } });
+    }
+    if (url.pathname.endsWith("/fit")) {
+      const source = new URLSearchParams(route.request().postData()).get("source");
+      return route.fulfill({ json: { source: source.replace("pages: 2", "pages: 2, density: 1"), message: "Density 1." } });
     }
     if (url.pathname.endsWith("/preview.json")) {
       return route.fulfill({ json: { revision: 1, state: "draft", pages: 1 } });
@@ -62,9 +67,19 @@ const PAGE = `<!doctype html><meta charset="utf-8">
   const pages = page.locator("#cv-pages");
   await pages.selectOption("2");
   assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "modern", pages: 2'));
+  // A fit needs a target, holds its density in the editor unsaved, and the selects keep it.
+  const fit = page.locator("#cv-fit");
+  assert.equal(await fit.isVisible(), true);
+  await fit.click();
+  await page.waitForFunction(() => document.getElementById("cv-fit-note").textContent === "Density 1.");
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "modern", pages: 2, density: 1'));
+  assert.equal(tried.at(-1), await editor.inputValue());
   await select.selectOption("banner");
-  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "banner", pages: 2'));
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "banner", pages: 2, density: 1'));
+  await editor.fill(SOURCE.replace('lang: "de"', 'lang: "de", template: "banner", pages: 2'));
+  assert.equal(await fit.isDisabled(), false);
   await pages.selectOption("");
+  assert.equal(await fit.isDisabled(), true);
   await select.selectOption("modern");
   assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "modern"'));
 

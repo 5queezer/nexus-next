@@ -1095,8 +1095,14 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
 }
 
 /// Text the owner has typed and not stored, drawn as a draft is: every page, stamped, and only if it
-/// passes the check. Nothing is stored. Only `crate::owner` reaches this.
-pub(crate) async fn draw_unsaved(ctx: &Ctx, name: &str, source: &str) -> ToolResult {
+/// passes the check. Without `pictures` it says only how the pages are filled. Nothing is stored. Only
+/// `crate::owner` reaches this.
+pub(crate) async fn draw_unsaved(
+    ctx: &Ctx,
+    name: &str,
+    source: &str,
+    pictures: bool,
+) -> ToolResult {
     let (state, known) = {
         let mut conn = ctx.state.db.conn().await?;
         let state = cv_facts::get(&mut conn).await?;
@@ -1107,7 +1113,8 @@ pub(crate) async fn draw_unsaved(ctx: &Ctx, name: &str, source: &str) -> ToolRes
         let known = known_to_owner(&mut conn, Some(&base.variant), &state.facts).await?;
         (state, known)
     };
-    let rendered = match compile(ctx, source, &state.facts, false, MAX_PAGES, true).await {
+    let pages = if pictures { MAX_PAGES } else { 0 };
+    let rendered = match compile(ctx, source, &state.facts, false, pages, true).await {
         Ok(rendered) => rendered,
         Err(error) => return Ok(*error),
     };

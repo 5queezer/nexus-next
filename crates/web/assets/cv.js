@@ -345,7 +345,8 @@
   const SHOW = "#show: cv";
 
   // The line that sets up the page, as the server reads it: exactly one, with only `lang` and
-  // `template` as quoted words and `pages` as 1 or 2. Null for any other, which is then left alone.
+  // `template` as quoted words, `pages` as 1 or 2 and `density` from -2 to 2. Null for any other,
+  // which is then left alone.
   function showLine(source) {
     let found = null;
     let at = 0;
@@ -364,8 +365,9 @@
           const colon = arg.indexOf(":");
           const key = arg.slice(0, colon).trim();
           const said = arg.slice(colon + 1).trim();
-          const value = key === "pages" ? /^([12])$/.exec(said) : /^"([A-Za-z0-9-]*)"$/.exec(said);
-          if (colon < 0 || !value || !["lang", "template", "pages"].includes(key) || key in set) return null;
+          const shape = { pages: /^([12])$/, density: /^(-?[12]|0)$/ }[key] || /^"([A-Za-z0-9-]*)"$/;
+          const value = shape.exec(said);
+          if (colon < 0 || !value || !["lang", "template", "pages", "density"].includes(key) || key in set) return null;
           set[key] = value[1];
         }
         found = { start: at, end: at + text.length, set };
@@ -381,6 +383,7 @@
     const editor = byId("cv-source");
     const select = byId("cv-template");
     const pages = byId("cv-pages");
+    const fitButton = byId("cv-fit");
     if (!editor || !select) return;
     let timer = null;
     byId("cv-template-save").hidden = true;
@@ -389,11 +392,29 @@
       const line = showLine(editor.value);
       select.disabled = !line;
       pages.disabled = !line;
+      fitButton.disabled = !line;
       byId("cv-template-unreadable").hidden = !!line;
       if (!line) return;
       // An unknown name selects nothing.
       select.value = line.set.template || select.options[0].value;
       pages.value = line.set.pages || "";
+      fitButton.disabled = !line.set.pages;
+    };
+    // Asks for the density at which this text comes closest to its pages, and holds it unsaved.
+    const fit = async () => {
+      const form = new URLSearchParams({ csrf: editor.form.elements.csrf.value, source: editor.value });
+      fitButton.disabled = true;
+      let body = { message: "The fit could not be tried." };
+      try {
+        const response = await fetch(`${base}/fit`, { method: "POST", body: form });
+        body = await response.json();
+      } catch {
+        // The note says so.
+      }
+      if (body.source) editor.value = body.source;
+      setNote(byId("cv-fit-note"), body.message);
+      follow();
+      if (body.source) tryPreview();
     };
     const chosen = () => {
       const line = showLine(editor.value);
@@ -404,13 +425,17 @@
       const template = select.selectedIndex < 0 ? line.set.template : select.value;
       if (template && template !== select.options[0].value) args.push(`template: "${template}"`);
       if (pages.value) args.push(`pages: ${pages.value}`);
+      if (Number(line.set.density)) args.push(`density: ${line.set.density}`);
       const show = args.length ? `${SHOW}.with(${args.join(", ")})` : SHOW;
       editor.value = editor.value.slice(0, line.start) + show + editor.value.slice(line.end);
+      follow();
       clearTimeout(timer);
       tryPreview();
     };
     select.addEventListener("change", chosen);
     pages.addEventListener("change", chosen);
+    fitButton.hidden = false;
+    fitButton.addEventListener("click", fit);
     editor.addEventListener("input", () => {
       follow();
       clearTimeout(timer);

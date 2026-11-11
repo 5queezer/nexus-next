@@ -27,8 +27,8 @@ use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
 use nexus_tailor::{
-    DiffLine, Language, Layout, LineChange, Metric, ReviewItem, Rule, TEMPLATES, pages_of,
-    review_diff, template_of, with_pages, with_template,
+    DiffLine, Language, Layout, LayoutKind, LineChange, Metric, ReviewItem, Rule, TEMPLATES,
+    pages_of, review_diff, template_of, with_density, with_pages, with_template,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -90,6 +90,7 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route("/cv/variants/{variant}/preview.json", get(preview_json))
             .route("/cv/variants/{variant}/try", post(try_source))
             .route("/cv/variants/{variant}/try.png", get(try_png))
+            .route("/cv/variants/{variant}/fit", post(fit))
             .route("/cv/variants/{variant}/cv.pdf", get(pdf))
             .route("/api/cv/{variant}/head", get(head))
             .layer(DefaultBodyLimit::max(SAVE_BODY_LIMIT))
@@ -1540,7 +1541,9 @@ fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl 
                     </select>
                 </label>
                 <button type="submit" class="secondary" id="cv-template-save" disabled=unreadable>"Save draft with these"</button>
+                <button type="button" class="secondary" id="cv-fit" hidden>"Fit to the pages"</button>
             </div>
+            <p class="hint" id="cv-fit-note" role="status" hidden></p>
             <p class="hint" id="cv-template-unreadable" hidden=!unreadable>
                 "This source sets up its page in its own way, so change the template and the pages in its #show: cv line by hand."
             </p>
@@ -2052,7 +2055,7 @@ async fn try_source(
         .get("source")
         .map(|text| text.replace("\r\n", "\n"))
         .unwrap_or_default();
-    let told = told(owner::draw_unsaved(cv.mcp.clone(), &variant, &source).await);
+    let told = told(owner::draw_unsaved(cv.mcp.clone(), &variant, &source, true).await);
     if told.is_error {
         let tokens: Vec<_> = told.value["error"]["violations"]
             .as_array()
@@ -2084,6 +2087,81 @@ async fn try_source(
         })
         .collect();
     Json(json!({"key": key, "version": version, "pages": count, "layout": notes})).into_response()
+}
+
+/// The densities a fit tries, the source's own first: five compiles at the most.
+const DENSITIES: [i32; 5] = [0, 1, -1, 2, -2];
+
+/// Finds the density at which the editor's text comes closest to the pages it aims for, and gives
+/// the text back with it for the editor to hold, unsaved. A full last page with the least change wins,
+/// then the fullest last page, then the fewest pages off. Nothing is stored.
+async fn fit(
+    State(cv): State<Cv>,
+    Path(variant): Path<String>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    Form(form): Form<Typed>,
+) -> Response {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let source = form
+        .get("source")
+        .map(|text| text.replace("\r\n", "\n"))
+        .unwrap_or_default();
+    let refused = |message: &str| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"message": message})),
+        )
+            .into_response()
+    };
+    let Some(target) = pages_of(&source) else {
+        return refused("Choose how many pages the CV aims for first.");
+    };
+    let mut best: Option<(f64, i32, String, Layout)> = None;
+    let mut why = "cv_compile_failed".to_owned();
+    for density in DENSITIES {
+        let Some(tried) = with_density(&source, density) else {
+            continue;
+        };
+        let told = told(owner::draw_unsaved(cv.mcp.clone(), &variant, &tried, false).await);
+        // A density at which the text can't be drawn, or draws what the check refuses, is not a fit.
+        let layout = serde_json::from_value::<Layout>(told.value["layout"].clone());
+        let (false, Ok(layout)) = (told.is_error, layout) else {
+            why = told.code().to_owned();
+            continue;
+        };
+        let fill = f64::from(layout.last_page_fill);
+        let rank = if layout.pages != target {
+            let toward = if layout.pages > target {
+                density
+            } else {
+                -density
+            };
+            0.01 * f64::from(toward) - f64::from(layout.pages.abs_diff(target))
+        } else if fill >= 0.9 {
+            3.0 - 0.1 * f64::from(density.abs())
+        } else {
+            1.0 + fill
+        };
+        if best.as_ref().is_none_or(|best| rank > best.0) {
+            best = Some((rank, density, tried, layout));
+        }
+    }
+    let Some((_, density, fitted, layout)) = best else {
+        return refused(explain(&why));
+    };
+    let said = layout
+        .notes
+        .iter()
+        .find(|note| note.kind == LayoutKind::PageTarget)
+        .map_or("", |note| note.message.as_str());
+    let message = if layout.pages == target {
+        format!("Density {density}. {said}")
+    } else {
+        format!("No density reaches it. The closest is {density}. {said}")
+    };
+    Json(json!({"source": fitted, "density": density, "message": message})).into_response()
 }
 
 #[derive(Deserialize)]

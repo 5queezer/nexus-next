@@ -5,7 +5,8 @@ mod common;
 use common::{content_en, facts_en, render};
 use nexus_tailor::CvContent;
 use nexus_tailor::{
-    Layout, LayoutKind, TEMPLATES, pages_of, source_from_profile, with_pages, with_template,
+    Layout, LayoutKind, TEMPLATES, check, density_of, pages_of, source_from_profile, with_density,
+    with_pages, with_template,
 };
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
@@ -286,4 +287,75 @@ async fn a_page_target_draws_nothing() {
     assert_eq!(plain.pdf, aimed.pdf);
     assert_eq!(plain.previews, aimed.previews);
     assert_eq!(plain.text.lines, aimed.text.lines);
+}
+
+/// The same text tighter or looser, to close a small gap to a page target.
+#[tokio::test]
+async fn density_draws_the_same_text_tighter_or_looser_in_every_template() {
+    let facts = facts_en();
+    for template in TEMPLATES {
+        let plain = with_template(&source_from_profile(&long_en()), template).unwrap();
+        assert_eq!(density_of(&plain), Some(0));
+        assert_eq!(with_density(&plain, 0).unwrap(), plain);
+        let mut used = Vec::new();
+        for density in -2..=2 {
+            let source = with_density(&plain, density).unwrap();
+            assert_eq!(density_of(&source), Some(density));
+            let shots = std::env::var_os("NEXUS_TEMPLATE_SHOTS").is_some();
+            let rendered = nexus_tailor::Renderer::InProcess
+                .render(nexus_tailor::RenderRequest {
+                    source: source.clone(),
+                    facts: facts.clone(),
+                    pdf: false,
+                    preview_pages: u32::from(shots),
+                    stamp: false,
+                })
+                .await
+                .unwrap();
+            if shots {
+                let name = format!("density-{template}-{density}.png");
+                let dir = format!("{}/../../target/template-shots", env!("CARGO_MANIFEST_DIR"));
+                std::fs::write(format!("{dir}/{name}"), &rendered.previews[0]).unwrap();
+            }
+            let report = check(&rendered.text, &facts, None, "");
+            assert_eq!(report.violations, [], "{template} {density}");
+            let layout = &rendered.text.layout;
+            used.push(f64::from(layout.pages) + f64::from(layout.last_page_fill));
+            // The commonest word is body text, which stays at 9 pt or more: a box is 1.05 em high.
+            let mut heights: Vec<f32> = rendered
+                .text
+                .places
+                .iter()
+                .flat_map(|place| place.words.iter().map(|word| word[3] * 841.89 / 1.05))
+                .collect();
+            heights.sort_by(f32::total_cmp);
+            assert!(
+                heights[heights.len() / 2] > 8.95,
+                "{template} {density}: {}",
+                heights[heights.len() / 2]
+            );
+        }
+        assert!(
+            used.windows(2).all(|pair| pair[0] > pair[1]),
+            "{template}: {used:?}"
+        );
+        assert!(used[0] - used[4] > 0.15, "{template}: {used:?}");
+    }
+    let source = "#import \"/nexus.typ\": *\n#show: cv.with(density: 3)\n#header()\n";
+    let Err(nexus_tailor::RenderError::Diagnostics(told)) = render(source, &facts).await else {
+        panic!("compiled");
+    };
+    assert!(
+        told[0].message.contains("no density 3"),
+        "{}",
+        told[0].message
+    );
+    assert_eq!(
+        (density_of(source), with_density("#show: cv\n", 3)),
+        (None, None)
+    );
+    assert_eq!(
+        with_density("#show: cv.with(pages: 1)\n", 2).unwrap(),
+        "#show: cv.with(pages: 1, density: 2)\n"
+    );
 }
