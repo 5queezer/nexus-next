@@ -124,6 +124,10 @@ pub fn page_with_scripts(
                     </p>
                     {body}
                 </main>
+                <footer class="foot">
+                    <a href="/passphrase">"Change passphrase"</a>
+                    <a href="/logout">"Log out"</a>
+                </footer>
             </body>
         </html>
     };

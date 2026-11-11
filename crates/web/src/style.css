@@ -83,6 +83,7 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 }
 nav { display: flex; gap: 4px; min-width: 0; overflow-x: auto; }
 nav a {
+  white-space: nowrap;
   padding: 6px 10px;
   border-radius: 6px;
   text-decoration: none;
@@ -768,6 +769,14 @@ form.act .cv-error { min-height: 0; padding: 4px 8px; border: 1px solid var(--wa
 .account { margin-left: auto; }
 .account > summary, .account[open] > summary { padding: 6px 10px; border-radius: 6px; color: var(--muted); white-space: nowrap; }
 .account > summary:hover { color: var(--ink); }
+/* A phone's top bar has room for the four pages and no more, so there the two links end the page. */
+.foot { display: none; }
+@media (max-width: 32rem) {
+  .account { display: none; }
+  .foot { display: flex; gap: 20px; max-width: 64rem; margin: 0 auto; padding: 0 16px 24px; font-size: 13px; }
+  .foot a { color: var(--muted); }
+  body:has(.app-actions) .foot { padding-bottom: 96px; }
+}
 
 .next {
   display: flex;
