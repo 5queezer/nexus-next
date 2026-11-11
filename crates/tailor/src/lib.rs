@@ -22,7 +22,8 @@ pub use check::{
 };
 pub use template::{
     CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, TEMPLATES, default_source,
-    pages_of, source_from_profile, template_of, with_pages, with_template,
+    density_of, pages_of, source_from_profile, template_of, with_density, with_pages,
+    with_template,
 };
 pub use worker::run_worker;
 

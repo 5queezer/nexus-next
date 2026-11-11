@@ -8,7 +8,7 @@ use crate::Facts;
 /// What `get_cv_source` tells an agent about `/nexus.typ`.
 pub const TEMPLATE_HELP: &str = r#"Start a source with `#import "/nexus.typ": *` and `#show: cv` (or `#show: cv.with(lang: "de")`).
 `#show: cv.with(template: "modern")` draws the same source in another design: `classic` (the default), `modern`, `banner`, `sidebar` or `compact`.
-`#show: cv.with(pages: 1)` or `pages: 2` names how many full pages the owner wants. It changes nothing by itself: `layout` in a `patch_cv` or `render_cv_pdf` reply says how far off the CV is, in lines, and which lines and pages break badly, so cut or add text and read it again.
+`#show: cv.with(pages: 1)` or `pages: 2` names how many full pages the owner wants. It changes nothing by itself: `layout` in a `patch_cv` or `render_cv_pdf` reply says how far off the CV is, in lines, and which lines and pages break badly, so cut or add text and read it again. `density: 1` or `2` draws the same text tighter and `-1` or `-2` looser, for a gap of a few lines.
 Hard facts are rendered by id, never typed: `#header()`, `#contact()`, `#employment("id")[- a bullet]`, `#employment("id")` for one compact line, `#education("id")`, `#languages()`, `#metric("key")`.
 Wording helpers: `= Section`, `#skills("Category")[Rust, Go]`, `#project("Name", stack: "Rust", url: "example.org")[What it does.]`.
 Only /main.typ, /nexus.typ and /facts.json exist. A page is 200 to 1200 pt on each side. No images, packages, `hide` or `pdf.attach`. Text stays upright and at its natural spacing: no `rotate`, `skew`, mirroring, stretching, `tracking` that stacks or spreads glyphs, or a `stroke` over 0.1 em. Every letter must reach the reader, judged on the drawn page: nothing painted over it, text a reader can tell from what it really stands on, and only letters the fonts have (Latin, Greek, Cyrillic, Hebrew; no letters in math, digits are fine). A small mark drawn on text isn't refused, but the owner is told of it. Emails and URLs come from `#contact()`; a link's text is free unless it shows a contact value."#;
@@ -24,6 +24,7 @@ struct ShowLine<'a> {
     lang: Option<&'a str>,
     template: Option<&'a str>,
     pages: Option<u32>,
+    density: Option<i32>,
 }
 
 /// None unless the source has exactly one such line, written as this module writes it: no other is
@@ -46,6 +47,7 @@ fn show_line(source: &str) -> Option<ShowLine<'_>> {
                 lang: None,
                 template: None,
                 pages: None,
+                density: None,
             };
             for arg in args.split(',').filter(|arg| !arg.trim().is_empty()) {
                 let (key, value) = arg.split_once(':')?;
@@ -61,6 +63,12 @@ fn show_line(source: &str) -> Option<ShowLine<'_>> {
                     "template" if show.template.is_none() => show.template = Some(word()?),
                     "pages" if show.pages.is_none() && matches!(value, "1" | "2") => {
                         show.pages = value.parse().ok();
+                    }
+                    "density"
+                        if show.density.is_none()
+                            && matches!(value, "-2" | "-1" | "0" | "1" | "2") =>
+                    {
+                        show.density = value.parse().ok();
                     }
                     _ => return None,
                 }
@@ -85,7 +93,13 @@ pub fn pages_of(source: &str) -> Option<u32> {
 }
 
 /// `source` with its `#show: cv` line saying this, and nothing else changed.
-fn rewritten(source: &str, show: &ShowLine, template: &str, pages: Option<u32>) -> String {
+fn rewritten(
+    source: &str,
+    show: &ShowLine,
+    template: &str,
+    pages: Option<u32>,
+    density: i32,
+) -> String {
     let mut args = Vec::new();
     if let Some(lang) = show.lang {
         args.push(format!("lang: \"{lang}\""));
@@ -95,6 +109,9 @@ fn rewritten(source: &str, show: &ShowLine, template: &str, pages: Option<u32>) 
     }
     if let Some(pages) = pages {
         args.push(format!("pages: {pages}"));
+    }
+    if density != 0 {
+        args.push(format!("density: {density}"));
     }
     let line = if args.is_empty() {
         SHOW.to_owned()
@@ -112,17 +129,41 @@ fn rewritten(source: &str, show: &ShowLine, template: &str, pages: Option<u32>) 
 /// written as no argument. None if that line can't be read or there is no such template.
 pub fn with_template(source: &str, template: &str) -> Option<String> {
     let show = show_line(source)?;
-    TEMPLATES
-        .contains(&template)
-        .then(|| rewritten(source, &show, template, show.pages))
+    TEMPLATES.contains(&template).then(|| {
+        rewritten(
+            source,
+            &show,
+            template,
+            show.pages,
+            show.density.unwrap_or(0),
+        )
+    })
 }
 
 /// `source` aiming for 1 or 2 full pages, or for none: only its `#show: cv` line changes. None if that
 /// line can't be read or the target is another.
 pub fn with_pages(source: &str, pages: Option<u32>) -> Option<String> {
     let show = show_line(source)?;
-    matches!(pages, None | Some(1 | 2))
-        .then(|| rewritten(source, &show, show.template.unwrap_or(TEMPLATES[0]), pages))
+    matches!(pages, None | Some(1 | 2)).then(|| {
+        let template = show.template.unwrap_or(TEMPLATES[0]);
+        rewritten(source, &show, template, pages, show.density.unwrap_or(0))
+    })
+}
+
+/// How much tighter than its template a source is drawn, from -2 to 2. None if its `#show: cv` line
+/// can't be read.
+pub fn density_of(source: &str) -> Option<i32> {
+    show_line(source).map(|show| show.density.unwrap_or(0))
+}
+
+/// `source` drawn tighter or looser: only its `#show: cv` line changes, and 0 is written as no
+/// argument. None if that line can't be read or the density is out of range.
+pub fn with_density(source: &str, density: i32) -> Option<String> {
+    let show = show_line(source)?;
+    (-2..=2).contains(&density).then(|| {
+        let template = show.template.unwrap_or(TEMPLATES[0]);
+        rewritten(source, &show, template, show.pages, density)
+    })
 }
 
 /// One job in a generated CV. Tier 3 renders as one compact line.

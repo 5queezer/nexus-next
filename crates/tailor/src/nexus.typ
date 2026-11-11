@@ -137,14 +137,35 @@
   (side.join(), main.join())
 }
 
+// A template drawn tighter, for a density above 0, or looser: the text, its line spacing and the
+// margins above and below. The text never goes under 9 pt, or under its own size if that is smaller.
+#let _dense(t, density) = {
+  let scaled(size, least) = calc.max(calc.min(size, least), size * (1 - 0.04 * density))
+  let margin = t.margin
+  for side in ("top", "bottom") { margin.insert(side, margin.at(side) * (1 - 0.1 * density)) }
+  t + (
+    size: scaled(t.size, 9pt),
+    // The small text stays as it is when the rest grows: a side column has no room for a wider address.
+    small: if density > 0 { scaled(t.small, 8pt) } else { t.small },
+    name: t.name * (1 - 0.04 * density),
+    leading: t.leading * (1 - 0.1 * density),
+    margin: margin,
+  )
+}
+
 // The page setup. Start a CV with `#show: cv`, `#show: cv.with(lang: "de")` or
 // `#show: cv.with(template: "modern")`. `pages` is how many full pages the CV aims for, which draws
-// nothing: the layout notes read it and say how far off the CV is.
-#let cv(lang: "en", template: "classic", pages: none, body) = {
+// nothing: the layout notes read it and say how far off the CV is. `density` from -2 to 2 draws the
+// same text looser or tighter, to close a small gap to that.
+#let cv(lang: "en", template: "classic", pages: none, density: 0, body) = {
   if template not in _templates {
     panic("no template \"" + template + "\". Known: " + _templates.keys().join(", "))
   }
+  if density not in (-2, -1, 0, 1, 2) {
+    panic("no density " + repr(density) + ". It goes from -2, the loosest, to 2, the tightest")
+  }
   let t = _templates.at(template)
+  if density != 0 { t = _dense(t, density) }
   set document(title: facts.name, author: facts.name)
   set page(
     paper: "a4",
