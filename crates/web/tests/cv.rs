@@ -371,7 +371,8 @@ async fn an_agents_edit_waits_for_the_owner_who_reads_it_and_approves_it() {
     let (status, _, page) = get(&f.app, VARIANT).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(badge(&page), "Draft, not approved");
-    assert!(page.contains("Approve revision 1"), "{page}");
+    // By name: another variant can stand at revision 1 too.
+    assert!(page.contains(">Approve revision 1 of default<"), "{page}");
     assert!(page.contains("id=\"cv-review-items\""), "{page}");
     // Marked where it stands, in what a reader sees: nothing is approved yet, so that is all of it.
     let rendered = page.split("id=\"cv-rendered-diff\"").nth(1).unwrap();
@@ -397,6 +398,10 @@ async fn an_agents_edit_waits_for_the_owner_who_reads_it_and_approves_it() {
     assert_eq!(by, "dashboard");
     let (_, _, page) = get(&f.app, landed).await;
     assert_eq!(badge(&page), "Approved");
+    assert!(
+        page.contains("Revision 1 of default is approved. Its PDF now has no stamp."),
+        "{page}"
+    );
     assert!(page.contains("id=\"cv-approval\""), "{page}");
     assert!(page.contains("You approved this text"), "{page}");
     assert!(!page.contains("Approve revision"), "{page}");
@@ -1417,7 +1422,7 @@ async fn a_done_banner_shows_only_when_the_state_agrees() {
         let (_, _, page) = get(&f.app, &format!("{VARIANT}?done={done}")).await;
         assert_eq!(badge(&page), "Draft, not approved", "{done}");
         for claim in [
-            "Approved. The PDF",
+            "is approved.",
             "Saved and approved",
             "Saved as a draft",
             "Reverted:",

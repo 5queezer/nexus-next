@@ -144,7 +144,7 @@
   // again, so the slow poll asks until it has been shown.
   async function approved(revision) {
     if (revision !== shown || shownState === "approved") return;
-    const followed = await followHead(revision, `Revision ${revision} is approved.`);
+    const followed = await followHead(revision, `Revision ${revision} of ${variant} is approved.`);
     if (!followed) {
       startPolling();
       return;

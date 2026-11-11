@@ -591,7 +591,13 @@ async fn variant_page(
 /// What a form just sent did. An agent sends the owner links, so the query claims nothing by itself: a
 /// notice shows only when the head says the same. `origin` is the head's on this page, and no tool call
 /// can send the ones asked for here.
-fn done_notice(done: &str, approved: bool, origin: Option<&str>) -> Option<Flash> {
+fn done_notice(
+    done: &str,
+    approved: bool,
+    origin: Option<&str>,
+    variant: &str,
+    head: i64,
+) -> Option<Flash> {
     let text = match (done, approved, origin) {
         ("saved", true, Some("dashboard")) => {
             "Saved and approved: you changed text you had approved, so the change is yours."
@@ -603,7 +609,15 @@ fn done_notice(done: &str, approved: bool, origin: Option<&str>) -> Option<Flash
         ("reverted", false, Some("revert")) => {
             "Reverted: the old text is now a new revision. It isn't approved, so read it under Review and approve it to use it."
         }
-        ("approved", true, _) => "Approved. The PDF of this revision now has no stamp.",
+        // By name: two variants can stand at the same revision number.
+        ("approved", true, _) => {
+            return Some(Flash {
+                ok: true,
+                text: format!(
+                    "Revision {head} of {variant} is approved. Its PDF now has no stamp."
+                ),
+            });
+        }
         _ => return None,
     };
     Some(Flash {
@@ -674,7 +688,7 @@ async fn render_variant(
     let done = outcome
         .done
         .as_deref()
-        .and_then(|done| done_notice(done, approved, head_origin));
+        .and_then(|done| done_notice(done, approved, head_origin, variant, head));
     // A save approves only on an approved base, and only if its text came from there, so the button can
     // say which this one does.
     let saves_approved = approved && expected == head && !outcome.not_from_base;
@@ -1053,7 +1067,7 @@ fn approval_view(
                         <input type="hidden" name="revision" value=review.revision.to_string() />
                         <input type="hidden" name="sourceSha256" value=review.source_sha256.clone() />
                         <input type="hidden" name="factsSha256" value=review.facts_sha256.clone() />
-                        <button type="submit" id="cv-approve">{format!("Approve revision {}", review.revision)}</button>
+                        <button type="submit" id="cv-approve">{format!("Approve revision {} of {variant}", review.revision)}</button>
                         <p class="hint" id="cv-approve-hint" hidden>"Scroll to the end of the list. Then you can approve."</p>
                     </form>
                 }
