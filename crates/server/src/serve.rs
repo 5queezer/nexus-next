@@ -336,7 +336,11 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp),
     );
-    let voice = nexus_web::Voice::new(config.voice.clone());
+    let voice = nexus_web::Voice::new(config.voice.clone(), &config.data_dir);
+    let auth = match &config.access {
+        Access::Owner(auth) => Some(AuthState::new(db.clone(), auth.clone())?),
+        Access::InsecureLocalOnly => None,
+    };
     // Outside the owner pool: an open stream is neither a request in flight nor bound by its
     // deadline, and a voice session's status check mustn't read a busy dashboard as a lost server.
     // They still sit behind the session check.
@@ -351,6 +355,12 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     let humans = harden(
         nexus_web::dashboard_router(state.clone(), config.timezone)
             .merge(nexus_web::api_router(db.clone()))
+            .merge(nexus_web::openai_key_router(
+                db.clone(),
+                config.timezone,
+                voice.clone(),
+                auth.clone(),
+            ))
             .merge(nexus_web::cv_router(
                 state,
                 config.timezone,
@@ -362,10 +372,9 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     let slashes = Router::new()
         .route("/api/mcp/", any(strip_trailing_slash))
         .route("/mcp/", any(strip_trailing_slash));
-    let routes = match &config.access {
-        Access::Owner(auth) => {
-            let https = auth.public_base_url.starts_with("https://");
-            let auth = AuthState::new(db.clone(), auth.clone())?;
+    let routes = match (&config.access, auth) {
+        (Access::Owner(access), Some(auth)) => {
+            let https = access.public_base_url.starts_with("https://");
             let routes = harden(public.merge(nexus_auth::router(auth.clone())), PUBLIC)
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
                 .merge(
@@ -383,7 +392,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
                 routes
             }
         }
-        Access::InsecureLocalOnly => harden(public, PUBLIC)
+        _ => harden(public, PUBLIC)
             .merge(humans)
             .merge(unpooled(watch::Sender::new(0)))
             .merge(
@@ -482,7 +491,8 @@ pub async fn run(
         base_url,
         timezone = %config.timezone,
         calendar = config.calendar_token.is_some(),
-        voice = config.voice.is_some(),
+        voice = config.voice.key.is_some()
+            || config.data_dir.join(nexus_web::OPENAI_KEY_FILE).exists(),
         "listening"
     );
     let result = serve(listener, app, shutdown, DRAIN_TIMEOUT).await;

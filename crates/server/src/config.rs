@@ -55,7 +55,8 @@ pub struct ServeArgs {
     #[arg(long, env = "NEXUS_LOG_LEVEL", default_value = "info")]
     pub log_level: Level,
     /// File holding an OpenAI API key. Read once at start. Without it voice is off and Nexus makes
-    /// no outbound call. See deploy/voice.conf for what turning it on gives up.
+    /// no outbound call, until the owner sets a key in the browser. See deploy/voice.conf for what
+    /// turning it on gives up.
     #[arg(long, env = "NEXUS_OPENAI_API_KEY_FILE")]
     pub openai_api_key_file: Option<PathBuf>,
     /// The OpenAI Realtime model for voice sessions.
@@ -96,8 +97,8 @@ pub struct ServeConfig {
     pub timezone: Tz,
     pub calendar_token: Option<String>,
     pub log_level: Level,
-    /// `None` is voice off: no key, no outbound call.
-    pub voice: Option<VoiceConfig>,
+    /// Without a key here or one the owner set in the browser, voice is off: no outbound call.
+    pub voice: VoiceConfig,
     pub renderer: Renderer,
     /// Set when shutdown starts, which ends the open live streams so that the drain can finish.
     pub stream_shutdown: watch::Sender<bool>,
@@ -147,7 +148,7 @@ impl ServeArgs {
                 String::new()
             })
         });
-        let voice = self.voice_config(&mut problems);
+        let voice = self.voice_config(&mut problems).unwrap_or_default();
 
         let (true, Some(access)) = (problems.is_empty(), access) else {
             return Err(problems.join("\n"));
@@ -189,12 +190,15 @@ impl ServeArgs {
                 "--voice-session-seconds must be from 1 to {MAX_VOICE_SESSION_SECONDS}"
             ));
         }
-        let path = self.openai_api_key_file.as_ref()?;
-        let key = read_token(path)
-            .map_err(|e| problems.push(format!("--openai-api-key-file {}: {e}", path.display())))
-            .ok()?;
+        let mut key = None;
+        if let Some(path) = &self.openai_api_key_file {
+            match read_token(path) {
+                Ok(text) => key = Some(VoiceKey::new(text)),
+                Err(e) => problems.push(format!("--openai-api-key-file {}: {e}", path.display())),
+            }
+        }
         Some(VoiceConfig {
-            key: VoiceKey::new(key),
+            key,
             model: self.realtime_model.clone(),
             voice: self.realtime_voice.clone(),
             base_url,
@@ -419,12 +423,13 @@ mod tests {
 
     #[test]
     fn voice_is_off_without_a_key_file_and_the_default_target_is_openai() {
-        assert!(args().validate().unwrap().voice.is_none());
+        assert!(args().validate().unwrap().voice.key.is_none());
         let secret = "sk-synthetic-0123456789abcdefghijklmnop";
         let (_dir, path) = token_file(0o400, secret);
         let mut a = args();
         a.openai_api_key_file = Some(path);
-        let voice = a.validate().unwrap().voice.unwrap();
+        let voice = a.validate().unwrap().voice;
+        assert!(voice.key.is_some());
         assert_eq!(voice.base_url, OPENAI_BASE_URL);
         assert_eq!(voice.lifetime, Duration::from_secs(900));
         assert_eq!(voice.model, "gpt-realtime-2.1-mini");
@@ -478,10 +483,7 @@ mod tests {
         let mut a = args();
         a.openai_api_key_file = Some(path);
         a.voice_test_base_url = Some("http://127.0.0.1:9/".into());
-        assert_eq!(
-            a.validate().unwrap().voice.unwrap().base_url,
-            "http://127.0.0.1:9"
-        );
+        assert_eq!(a.validate().unwrap().voice.base_url, "http://127.0.0.1:9");
     }
 
     #[test]

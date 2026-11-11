@@ -27,7 +27,9 @@ struct Fixture {
 
 fn voice() -> VoiceConfig {
     VoiceConfig {
-        key: VoiceKey::new("sk-synthetic-never-sent-0123456789".to_owned()),
+        key: Some(VoiceKey::new(
+            "sk-synthetic-never-sent-0123456789".to_owned(),
+        )),
         model: "model-x".to_owned(),
         voice: "marin".to_owned(),
         base_url: OPENAI_BASE_URL.to_owned(),
@@ -55,7 +57,7 @@ fn build(state: &McpState, dir: &TempDir, voice: Option<VoiceConfig>) -> Router 
     nexus_web::cv_router(
         state.clone(),
         "Europe/Madrid".parse().unwrap(),
-        nexus_web::Voice::new(voice),
+        nexus_web::Voice::new(voice.unwrap_or_default(), dir.path()),
         dir.path(),
     )
     .layer(Extension(FormToken(TOKEN.to_owned())))

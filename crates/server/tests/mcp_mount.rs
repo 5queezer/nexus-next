@@ -32,7 +32,7 @@ async fn start(access: Access) -> Running {
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
-        voice: None,
+        voice: Default::default(),
         renderer: nexus_mcp::Renderer::current_exe(),
         stream_shutdown: tokio::sync::watch::Sender::new(false),
     };
@@ -120,7 +120,7 @@ fn config_with(
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
-        voice: None,
+        voice: Default::default(),
         renderer: nexus_mcp::Renderer::current_exe(),
         stream_shutdown: tokio::sync::watch::Sender::new(false),
     }

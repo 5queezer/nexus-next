@@ -9,6 +9,7 @@ mod cv_events;
 mod dashboard;
 mod format;
 mod forms;
+mod openai_key;
 mod queue;
 mod render_cache;
 mod views;
@@ -26,9 +27,10 @@ pub use cv_events::{
     CutConnection, HEARTBEAT, MAX_STREAMS, STREAM_LIFE, StreamLife, cv_events_router,
 };
 pub use dashboard::dashboard_router;
+pub use openai_key::openai_key_router;
 pub use voice::{
-    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, VOICE_TOOLS, Voice,
-    VoiceConfig, VoiceKey, tool_definitions, voice_status_router,
+    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, OPENAI_KEY_FILE,
+    VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, tool_definitions, voice_status_router,
 };
 
 /// Default response headers: no inline script or foreign asset can load, nothing sniffs types, and

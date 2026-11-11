@@ -64,6 +64,7 @@ class FakeChannel extends FakeElement {
 function harness(options = {}) {
   let now = 1;
   const toolResponse = options.toolResponse;
+  const sessionResponse = options.sessionResponse;
   const ids = [
     "voice",
     "voice-status",
@@ -106,6 +107,7 @@ function harness(options = {}) {
   const toolCalls = [];
   const fetch = async (url, options = {}) => {
     if (url === "/api/voice/session") {
+      if (sessionResponse) return sessionResponse;
       return {
         ok: true,
         json: async () => ({
@@ -414,4 +416,14 @@ test("an unreadable unauthorized response still ends the session", async () => {
   await flush(); await flush();
   assert.equal(h.elements.voice.dataset.sessionState, "stopped");
   assert.equal(h.track.stopped, true);
+});
+
+test("a key OpenAI refuses leads to the key's page instead of asking to try again", async () => {
+  const error = { code: "voice_key_refused", message: "OpenAI does not accept the key set on this server." };
+  const h = harness({ sessionResponse: { ok: false, status: 502, json: async () => ({ error }) } });
+  await h.elements["voice-connect"].emit("click");
+  await flush();
+  const status = h.elements["voice-status"];
+  assert.equal(status.textContent, error.message);
+  assert.equal(status.children.at(-1).href, "/openai-key");
 });

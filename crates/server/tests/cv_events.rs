@@ -54,7 +54,7 @@ async fn local() -> Local {
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
-        voice: None,
+        voice: Default::default(),
         renderer: Renderer::InProcess,
         stream_shutdown: watch::Sender::new(false),
     };

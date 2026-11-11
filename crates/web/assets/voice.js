@@ -546,8 +546,8 @@
     } catch {
       // A proxy's page, not ours: the generic text below covers it.
     }
-    if (code === "voice_disabled") return "Voice is off: no OpenAI key is configured on this server.";
-    return message || "The server could not open a voice session. Try again in a moment.";
+    if (code === "voice_disabled") return ["Voice is off: no OpenAI key is configured on this server.", code];
+    return [message || "The server could not open a voice session. Try again in a moment.", code];
   }
 
   // Microphone first: a refusal then costs no session.
@@ -606,8 +606,16 @@
       });
       if (session !== live) return;
       if (!response.ok) {
-        const message = await mintFailure(response);
-        if (session === live) stop(message, true);
+        const [message, code] = await mintFailure(response);
+        if (session !== live) return;
+        stop(message, true);
+        // Trying again can't help with a key OpenAI refuses or a missing one: the fix is on the key's page.
+        if (code === "voice_key_refused" || code === "voice_disabled") {
+          const link = document.createElement("a");
+          link.href = "/openai-key";
+          link.textContent = "Set a key";
+          status.append(" ", link);
+        }
         return;
       }
       minted = await response.json();

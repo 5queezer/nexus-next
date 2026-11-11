@@ -6,10 +6,11 @@ mod support;
 
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::time::Duration;
 
 use axum::Router;
@@ -38,11 +39,15 @@ use tokio::sync::watch;
 /// Long and distinctive, so that any leak of it is found by a plain search.
 const REAL_KEY: &str = "sk-real-synthetic-key-AAAAbbbbCCCCdddd0123456789";
 const EPHEMERAL: &str = "ek_synthetic_ephemeral_0123456789";
+/// The key the owner sets in the browser. As distinctive, for the same search.
+const PANEL_KEY: &str = "sk-panel-synthetic-key-EEEEffffGGGGhhhh98765Wxyz";
 
 #[derive(Default)]
 struct Stub {
     hits: AtomicUsize,
     fail: AtomicBool,
+    /// An answer that says nothing about the key.
+    broken: AtomicBool,
     authorization: Mutex<Vec<String>>,
     bodies: Mutex<Vec<Value>>,
 }
@@ -61,6 +66,9 @@ async fn stub_mint(State(stub): State<Arc<Stub>>, headers: HeaderMap, body: Stri
         // As a real provider might: an error that quotes the key it refused.
         let text = format!(r#"{{"error":{{"message":"Incorrect API key provided: {REAL_KEY}"}}}}"#);
         return (StatusCode::UNAUTHORIZED, text).into_response();
+    }
+    if stub.broken.load(Ordering::SeqCst) {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     axum::Json(json!({"value": EPHEMERAL, "expires_at": 4_102_444_800_i64})).into_response()
 }
@@ -111,13 +119,13 @@ async fn start(lifetime: Duration, voice_on: bool) -> Harness {
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: None,
         log_level: tracing::Level::INFO,
-        voice: voice_on.then(|| VoiceConfig {
-            key: VoiceKey::new(REAL_KEY.to_owned()),
+        voice: VoiceConfig {
+            key: voice_on.then(|| VoiceKey::new(REAL_KEY.to_owned())),
             model: "gpt-realtime-2.1-mini".to_owned(),
             voice: "marin".to_owned(),
             base_url: stub_url,
             lifetime,
-        }),
+        },
         renderer: Renderer::InProcess,
         stream_shutdown: watch::Sender::new(false),
     };
@@ -1134,11 +1142,17 @@ async fn the_mint_sends_the_real_key_only_to_openai_and_only_the_list_of_tools()
     h.stub.fail.store(true, Ordering::SeqCst);
     let (status, body) = login.mint().await;
     assert_eq!(status, 502, "{body}");
-    assert_eq!(body["error"]["code"], "voice_upstream_failed");
+    assert_eq!(body["error"]["code"], "voice_key_refused");
     assert!(
         !body.to_string().contains("Incorrect"),
         "upstream's words stay out: {body}"
     );
+
+    h.stub.fail.store(false, Ordering::SeqCst);
+    h.stub.broken.store(true, Ordering::SeqCst);
+    let (status, body) = login.mint().await;
+    assert_eq!(status, 502, "{body}");
+    assert_eq!(body["error"]["code"], "voice_upstream_failed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1323,6 +1337,287 @@ async fn without_a_key_both_routes_say_voice_is_off() {
         "{body}"
     );
     assert_eq!(h.stub.hits.load(Ordering::SeqCst), 0);
+}
+
+// The key's page.
+
+static LOG: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+struct ToLog;
+
+impl Write for ToLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        LOG.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What this process has logged since the first call, which installs the subscriber. It is
+/// process-wide, so the other tests' lines are in it too.
+fn captured_log() -> String {
+    static START: Once = Once::new();
+    START.call_once(|| serve::init_logging(tracing::Level::INFO, || ToLog));
+    String::from_utf8_lossy(&LOG.lock().unwrap()).into_owned()
+}
+
+impl Login {
+    /// Every answer of the key's page passes through here: none may be cached or hold a key.
+    async fn key_answer(&self, request: reqwest::RequestBuilder) -> (u16, String) {
+        let response = request
+            .header("cookie", &self.cookies)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let head = format!("{:?}", response.headers());
+        let text = response.text().await.unwrap();
+        for key in [REAL_KEY, PANEL_KEY] {
+            assert!(!head.contains(key) && !text.contains(key), "{head} {text}");
+        }
+        (status, head + &text)
+    }
+
+    async fn key_page(&self) -> (u16, String) {
+        self.key_answer(self.http.get(format!("{}/openai-key", self.base)))
+            .await
+    }
+
+    async fn key_form(&self, path: &str, fields: &[(&str, &str)]) -> (u16, String) {
+        let body: Vec<String> = fields
+            .iter()
+            .map(|(name, value)| format!("{name}={}", value.replace(' ', "+")))
+            .collect();
+        let request = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(body.join("&"));
+        self.key_answer(request).await
+    }
+
+    async fn set_key(&self, passphrase: &str, more: &[(&str, &str)]) -> (u16, String) {
+        let mut fields = vec![
+            ("csrf", self.csrf.as_str()),
+            ("key", PANEL_KEY),
+            ("passphrase", passphrase),
+        ];
+        fields.extend_from_slice(more);
+        self.key_form("/openai-key", &fields).await
+    }
+
+    async fn remove_key(&self, passphrase: &str) -> (u16, String) {
+        let fields = [("csrf", self.csrf.as_str()), ("passphrase", passphrase)];
+        self.key_form("/openai-key/remove", &fields).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_key_page_needs_a_session_its_token_and_the_passphrase() {
+    let h = start(Duration::from_secs(900), false).await;
+    h.seed().await;
+    let key_file = h.dir.path().join("openai-api-key");
+    let anonymous = reqwest::Client::builder()
+        .redirect(Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://localhost:{}", h.addr.port());
+    let page = anonymous
+        .get(format!("{base}/openai-key"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 303);
+    assert_eq!(page.headers()["location"], "/login?next=%2Fopenai-key");
+    for path in ["/openai-key", "/openai-key/remove"] {
+        let sent = anonymous
+            .post(format!("{base}{path}"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!(
+                "key={PANEL_KEY}&unchecked=1&passphrase={}",
+                PASSPHRASE.replace(' ', "+")
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sent.status(), 303, "{path}");
+        assert_eq!(sent.headers()["location"], "/login", "{path}");
+    }
+
+    let login = h.login().await;
+    let (status, page) = login.key_page().await;
+    assert_eq!(status, 200);
+    assert!(page.contains("Voice is off. No key is set."), "{page}");
+    assert!(page.contains(r#"href="/openai-key""#), "{page}");
+
+    let stale = "0".repeat(64);
+    for csrf in ["", stale.as_str()] {
+        for path in ["/openai-key", "/openai-key/remove"] {
+            let fields = [
+                ("csrf", csrf),
+                ("key", PANEL_KEY),
+                ("unchecked", "1"),
+                ("passphrase", PASSPHRASE),
+            ];
+            assert_eq!(login.key_form(path, &fields).await.0, 403, "{path}");
+        }
+    }
+
+    // A wrong passphrase is a guess like one at the login: after the free ones, the next must wait.
+    let mut guesses = 0;
+    loop {
+        let (status, page) = login
+            .set_key("not the synthetic passphrase", &[("unchecked", "1")])
+            .await;
+        if status == 429 {
+            assert!(page.contains("Too many attempts"), "{page}");
+            break;
+        }
+        assert_eq!(status, 401, "{page}");
+        assert!(page.contains("The passphrase is not correct. Nothing was changed."));
+        guesses += 1;
+        assert!(guesses <= 12, "no backoff after {guesses} guesses");
+    }
+    assert!(guesses >= 5, "{guesses}");
+    assert!(!key_file.exists());
+    assert_eq!(h.stub.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_key_set_in_the_browser_is_checked_kept_private_and_wins_until_removed() {
+    captured_log();
+    let h = start(Duration::from_secs(900), true).await;
+    h.seed().await;
+    let key_file = h.dir.path().join("openai-api-key");
+    let login = h.login().await;
+    let last_bearer = || {
+        h.stub
+            .authorization
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap()
+    };
+    let (_, page) = login.key_page().await;
+    assert!(page.contains("Voice is on. The key comes from the file the server was started with."));
+    assert_eq!(login.mint().await.0, 200);
+    assert_eq!(last_bearer(), format!("Bearer {REAL_KEY}"));
+
+    // OpenAI is asked first, with the new key, and its no is final.
+    h.stub.fail.store(true, Ordering::SeqCst);
+    let (status, page) = login.set_key(PASSPHRASE, &[]).await;
+    assert_eq!(status, 400, "{page}");
+    assert!(page.contains("OpenAI does not accept this key. Nothing was changed."));
+    assert_eq!(last_bearer(), format!("Bearer {PANEL_KEY}"));
+    assert!(!key_file.exists());
+
+    // No answer about the key stores nothing either, unless the owner says to skip the check.
+    h.stub.fail.store(false, Ordering::SeqCst);
+    h.stub.broken.store(true, Ordering::SeqCst);
+    let (status, page) = login.set_key(PASSPHRASE, &[]).await;
+    assert_eq!(status, 502, "{page}");
+    assert!(page.contains("could not be checked with OpenAI"), "{page}");
+    assert!(!key_file.exists());
+    let hits = h.stub.hits.load(Ordering::SeqCst);
+    let (status, page) = login.set_key(PASSPHRASE, &[("unchecked", "1")]).await;
+    assert_eq!(status, 303, "{page}");
+    assert_eq!(h.stub.hits.load(Ordering::SeqCst), hits);
+    assert!(key_file.exists());
+    assert_eq!(login.remove_key(PASSPHRASE).await.0, 303);
+    assert!(!key_file.exists());
+
+    h.stub.broken.store(false, Ordering::SeqCst);
+    let (status, page) = login.set_key(PASSPHRASE, &[]).await;
+    assert_eq!(status, 303, "{page}");
+    assert!(page.contains("/openai-key?done=set"), "{page}");
+    assert_eq!(
+        std::fs::read_to_string(&key_file).unwrap(),
+        format!("{PANEL_KEY}\n")
+    );
+    let mode = std::fs::metadata(&key_file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let names: Vec<_> = std::fs::read_dir(h.dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.starts_with("openai-api-key"))
+        .collect();
+    assert_eq!(names, ["openai-api-key"]);
+
+    let (_, page) = login.key_page().await;
+    let tail = PANEL_KEY.len() - 4;
+    assert!(
+        page.contains(&format!(
+            "A key ending in {} was set here",
+            &PANEL_KEY[tail..]
+        )),
+        "{page}"
+    );
+    assert!(!page.contains(&PANEL_KEY[tail - 1..]), "{page}");
+    assert!(page.contains("used instead of the key file"), "{page}");
+
+    // No restart: the next mint already uses it, over the startup file's.
+    assert_eq!(login.mint().await.0, 200);
+    assert_eq!(last_bearer(), format!("Bearer {PANEL_KEY}"));
+
+    assert_eq!(
+        login.remove_key("not the synthetic passphrase").await.0,
+        401
+    );
+    assert!(key_file.exists());
+    let (status, page) = login.remove_key(PASSPHRASE).await;
+    assert_eq!(status, 303, "{page}");
+    assert!(!key_file.exists());
+    assert_eq!(login.mint().await.0, 200);
+    assert_eq!(last_bearer(), format!("Bearer {REAL_KEY}"));
+    let (_, page) = login.key_page().await;
+    assert!(page.contains("The key comes from the file the server was started with."));
+
+    let log = captured_log();
+    for event in ["openai_key_set", "openai_key_removed", "route=/openai-key"] {
+        assert!(log.contains(event), "{event} in {log}");
+    }
+    for secret in [REAL_KEY, PANEL_KEY, PASSPHRASE] {
+        assert!(!log.contains(secret), "{secret} in {log}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setting_and_removing_the_key_turns_voice_on_and_off_without_a_restart() {
+    let h = start(Duration::from_secs(900), false).await;
+    h.seed().await;
+    let login = h.login().await;
+    let cv_page = async || {
+        let page = login
+            .http
+            .get(format!("{}/cv/variants/default", login.base))
+            .header("cookie", &login.cookies)
+            .send()
+            .await
+            .unwrap();
+        page.text().await.unwrap()
+    };
+    assert!(cv_page().await.contains("Voice is off"));
+    assert_eq!(login.mint().await.0, 503);
+
+    assert_eq!(login.set_key(PASSPHRASE, &[]).await.0, 303);
+    let (_, page) = login.key_page().await;
+    assert!(page.contains("Voice is on. A key ending in"), "{page}");
+    assert!(!page.contains("used instead of the key file"), "{page}");
+    assert!(!cv_page().await.contains("Voice is off"));
+    let (status, body) = login.mint().await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        h.stub.authorization.lock().unwrap().last().unwrap(),
+        &format!("Bearer {PANEL_KEY}")
+    );
+
+    assert_eq!(login.remove_key(PASSPHRASE).await.0, 303);
+    assert!(cv_page().await.contains("Voice is off"));
+    assert_eq!(login.mint().await.0, 503);
 }
 
 // The real binary, for what only a separate process can show.

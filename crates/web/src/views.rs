@@ -112,6 +112,7 @@ pub fn page_with_scripts(
                             <summary>"Account"</summary>
                             <div>
                                 <a href="/passphrase">"Change passphrase"</a>
+                                <a href="/openai-key">"OpenAI key"</a>
                                 <a href="/logout">"Log out"</a>
                             </div>
                         </details>
@@ -126,6 +127,7 @@ pub fn page_with_scripts(
                 </main>
                 <footer class="foot">
                     <a href="/passphrase">"Change passphrase"</a>
+                    <a href="/openai-key">"OpenAI key"</a>
                     <a href="/logout">"Log out"</a>
                 </footer>
             </body>

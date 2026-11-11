@@ -3212,6 +3212,7 @@ dependencies = [
  "hyper-util",
  "ical",
  "leptos",
+ "nexus-auth",
  "nexus-core",
  "nexus-mcp",
  "nexus-tailor",

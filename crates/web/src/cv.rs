@@ -73,7 +73,7 @@ pub(crate) struct Cv {
 }
 
 /// Mounts `/cv/*`, `/api/voice/session`, `/api/voice/tool` and the slow-poll fallback. `voice` has no
-/// config without a key file: the routes then answer that voice is off, and nothing can reach out.
+/// config without a key: the routes then answer that voice is off, and nothing can reach out.
 /// Auth is the caller's.
 pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> Router {
     with_form_token(
@@ -304,7 +304,7 @@ fn flash_view(flash: Option<&Flash>) -> impl IntoView + use<> {
     })
 }
 
-fn expired_form() -> Response {
+pub(crate) fn expired_form() -> Response {
     notice_page(
         StatusCode::FORBIDDEN,
         "This form has expired",
@@ -1416,7 +1416,8 @@ fn voice_panel(
             <section id="voice">
                 <h2>{heading}</h2>
                 <p class="hint" id="voice-off">
-                    "Voice is off: no OpenAI key is configured on this server. Everything else here works without it."
+                    "Voice is off: no OpenAI key is configured on this server. Everything else here works without it. "
+                    <a href="/openai-key">"Set a key"</a>
                 </p>
             </section>
         }

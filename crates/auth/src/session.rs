@@ -4,11 +4,12 @@ use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{FromRequestParts, Request, State};
 use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, REFERRER_POLICY, RETRY_AFTER,
     SET_COOKIE, X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 };
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -292,6 +293,32 @@ async fn attempt<'a>(
     }
     state.0.login_limit.succeed(source, !known_device);
     Ok(slot)
+}
+
+impl AuthState {
+    /// The passphrase, asked again by a form outside this crate before it changes a secret, so that
+    /// a stolen session alone can't. A guess counts on the login backoff like any other. `Err` is
+    /// the status and the words for the person.
+    pub async fn confirm_passphrase(
+        &self,
+        parts: &mut Parts,
+        passphrase: String,
+    ) -> Result<(), (StatusCode, String)> {
+        let Ok(ClientKey(client)) = ClientKey::from_request_parts(parts, self).await;
+        let known_device = cookie_value(&parts.headers, DEVICE_COOKIE)
+            .is_some_and(|cookie| secret_eq(cookie, &device_token(self)));
+        match attempt(self, &client, known_device, passphrase).await {
+            Ok(_) => Ok(()),
+            Err(Some(retry)) => Err((
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("Too many attempts. Try again in {}.", wait_text(retry)),
+            )),
+            Err(None) => Err((
+                StatusCode::UNAUTHORIZED,
+                "The passphrase is not correct.".to_owned(),
+            )),
+        }
+    }
 }
 
 fn locked_out(respond: impl Fn(StatusCode, &str) -> Response, retry: u64) -> Response {

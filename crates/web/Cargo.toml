@@ -16,6 +16,7 @@ http-body-util.workspace = true
 hyper-rustls.workspace = true
 hyper-util = { workspace = true, features = ["client-legacy"] }
 leptos.workspace = true
+nexus-auth.workspace = true
 nexus-core.workspace = true
 nexus-mcp.workspace = true
 nexus-tailor.workspace = true

@@ -56,7 +56,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         timezone: nexus_web::Tz::Europe__Madrid,
         calendar_token: Some(CALENDAR_TOKEN.to_owned()),
         log_level: tracing::Level::TRACE,
-        voice: None,
+        voice: Default::default(),
         renderer: nexus_mcp::Renderer::current_exe(),
         stream_shutdown: tokio::sync::watch::Sender::new(false),
     };

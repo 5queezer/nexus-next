@@ -5,7 +5,8 @@
 //! just another call. See SPEC section 9b.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -20,6 +21,7 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use nexus_core::Timestamp;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
 use nexus_core::repo::{applications, cv_revisions};
 use nexus_mcp::{CallToolResult, all_tools};
@@ -32,6 +34,9 @@ use crate::cv::Cv;
 use crate::forms::csrf_ok;
 
 pub const OPENAI_BASE_URL: &str = "https://api.openai.com";
+/// In the data directory: the key the owner set in the browser. Never in the database, so no
+/// backup, export or tool carries it.
+pub const OPENAI_KEY_FILE: &str = "openai-api-key";
 
 /// Everything a voice session may call. Writes go through the same MCP contracts and lifecycle
 /// guards as every other caller. Destructive, bulk, blob-transfer and submission tools stay out.
@@ -103,6 +108,14 @@ impl VoiceKey {
     pub fn new(key: String) -> Self {
         Self(key)
     }
+
+    /// A key as a person pastes it: one run of visible ASCII, long enough that its last four
+    /// characters give nothing away.
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let key = text.trim();
+        ((20..=512).contains(&key.len()) && key.bytes().all(|byte| byte.is_ascii_graphic()))
+            .then(|| Self(key.to_owned()))
+    }
 }
 
 impl std::fmt::Debug for VoiceKey {
@@ -111,9 +124,11 @@ impl std::fmt::Debug for VoiceKey {
     }
 }
 
-#[derive(Clone, Debug)]
+/// The default has no key and names no server, for a test that doesn't use voice.
+#[derive(Clone, Debug, Default)]
 pub struct VoiceConfig {
-    pub key: VoiceKey,
+    /// From the file named at startup, if any. A key the owner set in the browser wins over it.
+    pub key: Option<VoiceKey>,
     pub model: String,
     pub voice: String,
     /// `OPENAI_BASE_URL`, unless a local test run set a stub.
@@ -148,24 +163,116 @@ struct Live {
 /// about a minute, closes the connection and says so.
 #[derive(Clone)]
 pub struct Voice {
-    config: Option<VoiceConfig>,
-    client: Option<Upstream>,
+    config: VoiceConfig,
+    /// The key the owner set in the browser, and when. Each mint reads it, so a change needs no
+    /// restart.
+    stored: Arc<RwLock<Option<(VoiceKey, Timestamp)>>>,
+    key_file: PathBuf,
+    client: Upstream,
     live: Arc<Mutex<Live>>,
 }
 
+/// What the key's page shows: never a key.
+pub(crate) struct KeyState {
+    /// Of the key set in the browser: its last four characters, and when it was set.
+    pub stored: Option<(String, Timestamp)>,
+    /// Whether the server was started with a key file.
+    pub startup: bool,
+}
+
 impl Voice {
-    /// Builds no client without a key, so that nothing can open an outbound connection.
-    pub fn new(config: Option<VoiceConfig>) -> Self {
-        let client = config.as_ref().map(upstream_client);
+    /// Reads the key the owner set in the browser, if `data_dir` holds one. The client opens no
+    /// connection by being built: only a mint or a key's check reaches out, and neither runs
+    /// without a key.
+    pub fn new(config: VoiceConfig, data_dir: &Path) -> Self {
+        let key_file = data_dir.join(OPENAI_KEY_FILE);
+        let read = std::fs::read_to_string(&key_file).and_then(|text| {
+            let set_at = std::fs::metadata(&key_file)?.modified()?;
+            Ok(VoiceKey::parse(&text).map(|key| (key, Timestamp::from_datetime(set_at.into()))))
+        });
+        let stored = match read {
+            Ok(Some(stored)) => Some(stored),
+            Ok(None) => {
+                tracing::warn!(
+                    event = "openai_key_unusable",
+                    "the stored OpenAI key is not a key and was ignored"
+                );
+                None
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                tracing::warn!(event = "openai_key_unusable", %error, "could not read the stored OpenAI key");
+                None
+            }
+        };
         Self {
+            client: upstream_client(&config),
             config,
-            client,
+            stored: Arc::new(RwLock::new(stored)),
+            key_file,
             live: Arc::default(),
         }
     }
 
+    fn stored(&self) -> std::sync::RwLockReadGuard<'_, Option<(VoiceKey, Timestamp)>> {
+        self.stored
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// The key in force: the one set in the browser, else the startup file's.
+    fn key(&self) -> Option<VoiceKey> {
+        let stored = self.stored().as_ref().map(|(key, _)| key.clone());
+        stored.or_else(|| self.config.key.clone())
+    }
+
+    /// `None` while there is no key, which is voice off.
     pub(crate) fn config(&self) -> Option<&VoiceConfig> {
-        self.config.as_ref()
+        self.key().map(|_| &self.config)
+    }
+
+    pub(crate) fn key_state(&self) -> KeyState {
+        KeyState {
+            stored: self
+                .stored()
+                .as_ref()
+                .map(|(key, set_at)| (key.0[key.0.len() - 4..].to_owned(), set_at.clone())),
+            startup: self.config.key.is_some(),
+        }
+    }
+
+    /// Asks OpenAI whether it accepts `key`, by opening a session nobody uses: that is the one call
+    /// the key has to be good for, it costs nothing, and its secret lapses within a minute.
+    pub(crate) async fn check_key(&self, key: &VoiceKey) -> Result<(), MintError> {
+        mint(&self.client, &self.config, key, "", None)
+            .await
+            .map(drop)
+    }
+
+    /// Keeps `key` in the data directory and uses it from the next mint on.
+    pub(crate) async fn store_key(&self, key: VoiceKey) -> std::io::Result<()> {
+        let (path, text) = (self.key_file.clone(), key.0.clone());
+        tokio::task::spawn_blocking(move || nexus_auth::write_private(&path, &text))
+            .await
+            .map_err(std::io::Error::other)??;
+        *self
+            .stored
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = Some((key, Timestamp::now()));
+        Ok(())
+    }
+
+    /// Forgets the key set in the browser, which leaves the startup file's, if there is one.
+    pub(crate) fn remove_key(&self) -> std::io::Result<()> {
+        match std::fs::remove_file(&self.key_file) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        *self
+            .stored
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+        Ok(())
     }
 
     fn live(&self) -> std::sync::MutexGuard<'_, Live> {
@@ -386,9 +493,10 @@ pub(crate) async fn session(
     if !has_csrf(&headers, &token) {
         return refused_csrf();
     }
-    let (Some(config), Some(client)) = (cv.voice.config(), &cv.voice.client) else {
+    let Some(key) = cv.voice.key() else {
         return disabled();
     };
+    let config = &cv.voice.config;
     let Ok(request) = serde_json::from_slice::<SessionRequest>(&body) else {
         return failure(
             StatusCode::BAD_REQUEST,
@@ -452,12 +560,30 @@ pub(crate) async fn session(
         )
             .into_response();
     }
-    let Some(secret) = mint(client, config, &request.variant, application_id).await else {
-        return failure(
-            StatusCode::BAD_GATEWAY,
-            "voice_upstream_failed",
-            "OpenAI did not open a session. Try again in a moment.",
-        );
+    let minted = mint(
+        &cv.voice.client,
+        config,
+        &key,
+        &request.variant,
+        application_id,
+    );
+    let secret = match minted.await {
+        Ok(secret) => secret,
+        // Trying again can't help, so the page leads to where the key is set.
+        Err(MintError::Refused) => {
+            return failure(
+                StatusCode::BAD_GATEWAY,
+                "voice_key_refused",
+                "OpenAI does not accept the key set on this server.",
+            );
+        }
+        Err(MintError::Failed) => {
+            return failure(
+                StatusCode::BAD_GATEWAY,
+                "voice_upstream_failed",
+                "OpenAI did not open a session. Try again in a moment.",
+            );
+        }
     };
     let id = cv
         .voice
@@ -488,15 +614,24 @@ async fn known_application(cv: &Cv, id: &str) -> nexus_core::Result<bool> {
     applications::exists(&mut conn, id).await
 }
 
-/// The client secret, or `None`. What OpenAI answers on failure stays here, because an error for a
-/// wrong key can quote part of it: only the status is logged.
+/// Why a mint gave no secret. `Refused` is OpenAI's 401: it does not accept the key.
+#[derive(Debug)]
+pub(crate) enum MintError {
+    Refused,
+    Failed,
+}
+
+/// The client secret, or why there is none. What OpenAI answers on failure stays here, because an
+/// error for a wrong key can quote part of it: only the status is logged.
 async fn mint(
     client: &Upstream,
     config: &VoiceConfig,
+    key: &VoiceKey,
     variant: &str,
     application_id: Option<&str>,
-) -> Option<String> {
-    let mut authorization = HeaderValue::from_str(&format!("Bearer {}", config.key.0)).ok()?;
+) -> Result<String, MintError> {
+    let mut authorization =
+        HeaderValue::from_str(&format!("Bearer {}", key.0)).map_err(|_| MintError::Failed)?;
     authorization.set_sensitive(true);
     let request = Request::builder()
         .method(Method::POST)
@@ -506,7 +641,7 @@ async fn mint(
         .body(Full::new(Bytes::from(
             mint_body(config, variant, application_id).to_string(),
         )))
-        .ok()?;
+        .map_err(|_| MintError::Failed)?;
     let exchange = async {
         let response = client.request(request).await.map_err(|error| {
             tracing::warn!(
@@ -514,6 +649,7 @@ async fn mint(
                 connect = error.is_connect(),
                 "could not reach OpenAI"
             );
+            MintError::Failed
         })?;
         let status = response.status();
         if !status.is_success() {
@@ -522,20 +658,30 @@ async fn mint(
                 status = status.as_u16(),
                 "OpenAI refused to open a session"
             );
-            return Err(());
+            return Err(if status == StatusCode::UNAUTHORIZED {
+                MintError::Refused
+            } else {
+                MintError::Failed
+            });
         }
         Limited::new(response.into_body(), MAX_UPSTREAM_ANSWER_BYTES)
             .collect()
             .await
             .map(|body| body.to_bytes())
-            .map_err(|_| tracing::warn!(event = "voice_mint_failed", "unreadable answer"))
+            .map_err(|_| {
+                tracing::warn!(event = "voice_mint_failed", "unreadable answer");
+                MintError::Failed
+            })
     };
     let Ok(answer) = tokio::time::timeout(UPSTREAM_TIMEOUT, exchange).await else {
         tracing::warn!(event = "voice_mint_failed", "OpenAI took too long");
-        return None;
+        return Err(MintError::Failed);
     };
-    let body: Value = serde_json::from_slice(&answer.ok()?).ok()?;
-    body["value"].as_str().map(str::to_owned)
+    let body: Value = serde_json::from_slice(&answer?).map_err(|_| MintError::Failed)?;
+    body["value"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or(MintError::Failed)
 }
 
 /// `GET /api/voice/status`, which the page asks every so often: only it can close the connection to
@@ -819,7 +965,7 @@ mod tests {
     #[test]
     fn the_mint_asks_for_a_short_secret_and_no_turn_detection() {
         let config = VoiceConfig {
-            key: VoiceKey::new("sk-synthetic".to_owned()),
+            key: Some(VoiceKey::new("sk-synthetic".to_owned())),
             model: "model-x".to_owned(),
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),
@@ -841,9 +987,36 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_key_is_read_at_start_and_one_that_is_no_key_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(OPENAI_KEY_FILE);
+        let off = Voice::new(VoiceConfig::default(), dir.path());
+        assert!(off.config().is_none() && off.key_state().stored.is_none());
+
+        std::fs::write(&file, "sk-synthetic-stored-key-0123456789wxyz\n").unwrap();
+        let on = Voice::new(VoiceConfig::default(), dir.path());
+        assert!(on.config().is_some());
+        assert_eq!(on.key_state().stored.unwrap().0, "wxyz");
+
+        for bad in [
+            "short",
+            "sk-synthetic key with spaces 0123456789",
+            "sk-sch\u{fc}ssel-0123456789abcdef",
+        ] {
+            std::fs::write(&file, bad).unwrap();
+            assert!(
+                Voice::new(VoiceConfig::default(), dir.path())
+                    .config()
+                    .is_none(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn a_global_session_has_no_implicit_cv_target() {
         let config = VoiceConfig {
-            key: VoiceKey::new("sk-synthetic".to_owned()),
+            key: Some(VoiceKey::new("sk-synthetic".to_owned())),
             model: "model-x".to_owned(),
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),

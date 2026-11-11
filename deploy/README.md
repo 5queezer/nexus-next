@@ -306,7 +306,7 @@ sudo systemctl daemon-reload && sudo systemctl restart nexus
 journalctl -u nexus -n 5 | grep voice=true
 ```
 
-Use a key from an OpenAI project made for this, with a budget limit set on the project. To turn voice off, delete `voice.conf` and the key file, then run the last line but one again. That also brings the outbound filter back.
+Use a key from an OpenAI project made for this, with a budget limit set on the project. To replace the key later, for example after revoking it, use Account > OpenAI key in the browser: it is kept in `/var/lib/nexus/openai-api-key`, wins over `/etc/nexus/openai-api-key` and needs no restart, but backups don't hold it, and it still needs `voice.conf` for the outbound filter. To turn voice off, delete `voice.conf` and the key file, then run the last line but one again. That also brings the outbound filter back.
 
 **What `voice.conf` gives up.** The unit's `IPAddressDeny=any` stops anything inside Nexus from sending data out. OpenAI's addresses aren't stable enough to list, so the drop-in lifts that filter for every destination. The microphone needs HTTPS: phones refuse it on a plain-HTTP origin.
 

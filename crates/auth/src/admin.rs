@@ -187,7 +187,8 @@ pub async fn set_owner_passphrase(
     .map_err(|_| PassphraseError::Task)?
 }
 
-fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
+/// Writes `contents` and a newline to `path`, mode 600, replacing the file atomically.
+pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
     let mut temp = path.as_os_str().to_owned();
     temp.push(format!(".tmp-{}", hex::encode(&random_bytes()[..8])));
     let temp = PathBuf::from(temp);
