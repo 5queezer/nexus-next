@@ -93,6 +93,23 @@
     const found = record?.contacts?.find?.((entry) => entry?.id === id);
     return `contact #${shown(id)}${found ? ` (${shown(found.name)})` : record ? " (not found there)" : ""}`;
   };
+  // Shown where a card is about to change a record the owner has put away.
+  const archived = (record) => (record?.archivedAt ? " (archived)" : "");
+  // Why an archive or a restore changes nothing, for its card's title and for the list.
+  const NO_CHANGE = {
+    archive_application: ["Already archived:", "It was already archived"],
+    unarchive_application: ["Not archived:", "It was not archived"],
+  };
+  // True when the page's own read shows the application already where this call would put it. A
+  // record that doesn't say is not settled, so a card is never withheld on a guess.
+  const settled = (name, record) => !!record && (name === "archive_application"
+    ? !!record.archivedAt : name === "unarchive_application" && record.archivedAt === null);
+  // What the model hears then, so that it looks again or asks instead of reporting a failure.
+  const nothingToDo = (name) => JSON.stringify({
+    changed: false,
+    message: `Nothing was changed, and the owner was not asked: ${NO_CHANGE[name][1].toLowerCase()}. The company may have another application that is ${
+      name === "archive_application" ? "not archived" : "archived"}: search again, or ask the owner which one they mean.`,
+  });
   // Where each tool that waits for a tap names its application.
   const APPLICATION_ARGUMENT = {
     update_application: "id",
@@ -104,11 +121,11 @@
   };
   const CARD_TITLES = {
     create_application: (a) => `Create an application: ${shown(a.role)} at ${shown(a.company)}`,
-    update_application: (a, r) => `Change ${application(a.id, r)}`,
-    archive_application: (a, r) => `Archive ${application(a.id, r)}`,
-    unarchive_application: (a, r) => `Restore from the archive: ${application(a.id, r)}`,
+    update_application: (a, r) => `Change ${application(a.id, r)}${archived(r)}`,
+    archive_application: (a, r) => `${settled("archive_application", r) ? NO_CHANGE.archive_application[0] : "Archive"} ${application(a.id, r)}`,
+    unarchive_application: (a, r) => `${settled("unarchive_application", r) ? NO_CHANGE.unarchive_application[0] : "Restore from the archive:"} ${application(a.id, r)}`,
     append_application_note: (a) => `Add a note to application #${shown(a.applicationId)}`,
-    record_application_event: (a, r) => `Record “${shown(a.type)}” in the history of ${application(a.applicationId, r)}`,
+    record_application_event: (a, r) => `Record “${shown(a.type)}” in the history of ${application(a.applicationId, r)}${archived(r)}`,
     create_contact: (a, r) => `Add a contact to ${application(a.applicationId, r)}`,
     update_contact: (a, r) => `Change ${contact(a.contactId, r)} in ${application(a.applicationId, r)}`,
     update_document_links: (a) => `Link document #${shown(a.id)} to exactly these applications: ${shown(a.applicationIds)}`,
@@ -446,12 +463,17 @@
         ended: endedBy(response.status),
       };
     }
-    let dryRun = false;
-    try { dryRun = JSON.parse(body.output).dryRun === true; } catch {}
-    const changed = !body.isError && !dryRun && WRITE_TOOLS.has(call.name);
+    let result = null;
+    try { result = JSON.parse(body.output); } catch {}
+    const dryRun = result?.dryRun === true;
+    // A write the server answered without writing, as an archive of an archived application.
+    const unchanged = !body.isError && !dryRun && WRITE_TOOLS.has(call.name) && result?.changed === false;
+    const changed = !body.isError && !dryRun && !unchanged && WRITE_TOOLS.has(call.name);
+    const why = NO_CHANGE[call.name]?.[1];
     return {
       output: body.output,
-      label: body.isError ? "Not completed" : dryRun ? "Preview only" : changed ? "Saved" : "Done",
+      label: body.isError ? "Not completed" : dryRun ? "Preview only"
+        : unchanged ? `Nothing changed${why ? `. ${why}` : ""}` : changed ? "Saved" : "Done",
       state: body.isError ? "failed" : dryRun ? "preview" : changed ? "saved" : "done",
       updated: changed,
     };
@@ -484,6 +506,8 @@
       try { args = JSON.parse(call.arguments || "{}"); } catch {}
       if (typeof args !== "object" || Array.isArray(args)) args = null;
       const confirmed = !!args && CONFIRMED_TOOLS.has(call.name);
+      // The card is the preview and the tap does the real thing, so a dry run never costs a tap.
+      if (confirmed) delete args.dryRun;
       // The application a card is about, read here so that its title can name it.
       let record;
       const key = confirmed && APPLICATION_ARGUMENT[call.name];
@@ -507,8 +531,11 @@
         }
       };
       let answer = { output: DECLINED, label: "Declined", state: "failed" };
-      if (confirmed) mark("Waiting for your tap", "running");
-      if (!confirmed || (await ask(live, row[0]))) {
+      // Nothing to allow then: the card says why, and the model is told at once.
+      const noop = settled(call.name, record);
+      if (noop) answer = { output: nothingToDo(call.name), label: "Nothing to do", state: "done" };
+      else if (confirmed) mark("Waiting for your tap", "running");
+      if (!noop && (!confirmed || (await ask(live, row[0])))) {
         mark("In progress", "running");
         live.toolRunning = true;
         live.toolState = tags;

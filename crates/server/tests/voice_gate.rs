@@ -490,6 +490,59 @@ async fn a_write_without_the_owners_tap_is_refused_and_changes_nothing() {
     assert_ne!(outside_cv(&h.db, h.dir.path()).await, baseline);
 }
 
+/// The owner's report of 2026-11-11: Allow tapped, HTTP 200, and nothing archived. A tap never buys
+/// a dry run, an archive of an archived application says `changed: false`, and the log tells the
+/// two apart without naming a record.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tap_does_the_real_thing_and_the_log_tells_a_write_from_a_no_op() {
+    captured_log();
+    let h = start(Duration::from_secs(900), true).await;
+    let id = h.seed().await;
+    let login = h.login().await;
+    let voice = login.voice_id().await;
+    let archived_at = |body: &Value| {
+        serde_json::from_str::<Value>(body["output"].as_str().unwrap())
+            .unwrap()
+            .get("archivedAt")
+            .cloned()
+    };
+
+    let read = json!({"name": "get_application", "arguments": {"id": id}});
+    let (_, body) = login.tool_request(&voice, read.clone()).await;
+    // Present and null, which is what lets the page tell "not archived" from "not said".
+    assert_eq!(archived_at(&body), Some(Value::Null), "{body}");
+
+    let dry = json!({"id": id, "dryRun": true});
+    let (status, body) = login.tool(&voice, "archive_application", dry).await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
+    let output: Value = serde_json::from_str(body["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["changed"], true, "{output}");
+    assert!(output.get("dryRun").is_none(), "{output}");
+    // What the page's card reads before it offers Allow.
+    let (_, body) = login.tool_request(&voice, read).await;
+    assert!(
+        archived_at(&body).is_some_and(|at| at.is_string()),
+        "{body}"
+    );
+
+    let (status, body) = login
+        .tool(&voice, "archive_application", json!({"id": id}))
+        .await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
+    let output: Value = serde_json::from_str(body["output"].as_str().unwrap()).unwrap();
+    assert_eq!(output["changed"], false, "{output}");
+
+    let log = captured_log();
+    for line in [
+        "tool=\"get_application\" is_error=false confirmed=false dry_run=false",
+        "tool=\"archive_application\" is_error=false confirmed=true changed=true dry_run=true",
+        "tool=\"archive_application\" is_error=false confirmed=true changed=false dry_run=false",
+    ] {
+        assert!(log.contains(line), "{line} in {log}");
+    }
+    assert!(!log.contains("Gate Co"), "{log}");
+}
+
 const UNKNOWN_NAMES: [&str; 10] = [
     "",
     "mark_applied",
@@ -1195,6 +1248,8 @@ async fn the_mint_sends_the_real_key_only_to_openai_and_only_the_list_of_tools()
             .get("saveToApplicationId")
             .is_none()
     );
+    // The card is the preview, so no tool offers the model a dry run.
+    assert!(!session["tools"].to_string().contains("dryRun"));
     assert!(
         session["instructions"]
             .as_str()

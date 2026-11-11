@@ -139,10 +139,12 @@ function harness(options = {}) {
     throw new Error(`unexpected fetch: ${url}`);
   };
   const window = { addEventListener() {}, location: { origin: "https://nexus.test" }, opener: null };
+  const updates = [];
   class BroadcastChannel {
     close() {}
-    postMessage() {}
+    postMessage(message) { updates.push(message.tool); }
   }
+  window.BroadcastChannel = BroadcastChannel;
   class Audio {
     set srcObject(value) { this.value = value; }
   }
@@ -167,7 +169,7 @@ function harness(options = {}) {
     setTimeout: () => 1,
     window,
   });
-  return { channel, elements, toolCalls, lookups, document, documentListeners, track, advance: (ms) => { now += ms; } };
+  return { channel, elements, toolCalls, lookups, updates, document, documentListeners, track, advance: (ms) => { now += ms; } };
 }
 
 async function connect(h) {
@@ -602,4 +604,96 @@ test("arguments that are no object never reach a card or the server", async () =
   assert.equal(cards(h).length, 0);
   assert.equal(h.toolCalls.length, 0);
   assert.equal(outputs(h)[0].error.code, "voice_invalid_arguments");
+});
+
+const found = (more) => ({ status: 200, json: async () => ({ isError: false, output: JSON.stringify({
+  id: "14", company: "Example Robotics", role: "AI Agent Engineer (Python)", ...more,
+}) }) });
+const tagOf = (card) => card.children.find((child) => child.className === "tag").textContent;
+
+for (const [name, archivedAt, title, said] of [
+  ["archive_application", "2026-11-01T00:00:00.000Z", "Already archived:", "already archived"],
+  ["unarchive_application", null, "Not archived:", "not archived"],
+]) {
+  test(`${name} of an application already there asks for no tap and tells the model why`, async () => {
+    const h = harness({ lookup: found({ archivedAt }) });
+    await connect(h);
+    await h.channel.emit("message", response("completed", [write("noop", name, { id: "14" })]));
+    await flush(); await flush(); await flush();
+    const [card] = cards(h);
+    assert.equal(card.children[0].textContent, `${title} application #14: Example Robotics, AI Agent Engineer (Python)`);
+    assert.equal(card.children.some((child) => child.className === "action-buttons"), false);
+    assert.equal(tagOf(card), "Nothing to do");
+    assert.equal(h.toolCalls.length, 0);
+    assert.equal(h.updates.length, 0);
+    const [output] = outputs(h);
+    assert.equal(output.changed, false);
+    assert.match(output.message, new RegExp(`Nothing was changed.*${said}.*another application`));
+    assert.equal(h.channel.sent.filter((sent) => sent.type === "response.create").length, 1);
+  });
+}
+
+test("a card for a change to an archived application says that it is archived, and one whose state is unknown still waits", async () => {
+  const h = harness({ lookup: found({ archivedAt: "2026-11-01T00:00:00.000Z" }) });
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    write("change", "update_application", { id: "14", nextAction: "Call" }),
+    write("event", "record_application_event", { applicationId: "14", type: "reply" }),
+    write("restore", "unarchive_application", { id: "14" }),
+  ]));
+  await flush(); await flush(); await flush();
+  assert.equal(cards(h)[0].children[0].textContent, "Change application #14: Example Robotics, AI Agent Engineer (Python) (archived)");
+  await tap(cards(h)[0], "Don’t");
+  await flush();
+  assert.equal(cards(h)[1].children[0].textContent, "Record “reply” in the history of application #14: Example Robotics, AI Agent Engineer (Python) (archived)");
+  await tap(cards(h)[1], "Don’t");
+  await flush();
+  assert.equal(cards(h)[2].children[0].textContent, "Restore from the archive: application #14: Example Robotics, AI Agent Engineer (Python)");
+  await tap(cards(h)[2], "Allow");
+  assert.deepEqual(h.toolCalls.map((request) => request.name), ["unarchive_application"]);
+
+  // The default lookup names no archive state at all: nothing is concluded from that.
+  const unknown = harness();
+  await connect(unknown);
+  await unknown.channel.emit("message", response("completed", [write("restore", "unarchive_application", { id: "14" })]));
+  await flush(); await flush(); await flush();
+  assert.equal(tagOf(cards(unknown)[0]), "Waiting for your tap");
+});
+
+for (const [name, why] of [
+  ["archive_application", ". It was already archived"],
+  ["unarchive_application", ". It was not archived"],
+  ["update_document_links", ""],
+]) {
+  test(`${name} that the server answers with changed: false reads "Nothing changed" and announces no update`, async () => {
+    const output = '{"changed":false,"application":{"id":"14"}}';
+    const h = harness({ toolResponse: { status: 200, json: async () => ({ isError: false, output }) } });
+    await connect(h);
+    await h.channel.emit("message", response("completed", [write("noop", name, { id: "14", applicationIds: [] })]));
+    await flush(); await flush(); await flush();
+    const [card] = cards(h);
+    await tap(card, "Allow");
+    assert.equal(h.toolCalls.length, 1);
+    assert.equal(tagOf(card), `Nothing changed${why}`);
+    assert.equal(card.children.find((child) => child.className === "tag").dataset.state, "done");
+    assert.equal(h.updates.length, 0);
+    assert.deepEqual(outputs(h), [JSON.parse(output)]);
+  });
+}
+
+test("a dry run of a write that waits for a tap is shown and sent as the real change", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    write("dry", "archive_application", { id: "14", dryRun: true }),
+    write("note", "append_application_note", { applicationId: "14", note: "n" }),
+  ]));
+  await flush(); await flush(); await flush();
+  const [card] = cards(h);
+  assert.deepEqual(texts(card).slice(0, 2), [ARCHIVE_14, "Waiting for your tap"]);
+  await tap(card, "Allow");
+  await flush();
+  assert.deepEqual(h.toolCalls[0], { name: "archive_application", arguments: { id: "14" }, confirmed: true });
+  assert.equal(tagOf(card), "Saved");
+  assert.deepEqual(h.updates, ["archive_application", "append_application_note"]);
 });
