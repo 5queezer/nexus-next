@@ -773,6 +773,9 @@ form.act .cv-error { min-height: 0; padding: 4px 8px; border: 1px solid var(--wa
 .foot { display: none; }
 @media (max-width: 32rem) {
   .account { display: none; }
+  /* Pipeline is the way home there, and the name's room lets every page show without scrolling. */
+  .brand { display: none; }
+  nav a { padding: 6px 8px; }
   .foot { display: flex; gap: 20px; max-width: 64rem; margin: 0 auto; padding: 0 16px 24px; font-size: 13px; }
   .foot a { color: var(--muted); }
   body:has(.app-actions) .foot { padding-bottom: 96px; }
