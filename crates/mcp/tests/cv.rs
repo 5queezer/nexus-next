@@ -204,7 +204,7 @@ async fn patching_needs_locked_facts_and_the_right_head() {
 }
 
 #[tokio::test]
-async fn origin_is_free_text_limited_in_length_and_stored_as_data() {
+async fn origin_is_a_short_plain_word_stored_as_data() {
     let server = locked_server().await;
     let args = |origin: &str, summary: &str| {
         json!({
@@ -230,7 +230,20 @@ async fn origin_is_free_text_limited_in_length_and_stored_as_data() {
             .err_text()
             .contains("too_big")
     );
-    let origin = "'); DROP TABLE cv_facts; --";
+    // The last two have a Cyrillic letter where a reserved origin has a Latin one.
+    for origin in [
+        "'); DROP TABLE cv_facts; --",
+        "Telegram",
+        "tele gram",
+        "telegram\n",
+        "d\u{430}shboard",
+        "v\u{43e}ice",
+    ] {
+        let refused = server.call("patch_cv", args(origin, "s")).await;
+        assert_eq!(refused.code(), "cv_origin_invalid", "{origin}");
+    }
+    assert_eq!(head(&server, "default").await.0, 0, "nothing stored");
+    let origin = "tele-gram_2";
     server.call("patch_cv", args(origin, "s")).await.ok();
     let listed = server.call("list_cv_revisions", json!({})).await.ok();
     assert_eq!(listed["revisions"][0]["origin"], origin);
@@ -1711,7 +1724,7 @@ async fn nothing_a_caller_says_about_itself_approves() {
         &["mcp:tools"],
         "dashboard",
         "patch_cv",
-        json!({"expectedRevision": 0, "summary": "s", "origin": "from the dashboard",
+        json!({"expectedRevision": 0, "summary": "s", "origin": "from-the-dashboard",
             "edits": [{"oldText": "Backend engineer", "newText": "Freight engineer"}]}),
     )
     .await;
@@ -2625,6 +2638,32 @@ async fn origins_that_claim_the_owner_are_refused_from_a_tool_call() {
     assert_eq!(head(&server, "default").await.0, 0, "nothing stored");
     let free = patch(&server, 0, "Backend engineer", "Backend developer").await;
     assert_eq!(free.ok()["state"], "draft");
+}
+
+/// A page shows `voice` as the owner's dictation, so only the voice session writes it.
+#[tokio::test]
+async fn only_the_voice_session_writes_the_voice_origin() {
+    let server = locked_server().await;
+    let args = |origin: &str| {
+        json!({"expectedRevision": 0, "summary": "s", "origin": origin,
+            "edits": [{"oldText": "Backend engineer", "newText": "Backend developer"}]})
+    };
+    for origin in ["voice", "Voice", " voice "] {
+        let reply = server.call("patch_cv", args(origin)).await;
+        assert_eq!(reply.code(), "cv_origin_reserved", "{origin}");
+    }
+    assert_eq!(head(&server, "default").await.0, 0, "nothing stored");
+    let spoken = nexus_mcp::call_tool(
+        server.state.clone(),
+        &["mcp:tools"],
+        "voice",
+        "patch_cv",
+        args("voice"),
+    )
+    .await;
+    assert_ne!(spoken.is_error, Some(true), "{spoken:?}");
+    let listed = server.call("list_cv_revisions", json!({})).await.ok();
+    assert_eq!(listed["revisions"][0]["origin"], "voice");
 }
 
 async fn patch_in(server: &Server, variant: &str, expected: i64, old: &str, new: &str) -> Value {
