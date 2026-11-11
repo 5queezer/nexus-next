@@ -1666,6 +1666,14 @@ async fn the_approval_screen_shows_the_picture_before_the_button() {
         .find("preview.png?revision=2&amp;page=1")
         .unwrap_or_else(|| panic!("no picture: {page}"));
     let read = page.find("Read the picture").unwrap();
+    // It is part of the review view itself, on any screen: no other view or tab holds it.
+    let view = page.find("id=\"cv-workspace\"");
+    assert_eq!(view_of(&page), "review");
+    assert!(view.is_some_and(|view| view < read), "{page}");
+    assert!(
+        page[read..].contains("id=\"cv-approval\""),
+        "the panel follows it: {page}"
+    );
     let items = page.find("id=\"cv-review-items\"").unwrap();
     let button = page.find("class=\"approve-form\"").unwrap();
     assert!(
@@ -2027,10 +2035,10 @@ async fn the_view_follows_the_head_unless_a_link_names_one() {
     assert_eq!(view_of(&page), "history");
     assert!(page.contains("id=\"cv-revisions\""), "{page}");
     assert!(!page.contains("id=\"cv-source\""), "{page}");
-    // A phone's picture tab reads the same draft, and the form is in the page all the same.
+    // The picture has no view of its own: it is part of the review.
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=picture")).await;
-    assert_eq!(view_of(&page), "picture");
-    assert!(page.contains("class=\"approve-form\""), "{page}");
+    assert_eq!(view_of(&page), "review");
+    assert!(!page.contains("view=picture"), "{page}");
     // A link from before the views, and a view nobody has, land somewhere sensible.
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?page=1")).await;
     assert_eq!(view_of(&page), "history");
@@ -2059,10 +2067,10 @@ async fn each_view_draws_the_picture_once() {
         "Built the routing core.",
     )
     .await;
-    for view in ["picture", "review", "edit", "history"] {
+    for view in ["review", "edit", "history"] {
         let (_, _, page) = get(&f.app, &format!("{VARIANT}?view={view}")).await;
         assert_eq!(page.matches("<img").count(), 1, "{view}: {page}");
-        let reading = matches!(view, "picture" | "review");
+        let reading = view == "review";
         assert_eq!(page.contains("id=\"cv-picture-pages\""), reading, "{view}");
         assert_eq!(page.contains("id=\"cv-preview-pages\""), !reading, "{view}");
     }

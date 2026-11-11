@@ -403,22 +403,20 @@ struct VariantQuery {
     view: Option<String>,
 }
 
-/// What the panel beside the picture holds. `Picture` is a phone's tab: wider screens show the picture
-/// next to the review, so there it is `Review`.
+/// What the panel beside the picture holds. A narrow screen shows the picture only in `Review`,
+/// ahead of the panel: it comes before the button on every screen.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    Picture,
     Review,
     Edit,
     History,
 }
 
 impl Mode {
-    const ALL: [Self; 4] = [Self::Picture, Self::Review, Self::Edit, Self::History];
+    const ALL: [Self; 3] = [Self::Review, Self::Edit, Self::History];
 
     fn key(self) -> &'static str {
         match self {
-            Self::Picture => "picture",
             Self::Review => "review",
             Self::Edit => "edit",
             Self::History => "history",
@@ -702,7 +700,7 @@ async fn render_variant(
             Mode::Edit
         })
     };
-    let reviewing = matches!(mode, Mode::Picture | Mode::Review);
+    let reviewing = mode == Mode::Review;
     let to_check = review
         .as_ref()
         .ok()
@@ -733,7 +731,7 @@ async fn render_variant(
         _ => preview_view(variant, head, approved).into_any(),
     };
     let panel = match mode {
-        Mode::Picture | Mode::Review => approval_view(variant, token, &review).into_any(),
+        Mode::Review => approval_view(variant, token, &review).into_any(),
         Mode::Edit => view! {
             {editor_view(variant, token, &text, expected, saves_approved, &outcome)}
             {voice_view(variant, voice_config, token)}
@@ -754,7 +752,6 @@ async fn render_variant(
                 {state_badge(approved)}
             </div>
             <nav class="cv-modes" id="cv-modes" aria-label="Views of this CV" data-view=mode.key()>
-                {tab(Mode::Picture, "Picture", None)}
                 {tab(Mode::Review, "Review", to_check)}
                 {tab(Mode::Edit, "Edit", None)}
                 {tab(Mode::History, "History", revision_count.filter(|count| *count > 0))}

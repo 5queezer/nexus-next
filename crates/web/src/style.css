@@ -608,8 +608,6 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
   #cv-workspace[data-view="edit"] .cv-panes, #cv-workspace[data-view="history"] .cv-panes { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
   .cv-picture { overflow: auto; padding: 16px 24px 24px; }
   .cv-panel { display: flex; flex-direction: column; overflow: auto; border-top: 0; border-left: 1px solid var(--line); }
-  .cv-modes .to-picture { display: none; }
-  .cv-modes[data-view="picture"] .to-review { background: var(--ink); color: var(--bg); font-weight: 600; }
   #cv-approval { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
   .approval { flex: 1 1 0; min-height: 0; overflow: auto; padding-inline: 20px; }
   .approval-foot { flex: none; max-height: 60%; overflow: auto; padding-inline: 20px; }
@@ -623,12 +621,12 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
 }
 
 @media (max-width: 59.99rem) {
-  /* One thing at a time: the picture has its own tab, and the others leave it out. */
-  .cv-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); flex: 1 1 100%; }
+  /* One column. Review starts with the picture, so it comes before the button here too, and the
+     other views leave it out. */
+  .cv-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1 1 100%; }
   .cv-modes a { justify-content: center; padding: 0 4px; }
   .cv-head .preview-actions { flex: 1 1 100%; }
-  #cv-workspace:not([data-view="picture"]) .cv-picture { display: none; }
-  #cv-workspace[data-view="picture"] .cv-panel { display: none; }
+  #cv-workspace:not([data-view="review"]) .cv-picture { display: none; }
   /* Over 1 px to a point, where a CV's body text can be read on a phone, so a page swipes sideways. */
   .picture-pages, .preview-pages { justify-items: start; overflow-x: auto; }
   .picture-page, .preview-pages img { width: max(100%, 38rem); }
