@@ -396,7 +396,11 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
         return Err(RenderError::TooManyPages);
     }
     refuse_odd_pages(&world, &document)?;
-    let mut text = crate::extract::rendered_text(&document)?;
+    let refuse = |span: Span, message: String| {
+        let error = SourceDiagnostic::error(span, message);
+        RenderError::Diagnostics(vec![to_diagnostic(&world, &error)])
+    };
+    let mut text = crate::extract::rendered_text(&document, &refuse)?;
     text.layout = crate::layout::layout(&document, &text, crate::template::pages_of(&req.source));
     // Only a picture is clicked on.
     if req.preview_pages > 0 {
