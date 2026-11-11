@@ -22,6 +22,14 @@ use crate::{Handler, McpState, all_tools};
 /// inside it while bounding what one request can make the board hold in memory.
 const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
+/// Every message of a batch is answered, and all the answers are held until the last is ready.
+/// Clients send one message at a time, and the protocol dropped batches in 2025-06-18.
+const MAX_BATCH_MESSAGES: usize = 20;
+/// The tools whose result is a whole document.
+pub const LARGE_RESULT_TOOLS: [&str; 2] = ["download_document_content", "render_cv_pdf"];
+/// How many of those one batch may call, whatever the size of its body.
+pub const MAX_LARGE_RESULTS: usize = 2;
+
 const SUPPORTED_PROTOCOL_VERSIONS: [&str; 5] = [
     "2025-11-25",
     "2025-06-18",
@@ -361,6 +369,33 @@ async fn handle_post(State(service): State<Rmcp>, request: Request) -> Response<
             StatusCode::BAD_REQUEST,
             -32700,
             "Parse error: Invalid JSON-RPC message",
+        );
+    }
+    if messages.len() > MAX_BATCH_MESSAGES {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            -32600,
+            &format!(
+                "Invalid Request: At most {MAX_BATCH_MESSAGES} messages are allowed in one batch"
+            ),
+        );
+    }
+    let large_results = messages
+        .iter()
+        .filter(|message| method(message) == Some("tools/call"))
+        .filter(|message| {
+            LARGE_RESULT_TOOLS
+                .iter()
+                .any(|tool| message["params"]["name"] == *tool)
+        })
+        .count();
+    if large_results > MAX_LARGE_RESULTS {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            -32600,
+            &format!(
+                "Invalid Request: At most {MAX_LARGE_RESULTS} calls that return a document are allowed in one batch"
+            ),
         );
     }
     let is_initialize = messages

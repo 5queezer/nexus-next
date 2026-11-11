@@ -2,7 +2,10 @@
 
 mod common;
 
+use std::future::poll_fn;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::header::{AUTHORIZATION, COOKIE, RETRY_AFTER, SET_COOKIE};
@@ -1669,6 +1672,56 @@ async fn a_configured_proxy_header_is_trusted_only_from_its_peers() {
     );
 }
 
+/// A proxy appends what it saw, so whatever the client sent comes before it.
+#[tokio::test]
+async fn the_proxys_own_entry_is_the_last_of_the_last_header_line() {
+    let h = Harness::with_proxy(Some(TrustedProxy {
+        header: HeaderName::from_static("x-forwarded-for"),
+        peers: vec!["127.0.0.1".parse().unwrap()],
+    }))
+    .await;
+    let (form, cookie) = login_form_and_cookie(&h).await;
+    let guess = |lines: Vec<String>| {
+        let mut request = with_ip(
+            form_req(
+                "/login",
+                &format!("csrf={}&passphrase=wrong", form.field("csrf")),
+            ),
+            "127.0.0.1",
+        );
+        request
+            .headers_mut()
+            .insert(COOKIE, cookie.parse().unwrap());
+        for line in lines {
+            request
+                .headers_mut()
+                .append("x-forwarded-for", line.parse().unwrap());
+        }
+        h.send(request)
+    };
+    for i in 0..3 {
+        let sent = format!("192.0.2.{i}");
+        let status = guess(vec![sent.clone(), "198.51.100.7".to_owned()])
+            .await
+            .status;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let status = guess(vec![format!("{sent}, 198.51.100.7")]).await.status;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let status = guess(vec!["192.0.2.99".to_owned(), "198.51.100.7".to_owned()])
+        .await
+        .status;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "a line of the client's own changes nothing"
+    );
+    let status = guess(vec!["198.51.100.7".to_owned(), "198.51.100.8".to_owned()])
+        .await
+        .status;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "another client");
+}
+
 #[tokio::test]
 async fn login_next_cannot_redirect_off_site() {
     let h = Harness::new().await;
@@ -2062,6 +2115,76 @@ async fn the_owner_changes_the_passphrase_in_the_browser() {
     assert_eq!(old.status, StatusCode::UNAUTHORIZED);
     let new = fresh.attempt_login(&h, NEW_PASSPHRASE, DEFAULT_IP).await;
     assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
+}
+
+/// The server's deadline or a lost connection drops the request while the change runs.
+#[tokio::test]
+async fn a_passphrase_change_finishes_after_the_client_has_left() {
+    let h = Harness::new().await;
+    let api_token = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let mut other = Browser::default();
+    other.login(&h).await;
+
+    {
+        let mut change = Box::pin(change_passphrase(
+            &mut browser,
+            &h,
+            PASSPHRASE,
+            NEW_PASSPHRASE,
+            NEW_PASSPHRASE,
+        ));
+        // One step of the request per look, so it can't finish between the revocation and the drop.
+        while h.whoami(&api_token).await.status == StatusCode::OK {
+            let step = poll_fn(|cx| Poll::Ready(change.as_mut().poll(cx))).await;
+            if step.is_ready() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    let mut ended = false;
+    for _ in 0..1000 {
+        ended = other.send(&h, get_req("/dashboard")).await.status == StatusCode::SEE_OTHER;
+        if ended {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ended, "the sessions end with the credentials");
+    let new = Browser::default()
+        .attempt_login(&h, NEW_PASSPHRASE, DEFAULT_IP)
+        .await;
+    assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
+}
+
+/// Otherwise no browser is a known device after a change, and anyone can keep the owner out.
+#[tokio::test]
+async fn the_browser_that_changed_the_passphrase_stays_a_known_device() {
+    let h = Harness::new().await;
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    let old_mark = owner.cookies["__Host-nexus_device"].clone();
+    let done = change_passphrase(&mut owner, &h, PASSPHRASE, NEW_PASSPHRASE, NEW_PASSPHRASE).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_ne!(owner.cookies["__Host-nexus_device"], old_mark);
+    exhaust_global_backoff(&h).await;
+
+    let mut stale = Browser::default();
+    stale
+        .cookies
+        .insert("__Host-nexus_device".to_owned(), old_mark);
+    let blocked = stale
+        .attempt_login(&h, NEW_PASSPHRASE, "198.51.100.200")
+        .await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let reply = owner
+        .attempt_login(&h, NEW_PASSPHRASE, "198.51.100.202")
+        .await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
 }
 
 #[tokio::test]

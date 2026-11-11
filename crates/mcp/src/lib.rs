@@ -9,7 +9,7 @@ mod zod;
 use std::sync::{Arc, LazyLock};
 
 use nexus_core::Db;
-use nexus_core::auth::{AuthContext, AuthType, SCOPE_TOOLS};
+use nexus_core::auth::{AuthContext, AuthType};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, Implementation, ProtocolVersion, ServerCapabilities,
     ServerConfig,
@@ -21,7 +21,7 @@ use serde_json::Value;
 use tokio::sync::{Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 
-pub use http::router;
+pub use http::{LARGE_RESULT_TOOLS, MAX_LARGE_RESULTS, router};
 pub use nexus_tailor::Renderer;
 pub use owner::Review;
 pub use rmcp::model::CallToolResult;
@@ -41,9 +41,6 @@ pub async fn call_tool(
         auth_type: AuthType::OAuth,
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
     };
-    if !auth.has_scope(SCOPE_TOOLS) {
-        return tools::code_error("insufficient_scope");
-    }
     tools::call(
         state,
         &auth,

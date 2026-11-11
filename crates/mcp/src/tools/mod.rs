@@ -11,7 +11,7 @@ mod submissions;
 
 use std::sync::Arc;
 
-use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS};
+use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
 use nexus_core::repo::applications::Application;
 use nexus_core::repo::contacts as contacts_repo;
 use nexus_core::repo::documents::{Document, list_for_submission};
@@ -280,7 +280,8 @@ async fn dispatch(ctx: &Ctx, name: &str, args: Args) -> ToolResult {
     }
 }
 
-/// The SDK's `tools/call` handler: validate, run, and turn every failure into a tool error.
+/// The SDK's `tools/call` handler: validate, run, and turn every failure into a tool error. A token
+/// narrowed to another scope calls no tool.
 pub(crate) async fn call(
     state: Arc<McpState>,
     auth: &AuthContext,
@@ -289,6 +290,9 @@ pub(crate) async fn call(
     mut args: Option<Value>,
     client_gone: CancellationToken,
 ) -> CallToolResult {
+    if !auth.has_scope(SCOPE_TOOLS) {
+        return code_error("insufficient_scope");
+    }
     let Some(tool) = all_tools().iter().find(|tool| tool["name"] == name) else {
         return text_error(&format!("MCP error -32602: Tool {name} not found"));
     };

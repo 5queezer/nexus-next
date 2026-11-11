@@ -390,6 +390,15 @@ pub async fn delete(conn: &mut SqliteConnection, id: i64) -> Result<Option<Docum
     Ok(Some(existing))
 }
 
+/// The bytes of every document, as the rows say. Two documents sharing a blob count twice.
+pub async fn total_size(conn: &mut SqliteConnection) -> Result<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT COALESCE(SUM(size), 0) FROM documents")
+            .fetch_one(conn)
+            .await?,
+    )
+}
+
 /// Blobs are content-addressed, so two documents can share one.
 pub async fn blob_is_referenced(conn: &mut SqliteConnection, blob_sha256: &str) -> Result<bool> {
     let row: Option<i64> =

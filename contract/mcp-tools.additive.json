@@ -80,7 +80,7 @@
             "minLength": 1,
             "maxLength": 64,
             "default": "mcp",
-            "description": "Where the edit came from, such as telegram. Recorded as data."
+            "description": "Where the edit came from, such as telegram: lowercase letters, digits, - and _. Recorded as data."
           },
           "createFrom": {
             "type": "string",

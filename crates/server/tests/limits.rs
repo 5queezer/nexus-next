@@ -602,3 +602,55 @@ async fn a_batch_cannot_ask_for_more_downloads_than_there_are_slots() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+/// A large or chunked body takes one slot without being read, so the route counts for itself.
+#[tokio::test]
+async fn a_large_or_chunked_batch_is_held_to_the_same_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    let token = issue_api_token(&db, "agent").await.unwrap();
+    let app =
+        serve::build_app(&db, &config(dir.path(), owner("https://crm.example.test"))).unwrap();
+    let send = async |body: Body| {
+        let request = Request::post("/api/mcp")
+            .header("authorization", format!("Bearer {token}"))
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .body(body)
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (status, body)
+    };
+    let chunked =
+        |text: String| Body::from_stream(stream::iter([Ok::<_, Infallible>(Bytes::from(text))]));
+    let padding = " ".repeat(LARGE_BODY_BYTES as usize + 1);
+    let ping = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+
+    let downloads =
+        serde_json::Value::Array(vec![download_call(); MAX_LARGE_BODIES + 1]).to_string();
+    let pings = serde_json::Value::Array(vec![ping.clone(); 21]).to_string();
+    for text in [downloads, pings] {
+        for body in [
+            Body::from(format!("{padding}{text}")),
+            chunked(text.clone()),
+        ] {
+            let (status, refused) = send(body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+            assert_eq!(refused["error"]["code"], -32600, "{refused}");
+        }
+    }
+    // A short batch of many messages is refused as well, since every answer is held to the end.
+    let (status, refused) = send(Body::from(
+        serde_json::Value::Array(vec![ping.clone(); 21]).to_string(),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+
+    let allowed = serde_json::Value::Array(vec![ping; 20]).to_string();
+    let (status, answers) = send(chunked(allowed)).await;
+    assert_eq!(status, StatusCode::OK, "{answers}");
+    assert_eq!(answers.as_array().map(Vec::len), Some(20));
+}

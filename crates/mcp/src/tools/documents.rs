@@ -18,6 +18,8 @@ use super::{
 use crate::js::{nid, parse_date, slice16};
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
+/// All documents together. Nothing else bounds what a token holder can put on the disk.
+const MAX_STORED_BYTES: i64 = 1024 * 1024 * 1024;
 const MAX_BASE64_BYTES: usize = MAX_UPLOAD_BYTES.div_ceil(3) * 4 + 4;
 const NOT_FOUND: &str = "Document not found or access denied";
 const APP_NOT_FOUND: &str = "Application not found or access denied";
@@ -175,6 +177,12 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     };
     if bytes.len() > MAX_UPLOAD_BYTES {
         return Ok(text_error("File too large (max 10 MB)"));
+    }
+    let stored = repo::total_size(&mut *ctx.state.db.conn().await?).await?;
+    if stored + bytes.len() as i64 > MAX_STORED_BYTES {
+        return Ok(text_error(
+            "Document storage is full (max 1 GB in total). Delete documents to make room.",
+        ));
     }
     let mime_type = req_str(args, "mimeType");
     if !matches_signature(&bytes, mime_type) {

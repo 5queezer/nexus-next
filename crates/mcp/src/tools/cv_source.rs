@@ -58,6 +58,8 @@ const RESERVED_VARIANT_PREFIX: &str = "application-";
 /// Origins that say the owner acted, or that the revert tool did. A page shows them as such, so a tool
 /// call can't send them: the owner's own paths and `revert_cv` write them.
 const RESERVED_ORIGINS: [&str; 4] = ["dashboard", "revert", "cli", "lock"];
+/// `Ctx::source` of the voice session, whose origin the server sets, so no other caller can send it.
+const VOICE_SOURCE: &str = "voice";
 
 pub(super) fn error_with(code: &str, details: Value) -> CallToolResult {
     let mut error = json!({"code": code});
@@ -637,12 +639,19 @@ pub(crate) async fn patch_as(
     let summary = req_str(args, "summary");
     let origin = req_str(args, "origin");
     let edits = args["edits"].as_array().map_or(&[][..], Vec::as_slice);
+    let claims = |reserved: &&str| origin.trim().eq_ignore_ascii_case(reserved);
     if approved_by.is_none()
-        && RESERVED_ORIGINS
-            .iter()
-            .any(|reserved| origin.trim().eq_ignore_ascii_case(reserved))
+        && (RESERVED_ORIGINS.iter().any(claims)
+            || (ctx.source != VOICE_SOURCE && claims(&VOICE_SOURCE)))
     {
         return Ok(code_error("cv_origin_reserved"));
+    }
+    // Plain lowercase only, so that nothing can be written to look like a reserved origin.
+    if !origin
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
+    {
+        return Ok(code_error("cv_origin_invalid"));
     }
     let state = match locked_facts(ctx).await? {
         Ok(state) => state,

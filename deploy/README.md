@@ -88,6 +88,8 @@ Rate limits and login backoff key on the client's address. Behind `cloudflared` 
 - **Cloudflare tunnel:** `NEXUS_TRUSTED_IP_HEADER=CF-Connecting-IP`.
 - **Tailscale Funnel:** not confirmed yet. Check what Funnel really sends before relying on it; `X-Forwarded-For` works if Funnel appends the client address, because the last entry is the one used.
 
+Of a header sent on several lines or as a list, the last entry of the last line is the one believed, since the nearest proxy appends. So run one ingress per instance: behind two proxies in a row that entry is the outer proxy, not the client.
+
 The header is only believed on connections from `NEXUS_TRUSTED_PROXY_PEERS`, so keep the bind on loopback and let nothing else on the board reach port 8091 with forged headers. Verify it after the first public request: failed-login log lines must show `source=<your real address>`, not `source=127.0.0.1`.
 
 ### OAuth redirect hosts
@@ -286,7 +288,7 @@ Each kind of caller has its own pool of request slots, so anonymous traffic can'
 
 Token refreshes and logins share the public pool, so a flood there can delay them even though it can't touch the other two. They get a 503 rather than hanging, and clients with a valid access token carry on working.
 
-Moving a whole document is expensive: the transport holds several copies, about 85 MB for one 10 MiB document, measured with the musl build. So on the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content` or `render_cv_pdf` call, needs one of **2** large slots, held until the response has been written, waiting up to 30 s for it. A batch asking for more than 2 downloads gets a 413. These slots keep one token holder from exhausting `MemoryMax`. A client that stops reading a download holds its slot until its connection ends, which blocks other large calls but nothing else.
+Moving a whole document is expensive: the transport holds several copies, about 85 MB for one 10 MiB document, measured with the musl build. So on the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content` or `render_cv_pdf` call, needs one of **2** large slots, held until the response has been written, waiting up to 30 s for it. A batch asking for more than 2 downloads gets a 413. In a large or chunked body, where they aren't counted before a slot is taken, the MCP route itself refuses them with a JSON-RPC error, as it does any batch of more than 20 messages. These slots keep one token holder from exhausting `MemoryMax`. A client that stops reading a download holds its slot until its connection ends, which blocks other large calls but nothing else.
 
 A large upload has 300 s, so 14 MB needs about 373 kbit/s, and must not stall for more than 30 s at a time. Anything slower gets a 408. **The ingress may be stricter:** check that it allows an upload this long.
 

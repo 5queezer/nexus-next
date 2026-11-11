@@ -1577,6 +1577,62 @@ async fn submission_policy_and_conflict_rules() {
 }
 
 #[tokio::test]
+async fn uploads_stop_when_the_documents_together_reach_the_limit() {
+    let server = Server::start().await;
+    let first = server.pdf(json!([])).await;
+    let set_size = async |size: i64| {
+        sqlx::query("UPDATE documents SET size = ? WHERE id = ?")
+            .bind(size)
+            .bind(first["id"].as_str().unwrap().parse::<i64>().unwrap())
+            .execute(server.db.pool())
+            .await
+            .unwrap();
+    };
+    let upload = || {
+        server.call(
+            "upload_document_content",
+            json!({"filename": "cv.pdf", "mimeType": "application/pdf",
+                "contentBase64": "JVBERi0xLjcgc3ludGhldGlj"}),
+        )
+    };
+    // The upload is 18 bytes.
+    set_size((1 << 30) - 17).await;
+    let refused = upload().await;
+    assert!(
+        refused.err_text().contains("Document storage is full"),
+        "{refused:?}"
+    );
+    let listed = server.call("list_documents", json!({})).await.ok();
+    assert_eq!(listed.as_array().map(Vec::len), Some(1), "nothing stored");
+
+    set_size((1 << 30) - 18).await;
+    upload().await.ok();
+}
+
+#[tokio::test]
+async fn a_token_without_the_tools_scope_calls_no_tool() {
+    let server = Server::start().await;
+    let id = server.application("Acme").await;
+    for (tool, args) in [
+        ("list_applications", json!({})),
+        ("delete_application", json!({"id": id})),
+        ("list_application_submissions", json!({"applicationId": id})),
+        ("no_such_tool", json!({})),
+    ] {
+        let reply = server.call_as(SUBMISSIONS_ONLY, tool, args).await;
+        assert!(reply.is_error, "{tool}");
+        assert_eq!(
+            reply.json(),
+            json!({"error": {"code": "insufficient_scope"}}),
+            "{tool}"
+        );
+    }
+    let listed = server.call("list_applications", json!({})).await;
+    assert!(!listed.is_error, "nothing was deleted: {}", listed.text);
+    assert!(listed.text.contains("Acme"), "{}", listed.text);
+}
+
+#[tokio::test]
 async fn submission_scope_is_enforced_per_tool() {
     let server = Server::start().await;
     let id = server.application("Acme").await;
