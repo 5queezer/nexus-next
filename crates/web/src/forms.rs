@@ -15,7 +15,8 @@ use leptos::prelude::*;
 use nexus_core::Timestamp;
 use nexus_core::auth::{FormToken, SCOPE_TOOLS};
 use nexus_core::repo::applications::{self, Application};
-use nexus_core::repo::contacts;
+use nexus_core::repo::contacts::{self, Contact};
+use nexus_core::repo::events::ApplicationEvent;
 use rand::Rng;
 use serde_json::{Map, Value, json};
 use subtle::ConstantTimeEq;
@@ -66,17 +67,40 @@ const MAX_FORM_AHEAD_SECONDS: i64 = 600;
 
 const FORMS: [&str; 6] = ["note", "triage", "event", "contact", "archive", "unarchive"];
 
-pub(crate) fn done_notice(done: &str) -> Option<Flash> {
-    let text = match done {
-        "note" => "Note added.",
-        "triage" => "Rating and triage saved.",
-        "event" => "Event recorded.",
-        "contact" => "Contact added.",
-        "archive" => "Application archived.",
-        "unarchive" => "Application restored to the pipeline.",
+/// How long after a change a page still says that it was made.
+const DONE_NOTICE_SECONDS: i64 = 120;
+
+/// What a form just sent did. Anyone can send the owner a link, so the query claims nothing by
+/// itself: a notice shows only while the stored records say that such a change was just made.
+pub(crate) fn done_notice(
+    done: &str,
+    application: &Application,
+    events: &[ApplicationEvent],
+    contacts: &[Contact],
+) -> Option<Flash> {
+    let now = Timestamp::now().to_datetime();
+    let recent = |at: &Timestamp| (now - at.to_datetime()).num_seconds() <= DONE_NOTICE_SECONDS;
+    let recent_event = |note: bool| {
+        events
+            .iter()
+            .any(|e| (e.r#type == "note_added") == note && recent(&e.created_at))
+    };
+    let (text, holds) = match done {
+        "note" => ("Note added.", recent_event(true)),
+        "triage" => ("Rating and triage saved.", recent(&application.updated_at)),
+        "event" => ("Event recorded.", recent_event(false)),
+        "contact" => (
+            "Contact added.",
+            contacts.iter().any(|contact| recent(&contact.created_at)),
+        ),
+        "archive" => ("Application archived.", application.archived_at.is_some()),
+        "unarchive" => (
+            "Application restored to the pipeline.",
+            application.archived_at.is_none() && recent(&application.updated_at),
+        ),
         _ => return None,
     };
-    Some(Flash {
+    holds.then(|| Flash {
         ok: true,
         text: text.to_owned(),
     })
@@ -410,7 +434,11 @@ pub(crate) async fn submit(
     actions.flash = Some(failure_notice(&failure.1));
     actions.failed = Some(kind);
     actions.typed = form;
-    Ok((failure.0, Html(detail_page(&dash, id, actions, "").await?)).into_response())
+    Ok((
+        failure.0,
+        Html(detail_page(&dash, id, actions, "", None).await?),
+    )
+        .into_response())
 }
 
 fn value<'a>(actions: &'a Actions, name: &str, saved: &'a str) -> String {

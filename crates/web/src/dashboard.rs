@@ -238,17 +238,20 @@ async fn application(
     Query(query): Query<DetailQuery>,
 ) -> Page {
     let id: i64 = id.parse().map_err(|_| PageError(StatusCode::NOT_FOUND))?;
-    let mut actions = Actions::new(token);
-    actions.flash = query.done.as_deref().and_then(forms::done_notice);
+    let actions = Actions::new(token);
     let show = query.show.as_deref().unwrap_or_default();
-    Ok(Html(detail_page(&dash, id, actions, show).await?))
+    Ok(Html(
+        detail_page(&dash, id, actions, show, query.done.as_deref()).await?,
+    ))
 }
 
+/// `done` names the form a redirect says was just sent; see [`forms::done_notice`].
 pub(crate) async fn detail_page(
     Dashboard { db, tz, .. }: &Dashboard,
     id: i64,
-    actions: Actions,
+    mut actions: Actions,
     show: &str,
+    done: Option<&str>,
 ) -> Result<String, PageError> {
     let mut conn = db.conn().await?;
     let application = applications::get(&mut conn, id)
@@ -258,6 +261,9 @@ pub(crate) async fn detail_page(
     let contacts = contacts::list_for_application(&mut conn, id).await?;
     let documents = documents::list_for_application(&mut conn, id).await?;
     let submissions = submissions::list_for_application(&mut conn, id, true).await?;
+    if let Some(done) = done {
+        actions.flash = forms::done_notice(done, &application, &events, &contacts);
+    }
     let clock = Clock::now(*tz);
     let counts = views::NavCounts {
         overdue: overdue_count(&applications::list(&mut conn).await?, clock),

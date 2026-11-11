@@ -532,6 +532,55 @@ async fn a_post_without_the_right_token_changes_nothing() {
     assert!(application(&f.db, id).await.archived_at.is_none());
 }
 
+/// A link can carry `?done=`, so the page says only what the records bear out.
+#[tokio::test]
+async fn a_done_notice_shows_only_when_the_records_agree() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Acme", "applied").await;
+    let (status, ..) = submit(&f, id, "note", &[("note", "Called the recruiter")]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (status, ..) = submit(&f, id, "contact", &[("name", "Ada")]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let notices = [
+        ("note", "Note added."),
+        ("triage", "Rating and triage saved."),
+        ("event", "Event recorded."),
+        ("contact", "Contact added."),
+        ("archive", "Application archived."),
+        ("unarchive", "Application restored to the pipeline."),
+    ];
+    let shown = async || {
+        let mut shown = Vec::new();
+        for (done, text) in notices {
+            let (_, _, page) = get(&f.app, &format!("/applications/{id}?done={done}")).await;
+            if page.contains(text) {
+                shown.push(done);
+            }
+        }
+        shown
+    };
+    // Just changed, by a note and a contact. No event but the note, and not archived.
+    assert_eq!(shown().await, ["note", "triage", "contact", "unarchive"]);
+
+    // The same records, but old. Events can't be updated, so old copies take their place.
+    for sql in [
+        "UPDATE applications SET updated_at = '2020-01-01T00:00:00.000Z'",
+        "UPDATE contacts SET created_at = '2020-01-01T00:00:00.000Z'",
+        "INSERT INTO application_events (application_id, type, occurred_at, created_at)
+         SELECT application_id, type, occurred_at, '2020-01-01T00:00:00.000Z' FROM application_events",
+        "DELETE FROM application_events WHERE created_at > '2020-01-02'",
+    ] {
+        sqlx::query(sql).execute(f.db.pool()).await.unwrap();
+    }
+    assert_eq!(event_types(&f.db, id).await, ["note_added"]);
+    assert_eq!(shown().await, [""; 0]);
+
+    let (status, ..) = submit(&f, id, "archive", &[("confirm", "1")]).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    // Triage leaves no record of its own, so any change just made bears it out.
+    assert_eq!(shown().await, ["triage", "archive"]);
+}
+
 #[tokio::test]
 async fn reading_never_changes_anything() {
     let f = fixture().await;
