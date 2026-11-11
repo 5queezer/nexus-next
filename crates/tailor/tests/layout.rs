@@ -359,3 +359,61 @@ async fn density_draws_the_same_text_tighter_or_looser_in_every_template() {
         "#show: cv.with(pages: 1, density: 2)\n"
     );
 }
+
+/// A company and title too long for the line beside the date: the word left over is noted, with how
+/// much shorter the header must be.
+#[tokio::test]
+async fn an_entry_header_that_leaves_one_word_beside_its_date_is_a_stub() {
+    let mut stubs = 0;
+    for template in ["classic", "modern"] {
+        for words in 2..14 {
+            let mut facts = facts_en();
+            facts.employment[0].company =
+                "Brightpath Logistics (client: a consumer electronics company)".to_owned();
+            facts.employment[0].title = format!("{}Engineer", "QA ".repeat(words));
+            let source = format!(
+                "#import \"/nexus.typ\": *\n#show: cv.with(template: \"{template}\")\n#header()\n= Experience\n#employment(\"brightpath\")[- Work.]\n"
+            );
+            let rendered = render(&source, &facts).await.unwrap();
+            let alone = rendered
+                .text
+                .lines
+                .iter()
+                .filter(|line| line.starts_with("Engineer "))
+                .count();
+            let layout = rendered.text.layout;
+            let noted: Vec<_> = layout
+                .notes
+                .iter()
+                .filter(|note| note.kind == LayoutKind::Stub)
+                .collect();
+            assert!(noted.len() <= 1, "{template} {words}: {layout:#?}");
+            for note in &noted {
+                assert!(
+                    note.message
+                        .starts_with("The header of the entry \"Brightpath Logistics (client:"),
+                    "{}",
+                    note.message
+                );
+            }
+            if alone == 1 {
+                assert_eq!(
+                    noted.len(),
+                    1,
+                    "{template} {words}: {:#?}",
+                    rendered.text.lines
+                );
+                assert_eq!(noted[0].line, "Engineer");
+                assert!(
+                    noted[0]
+                        .message
+                        .contains("\"Engineer\" stands alone on its last line. It is about "),
+                    "{}",
+                    noted[0].message
+                );
+                stubs += 1;
+            }
+        }
+    }
+    assert!(stubs > 1);
+}

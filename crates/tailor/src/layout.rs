@@ -144,7 +144,8 @@ fn continued(parts: &[Part], at: usize) -> Option<usize> {
             below.y0 - above.y0 <= MAX_PITCH * above.height()
                 && (below.height() - above.height()).abs() <= 0.03 * above.height()
                 && !BULLETS.contains(&below.text.split(' ').next().unwrap_or_default())
-                && above.x1 + SPACE * em + below.first_width > above.limit - 0.5
+                // A date beside the last line of an entry's header narrows the lines above it too.
+                && above.x1 + SPACE * em + below.first_width > above.limit.min(below.limit) - 0.5
         })
 }
 
@@ -208,7 +209,8 @@ pub(crate) fn layout(document: &PagedDocument, text: &RenderedText, target: Opti
     }
     let mut notes = Vec::new();
 
-    // Wrapped paragraphs and bullets, and the stubs they end in.
+    let entries = marks(document, Some(ENTRY_MARK));
+    // Wrapped paragraphs, bullets and entry headers, and the stubs they end in.
     let next: Vec<Option<usize>> = (0..parts.len()).map(|at| continued(&parts, at)).collect();
     let mut pitches = Vec::new();
     for start in (0..parts.len()).filter(|at| !next.contains(&Some(*at))) {
@@ -233,21 +235,41 @@ pub(crate) fn layout(document: &PagedDocument, text: &RenderedText, target: Opti
             continue;
         }
         let em = end.height() / BOX_EMS;
-        let over = width + SPACE * em - (above.limit - above.x1);
+        let over = width + SPACE * em - (above.limit.min(end.limit) - above.x1);
         let letter = (above.x1 - above.body) / above.text.chars().count().max(1) as f64;
+        let over = plural(
+            (over / letter.max(0.1)).ceil().max(1.0) as usize,
+            "character",
+        );
+        // An entry's header is the line its mark stands at: the company and title, beside the date.
+        let first = &parts[start];
+        let header = entries.iter().any(|(page, x, y, _)| {
+            *page == first.page
+                && (first.x0 - x).abs() <= EDGE
+                && (first.y0 - y).abs() < first.height()
+        });
+        let message = if header {
+            format!(
+                "The header of the entry \"{}\" on page {} wraps, and \"{}\" stands alone on its last line. It is about {over} too long for one line beside its date: shorten the company or the title.",
+                first.text,
+                end.page + 1,
+                end.text,
+            )
+        } else {
+            format!(
+                "A paragraph on page {} ends in a stub: \"{}\" is the last of {} lines, {:.0}% of the width. About {over} fewer above it, or a few more words, ends that.",
+                end.page + 1,
+                end.text,
+                chain.len(),
+                100.0 * width / widest.max(1.0),
+            )
+        };
         notes.push(LayoutNote {
             kind: LayoutKind::Stub,
             page: end.page + 1,
             line: end.text.clone(),
             at: end.at(),
-            message: format!(
-                "A paragraph on page {1} ends in a stub: \"{0}\" is the last of {2} lines, {3:.0}% of the width. About {4} fewer above it, or a few more words, ends that.",
-                end.text,
-                end.page + 1,
-                chain.len(),
-                100.0 * width / widest.max(1.0),
-                plural((over / letter.max(0.1)).ceil().max(1.0) as usize, "character"),
-            ),
+            message,
         });
     }
 
@@ -275,7 +297,6 @@ pub(crate) fn layout(document: &PagedDocument, text: &RenderedText, target: Opti
             });
         }
     }
-    let entries = marks(document, Some(ENTRY_MARK));
     let ends = marks(document, Some(ENTRY_END_MARK));
     for ((page, x, y, _), end) in entries.iter().zip(&ends) {
         if end.0 <= *page {
