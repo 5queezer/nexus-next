@@ -37,7 +37,9 @@
     }
   }
 
+  // While a draft is read for approval the picture is the one its form was compiled with, and stays.
   async function loadPreview(revision) {
+    if (!byId("cv-preview-pages")) return;
     const run = ++previewRun;
     let body;
     let ok = false;
@@ -68,36 +70,44 @@
     notice.id = "cv-approval-stale";
     notice.setAttribute("role", "status");
     const link = document.createElement("a");
-    link.href = `${base}?read=${revision}#cv-approval`;
+    link.href = `${base}?view=review&read=${revision}#cv-approval`;
     link.textContent = `Revision ${revision} landed: read it again`;
     notice.append(link);
     const panel = byId("cv-approval");
+    if (!panel) return;
     const old = byId("cv-approval-stale") || panel.querySelector(".approve-form");
     if (old) old.replaceWith(notice);
     else panel.querySelector(".approval").prepend(notice);
   }
 
-  // Takes the revision list and head from a fresh copy of this page. The approval panel follows only
+  // Takes the revision list and head from a fresh copy of this page, in the view that is open, so
+  // only what that view holds is there to take. The approval panel follows only
   // if it brings no form. The editor stays as it is, typed in or not, and its old base makes a save a
   // clear conflict: it must never come to hold, and then save, text the owner didn't read.
   async function followHead(revision, note) {
     let fresh;
     try {
-      const response = await fetch(base);
+      const response = await fetch(`${base}?view=${root.dataset.view}`);
       if (!response.ok) return false;
       fresh = new DOMParser().parseFromString(await response.text(), "text/html");
     } catch {
       return false;
     }
-    for (const id of ["cv-revisions", "cv-revision", "cv-state", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
+    const take = (id) => {
       const next = fresh.getElementById(id);
-      if (next) byId(id).replaceWith(document.adoptNode(next));
+      if (next && byId(id)) byId(id).replaceWith(document.adoptNode(next));
+    };
+    for (const id of ["cv-revisions", "cv-revision", "cv-state", "cv-modes", "cv-preview-actions", "cv-preview-caption", "nav-cv"]) {
+      take(id);
     }
     const panel = fresh.getElementById("cv-approval");
     if (panel && panel.querySelector(".approve-form")) {
       askToRead(fresh.getElementById("cv-workspace").dataset.revision);
-    } else if (panel) {
-      byId("cv-approval").replaceWith(document.adoptNode(panel));
+    } else if (panel && byId("cv-approval")) {
+      // Nothing is left to approve, so the picture that stood for the form gives way to the preview.
+      take("cv-approval");
+      take("cv-picture-pane");
+      loadPreview(revision);
     }
     const editor = byId("cv-source");
     const nextExpected = fresh.getElementById("cv-expected");
@@ -115,6 +125,8 @@
           `${note} The source below stays on the older revision, so saving it is refused until you reload. Nothing you typed is lost.`,
         );
       }
+    } else {
+      setNote(byId("cv-live-note"), note);
     }
     return true;
   }
@@ -132,7 +144,7 @@
   // again, so the slow poll asks until it has been shown.
   async function approved(revision) {
     if (revision !== shown || shownState === "approved") return;
-    const followed = await followHead(revision, `Revision ${revision} is approved.`);
+    const followed = await followHead(revision, `Revision ${revision} of ${variant} is approved.`);
     if (!followed) {
       startPolling();
       return;
@@ -199,11 +211,50 @@
     });
   }
 
+  // The button comes after the picture and the list in the page. On a wide screen it is in sight from
+  // the start, so it waits there until the list has been scrolled to its end, or fits without scrolling.
+  function holdApproval() {
+    const button = byId("cv-approve");
+    const end = byId("cv-checks-end");
+    if (!button || !end || !("IntersectionObserver" in window)) return;
+    button.disabled = true;
+    byId("cv-approve-hint").hidden = false;
+    const watcher = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        button.disabled = false;
+        byId("cv-approve-hint").hidden = true;
+        watcher.disconnect();
+      },
+      // On a phone the form covers the bottom of the screen, and nothing under it has been read.
+      { rootMargin: `0px 0px -${button.form.offsetHeight}px 0px` },
+    );
+    watcher.observe(end);
+  }
+
+  // A view is another page, so leaving the editor with unsaved text asks first.
+  function guardTyping() {
+    const editor = byId("cv-source");
+    if (!editor) return;
+    const form = byId("cv-editor-form");
+    let sending = false;
+    form.addEventListener("submit", () => {
+      sending = true;
+    });
+    // Text a refused save brought back is unsaved too, though the page came with it.
+    window.addEventListener("beforeunload", (event) => {
+      const unsaved = form.dataset.unsaved || editor.value !== editor.defaultValue;
+      if (!sending && unsaved) event.preventDefault();
+    });
+  }
+
   window.addEventListener("pagehide", () => stream && stream.close());
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) connect();
   });
 
+  holdApproval();
+  guardTyping();
   loadPreview(shown);
   connect();
 })();
