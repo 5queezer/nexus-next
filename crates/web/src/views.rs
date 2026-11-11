@@ -108,6 +108,13 @@ pub fn page_with_scripts(
                                 "Assistant"
                             </a>
                         </nav>
+                        <details class="menu account">
+                            <summary>"Account"</summary>
+                            <div>
+                                <a href="/passphrase">"Change passphrase"</a>
+                                <a href="/logout">"Log out"</a>
+                            </div>
+                        </details>
                     </div>
                 </header>
                 <main>
@@ -117,9 +124,6 @@ pub fn page_with_scripts(
                     </p>
                     {body}
                 </main>
-                <footer class="foot">
-                    <a href="/passphrase">"Change passphrase"</a>
-                </footer>
             </body>
         </html>
     };

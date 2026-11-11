@@ -112,7 +112,6 @@ main { max-width: 64rem; margin: 0 auto; padding: 24px 16px 64px; }
   from { opacity: 0.92; }
   to { opacity: 1; }
 }
-.foot { max-width: 64rem; margin: 0 auto; padding: 0 16px 24px; font-size: 13px; color: var(--muted); }
 
 h1 { font-size: 22px; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
 h2 {
@@ -512,7 +511,7 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 .preview-caption { margin: 8px 0 0; text-align: center; }
 
 /* The variant page: full width, the picture beside one panel, which the view picks. */
-body:has(#cv-workspace) .top > div, body:has(#cv-workspace) .foot { max-width: none; }
+body:has(#cv-workspace) .top > div { max-width: none; }
 main:has(#cv-workspace) { max-width: none; margin: 0; padding: 0; }
 main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin: 12px 16px; }
 .cv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
@@ -600,7 +599,6 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
      and the button stays in sight. */
   body:has(#cv-workspace) { display: flex; flex-direction: column; height: 100dvh; }
   body:has(#cv-workspace) main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-  body:has(#cv-workspace) .foot { padding: 6px 24px; }
   body:has(#cv-workspace) .top > div, .cv-head { padding-inline: 24px; }
   main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin-inline: 24px; }
   #cv-workspace { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
@@ -671,6 +669,10 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
 }
 .menu > div a { display: flex; align-items: center; min-height: 44px; text-decoration: none; }
 .menu > div a + a { border-top: 1px solid var(--line); }
+/* What concerns the owner and no page: at the far end of the top bar. */
+.account { margin-left: auto; }
+.account > summary, .account[open] > summary { padding: 6px 10px; border-radius: 6px; color: var(--muted); white-space: nowrap; }
+.account > summary:hover { color: var(--ink); }
 
 .next {
   display: flex;
@@ -759,8 +761,8 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
     border-top: 1px solid var(--line);
   }
   .app-actions .button { justify-content: center; }
-  .menu { position: static; }
-  .menu > summary { display: flex; }
-  .menu > div { left: 16px; right: 16px; top: auto; bottom: 100%; }
-  body:has(.app-actions) .foot { padding-bottom: 96px; }
+  .app-actions .menu { position: static; }
+  .app-actions .menu > summary { display: flex; }
+  .app-actions .menu > div { left: 16px; right: 16px; top: auto; bottom: 100%; }
+  main:has(.app-actions) { padding-bottom: 96px; }
 }
