@@ -12,7 +12,9 @@ const PAGE = `<!doctype html><meta charset="utf-8">
     <p id="cv-preview-unsaved" hidden></p><ul id="cv-preview-layout" hidden></ul>
     <p id="cv-preview-note" hidden></p></section>
   <form id="cv-editor-form"><input type="hidden" name="csrf" value="token">
-    <textarea id="cv-source" name="source">${SOURCE}</textarea></form>
+    <textarea id="cv-source" name="source">${SOURCE}</textarea>
+    <div id="cv-compile-row" hidden><button type="button" id="cv-compile">Compile</button>
+      <span id="cv-compile-state"></span><button type="button" id="cv-error" hidden></button></div></form>
   <form id="cv-template-form">
     <select id="cv-template"><option>classic</option><option>modern</option><option>banner</option></select>
     <select id="cv-pages"><option value="">no target</option><option>1</option><option>2</option></select>

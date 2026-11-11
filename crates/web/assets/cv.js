@@ -45,8 +45,9 @@
   }
 
   // While a draft is read for approval the picture is the one its form was compiled with, and stays.
+  // Says whether the picture is up, or null if a later call took over.
   async function loadPreview(revision) {
-    if (!byId("cv-preview-pages")) return;
+    if (!byId("cv-preview-pages")) return null;
     const run = ++previewRun;
     let body;
     let ok = false;
@@ -55,10 +56,11 @@
       ok = response.ok;
       body = await response.json();
     } catch {
-      if (run === previewRun) setNote(byId("cv-preview-note"), "The preview could not be loaded.");
-      return;
+      if (run !== previewRun) return null;
+      setNote(byId("cv-preview-note"), "The preview could not be loaded.");
+      return false;
     }
-    if (run !== previewRun) return;
+    if (run !== previewRun) return null;
     byId("cv-preview-unsaved").hidden = true;
     byId("cv-preview-layout").hidden = true;
     if (ok) {
@@ -69,6 +71,7 @@
       setNote(byId("cv-preview-note"), tokens ? `${body.message} Found: ${tokens}` : body.message);
       byId("cv-preview-pages").replaceChildren();
     }
+    return ok;
   }
 
   // A tap can only approve what the owner asked to see. So a form that arrived with a revision by
@@ -401,13 +404,30 @@
     editor.scrollTop = Math.max(0, above * line - editor.clientHeight / 2);
   }
 
+  // What the preview is to the editor's text, said beside the Compile button. A `problem` with a line
+  // goes on a button that editor.js takes to that line, and null takes the last one away.
+  function compileState(text, problem) {
+    byId("cv-compile-state").textContent = text;
+    if (problem === undefined) return;
+    const button = byId("cv-error");
+    button.hidden = !problem;
+    if (problem) {
+      button.textContent = `Line ${problem.line}, column ${problem.column}: ${[problem.message, ...problem.hints].join(" ")}`;
+      button.dataset.line = problem.line;
+      button.dataset.column = problem.column;
+    }
+    root.dispatchEvent(new Event("cv-compiled"));
+  }
+
   // The text in the editor, drawn as it stands. A text that can't be drawn says why and leaves the
   // last picture up. Back at the stored text, the stored revision's picture returns.
   async function tryPreview() {
     const editor = byId("cv-source");
     if (!byId("cv-preview-pages")) return;
+    compileState("Compiling\u2026");
     if (editor.value === editor.defaultValue && !byId("cv-editor-form").dataset.unsaved) {
-      loadPreview(shown);
+      const drawn = await loadPreview(shown);
+      if (drawn !== null) compileState(drawn ? "Preview is up to date" : "", null);
       return;
     }
     const run = ++previewRun;
@@ -419,15 +439,23 @@
       ok = response.ok;
       body = await response.json();
     } catch {
-      if (run === previewRun) setNote(byId("cv-preview-note"), "The preview could not be loaded.");
+      if (run !== previewRun) return;
+      setNote(byId("cv-preview-note"), "The preview could not be loaded.");
+      compileState("The preview could not be loaded.");
       return;
     }
     if (run !== previewRun) return;
     if (!ok) {
       const tokens = (body.tokens || []).join(", ");
-      setNote(byId("cv-preview-note"), tokens ? `${body.message} Found: ${tokens}` : body.message);
+      const note = tokens ? `${body.message} Found: ${tokens}` : body.message;
+      setNote(byId("cv-preview-note"), note);
+      // An error inside the template library has no line here that says more than its message.
+      const first = (body.diagnostics || [])[0];
+      const placed = first && first.line && first.file === "/main.typ" ? first : null;
+      compileState(placed ? "Does not compile:" : first ? `Does not compile: ${first.message}` : note, placed);
       return;
     }
+    compileState("Preview is up to date", null);
     setNote(byId("cv-preview-note"), "");
     byId("cv-preview-unsaved").hidden = false;
     const notes = byId("cv-preview-layout");
@@ -536,8 +564,14 @@
     pages.addEventListener("change", chosen);
     fitButton.hidden = false;
     fitButton.addEventListener("click", fit);
+    byId("cv-compile-row").hidden = false;
+    byId("cv-compile").addEventListener("click", () => {
+      clearTimeout(timer);
+      tryPreview();
+    });
     editor.addEventListener("input", () => {
       follow();
+      compileState("Not compiled yet");
       clearTimeout(timer);
       timer = setTimeout(tryPreview, 700);
     });

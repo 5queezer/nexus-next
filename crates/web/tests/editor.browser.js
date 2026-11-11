@@ -63,6 +63,8 @@ const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="co
   <form class="act" id="cv-editor-form"><input type="hidden" name="csrf" value="token">
     <label class="cv-source">Typst source
       <textarea name="source" class="code" id="cv-source" rows="24" spellcheck="false">${source.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</textarea></label>
+    <div class="cv-compile" id="cv-compile-row" hidden><button type="button" class="quiet" id="cv-compile">Compile</button>
+      <span id="cv-compile-state" role="status"></span><button type="button" class="cv-error" id="cv-error" hidden></button></div>
     <div class="cv-save-row"><label>What changed<input type="text" name="summary"></label>
       <button type="submit" id="cv-save">Save draft</button></div></form>
   <p class="hint" id="cv-find-miss" hidden>Not in this text.</p>
@@ -107,7 +109,10 @@ const CASES = [
   const browser = await chromium.launch({ executablePath: process.env.CHROME });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   let source = SOURCE;
-  await page.route("**/*", (route) => {
+  const tried = [];
+  // While set, an answer to `/try` waits for it.
+  let held = null;
+  await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/") return route.fulfill({ contentType: "text/html", body: page_of(source) });
     if (url.pathname === "/assets/app.css") return route.fulfill({ contentType: "text/css", body: asset("../src/style.css") });
@@ -115,6 +120,16 @@ const CASES = [
       return route.fulfill({ contentType: "text/javascript", body: asset(`..${url.pathname}`) });
     }
     if (url.pathname.endsWith("/preview.json")) return route.fulfill({ json: { revision: 1, state: "draft", pages: 1 } });
+    if (url.pathname.endsWith("/try")) {
+      const text = new URLSearchParams(route.request().postData()).get("source");
+      tried.push(text);
+      await held;
+      // A text with `#broken` in it doesn't compile, at that word.
+      const line = text.split("\n").findIndex((row) => row.includes("#broken"));
+      if (line < 0) return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 1, layout: [] } });
+      const problem = { severity: "error", message: "unknown variable: broken", file: "/main.typ", line: line + 1, column: text.split("\n")[line].indexOf("#broken") + 2, hints: ["Is it spelled right?"] };
+      return route.fulfill({ status: 422, json: { message: "This text doesn't compile.", tokens: [], diagnostics: [problem] } });
+    }
     return route.abort();
   });
   const errors = [];
@@ -182,6 +197,43 @@ const CASES = [
   await page.waitForFunction(() => !document.querySelector(".cv-layer").style.transform.includes("-3000px"));
   at = await places();
   assert.equal(at.layer, -at.scroll[1]);
+
+  // A text that doesn't compile says so beside the button, marks its line, and the message leads there.
+  const state = page.locator("#cv-compile-state");
+  const marked = () => page.locator(".cv-gutter .error").allTextContents();
+  await page.goto("http://127.0.0.1:9/");
+  assert.equal(await page.locator("#cv-compile").isVisible(), true);
+  await editor.focus();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type("x");
+  assert.equal(await state.textContent(), "Not compiled yet");
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.deepEqual(await marked(), []);
+  await editor.fill(SOURCE.replace("#header()", "  #broken"));
+  let release;
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.locator("#cv-compile").click();
+  assert.equal(await state.textContent(), "Compiling\u2026");
+  release();
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Does not compile:");
+  const message = page.locator("#cv-error");
+  assert.equal(await message.textContent(), "Line 5, column 4: unknown variable: broken Is it spelled right?");
+  assert.deepEqual(await marked(), ["5"]);
+  await page.locator("#cv-save").focus();
+  await message.click();
+  assert.deepEqual(await editor.evaluate((e) => [document.activeElement === e, e.selectionStart, e.selectionEnd]), [true, SOURCE.indexOf("#header()") + 3, SOURCE.indexOf("#header()") + 3]);
+  // The next text that compiles takes the mark and the message away.
+  await editor.fill(SOURCE.replace("#header()", "#contact()"));
+  await page.locator("#cv-compile").click();
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.deepEqual([await marked(), await message.isHidden()], [[], true]);
+  // Back at the stored text the stored picture is the preview.
+  await editor.fill(SOURCE);
+  await page.locator("#cv-compile").click();
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.equal(tried.at(-1), SOURCE.replace("#header()", "#contact()"));
 
   if (process.env.SHOTS) {
     for (const scheme of ["light", "dark"]) {

@@ -2255,6 +2255,13 @@ async fn unsaved_text_is_drawn_for_the_preview_and_stored_nowhere() {
     let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &broken)]).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(body.contains("message"), "{body}");
+    // The editor marks the line, so the answer names it.
+    let told: Value = serde_json::from_str(&body).unwrap();
+    let problem = &told["diagnostics"][0];
+    assert_eq!(problem["line"], broken.lines().count());
+    assert_eq!(problem["column"], 2);
+    assert_eq!(problem["file"], "/main.typ");
+    assert!(problem["message"].as_str().unwrap().contains("nothing"), "{body}");
     assert!(revision_rows(&f.db).await.is_empty());
 }
 
@@ -2442,6 +2449,10 @@ async fn the_editor_script_comes_with_the_edit_view_and_before_the_page_script()
     let (_, _, page) = get(&f.app, EDIT).await;
     let editor = page.find("/assets/editor.js").expect("the editor's script");
     assert!(editor < page.find("/assets/cv.js").unwrap(), "{page}");
+    // What only the scripts can work stays out of sight without them.
+    assert!(page.contains("id=\"cv-compile-row\" hidden"), "{page}");
+    assert!(page.contains("id=\"cv-compile-state\" role=\"status\""), "{page}");
+    assert!(page.contains("id=\"cv-error\" hidden"), "{page}");
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
     assert!(!page.contains("/assets/editor.js"), "{page}");
     assert!(page.contains("/assets/cv.js"), "{page}");

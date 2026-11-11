@@ -301,6 +301,24 @@
     numbers.style.transform = `translateY(${-editor.scrollTop}px)`;
   }
 
+  // A text that doesn't compile has its line marked, and the message under the editor leads there.
+  const problem = document.getElementById("cv-error");
+  document.getElementById("cv-workspace").addEventListener("cv-compiled", () => {
+    numbers.querySelector(".error")?.classList.remove("error");
+    if (!problem.hidden) numbers.children[problem.dataset.line - 1]?.classList.add("error");
+  });
+  problem.addEventListener("click", () => {
+    const lines = editor.value.split("\n");
+    const line = Math.min(Number(problem.dataset.line), lines.length);
+    const start = lines.slice(0, line - 1).join("\n").length + (line > 1 ? 1 : 0);
+    const at = start + Math.min(problem.dataset.column - 1, lines[line - 1].length);
+    editor.focus();
+    editor.setSelectionRange(at, at);
+    // A textarea doesn't scroll to its caret by itself: the line goes to the middle.
+    const height = parseFloat(getComputedStyle(editor).lineHeight);
+    editor.scrollTop = Math.max(0, (line - 1) * height - editor.clientHeight / 2);
+  });
+
   editor.addEventListener("input", paint);
   editor.addEventListener("scroll", follow);
   paint();

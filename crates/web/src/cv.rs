@@ -1532,6 +1532,12 @@ fn editor_view(
                         autocapitalize="off"
                     >{views::textarea_text(text)}</textarea>
                 </label>
+                // Only the scripts make these act, so only they show them.
+                <div class="cv-compile" id="cv-compile-row" hidden>
+                    <button type="button" class="quiet" id="cv-compile">"Compile"</button>
+                    <span id="cv-compile-state" role="status"></span>
+                    <button type="button" class="cv-error" id="cv-error" hidden></button>
+                </div>
                 <div class="cv-save-row">
                     <label>"What changed"
                         <input
@@ -2107,9 +2113,18 @@ async fn try_source(
             .flatten()
             .filter_map(|violation| violation["token"].as_str())
             .collect();
+        // Where a text that doesn't compile goes wrong, for the editor to mark the line.
+        let diagnostics = told.value["error"]["diagnostics"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({"message": explain(told.code()), "tokens": tokens})),
+            Json(json!({
+                "message": explain(told.code()),
+                "tokens": tokens,
+                "diagnostics": diagnostics,
+            })),
         )
             .into_response();
     }
