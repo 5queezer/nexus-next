@@ -2266,6 +2266,20 @@ async fn unsaved_text_is_drawn_for_the_preview_and_stored_nowhere() {
         "{body}"
     );
     assert!(revision_rows(&f.db).await.is_empty());
+
+    // A helper's refusal reads as its own words, in the preview's answer and on a refused save.
+    let unknown = format!("{source}\n#employment(\"zzz\")\n");
+    let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &unknown)]).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let told: Value = serde_json::from_str(&body).unwrap();
+    let problem = &told["diagnostics"][0];
+    assert_eq!(problem["line"], unknown.lines().count(), "{body}");
+    let message = problem["message"].as_str().unwrap();
+    assert!(message.starts_with("no employment with id"), "{body}");
+    let (status, _, page) = save(&f, 0, &unknown).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(page.contains(">no employment with id"), "{page}");
+    assert!(!page.contains("panicked with"), "{page}");
 }
 
 #[tokio::test]

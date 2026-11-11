@@ -255,6 +255,13 @@ fn violations_view(violations: &[Value]) -> impl IntoView + use<> {
     view! { <ul class="problems">{items}</ul> }
 }
 
+/// A helper's own refusal, such as an id the facts don't have, is raised with `panic`, and Typst
+/// says so ahead of the words. The owner reads only the words.
+fn plain_message(diagnostic: &Value) -> &str {
+    let message = diagnostic["message"].as_str().unwrap_or_default();
+    message.strip_prefix("panicked with: ").unwrap_or(message)
+}
+
 fn diagnostics_view(diagnostics: &[Value]) -> impl IntoView + use<> {
     let items: Vec<_> = diagnostics
         .iter()
@@ -278,7 +285,7 @@ fn diagnostics_view(diagnostics: &[Value]) -> impl IntoView + use<> {
                 <li>
                     <b>{place}</b>
                     {in_template.then_some(" (in the template library)")}
-                    ": " {diagnostic["message"].as_str().unwrap_or_default().to_owned()}
+                    ": " {plain_message(diagnostic).to_owned()}
                     {hints}
                 </li>
             }
@@ -2166,10 +2173,13 @@ async fn try_source(
             .filter_map(|violation| violation["token"].as_str())
             .collect();
         // Where a text that doesn't compile goes wrong, for the editor to mark the line.
-        let diagnostics = told.value["error"]["diagnostics"]
+        let mut diagnostics = told.value["error"]["diagnostics"]
             .as_array()
             .cloned()
             .unwrap_or_default();
+        for diagnostic in &mut diagnostics {
+            diagnostic["message"] = plain_message(diagnostic).into();
+        }
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({
