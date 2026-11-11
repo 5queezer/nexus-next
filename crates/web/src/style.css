@@ -701,7 +701,10 @@ form.act .cv-error { min-height: 0; padding: 4px 8px; border: 1px solid var(--wa
   .approval-foot { flex: none; max-height: 60%; overflow: auto; padding-inline: 20px; }
   .approve-form button { width: auto; padding-inline: 20px; }
   #cv-editor { flex: 1 1 0; min-height: 22rem; padding-inline: 20px; }
-  #cv-source, .cv-code { height: 0; min-height: 12rem; resize: none; }
+  #cv-source { height: 0; min-height: 12rem; resize: none; }
+  /* The editor and its rows fill the panel, and what stands under them, the assistant, is scrolled to. */
+  #cv-editor:has(.cv-code) { flex: 1 0 auto; }
+  .cv-code { height: 0; min-height: max(12rem, calc(100dvh - 27rem)); }
   #cv-workspace #voice, #cv-revisions { padding-inline: 20px; }
 }
 @media (min-width: 721px) {
