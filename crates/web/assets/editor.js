@@ -402,7 +402,7 @@
         .filter(({ id, label }) => id.startsWith(typed) || label.toLowerCase().includes(typed.toLowerCase()))
         .map(({ id, label }) => ({
           label: id,
-          detail: used.has(id) ? `${label} \u00b7 already used` : label,
+          detail: label,
           used: used.has(id),
           text: id,
         }));
@@ -473,6 +473,8 @@
     const left = pane.offsetLeft + parseFloat(style.paddingLeft) + measure.measureText(before.at(-1).replaceAll("\t", "  ")).width - editor.scrollLeft;
     const line = parseFloat(style.lineHeight);
     const top = parseFloat(style.paddingTop) + before.length * line - editor.scrollTop;
+    // Measured from the left edge, where the list is as wide as it gets.
+    list.style.left = "0";
     const over = top - line - list.offsetHeight;
     list.style.left = `${Math.max(0, Math.min(left, box.clientWidth - list.offsetWidth))}px`;
     list.style.top = `${top + list.offsetHeight > box.clientHeight && over >= 0 ? over : top}px`;
@@ -491,11 +493,11 @@
         const row = document.createElement("li");
         row.id = `cv-complete-${index}`;
         row.setAttribute("role", "option");
-        if (item.used) row.className = "used";
-        row.append(
-          Object.assign(document.createElement("b"), { textContent: item.label }),
-          Object.assign(document.createElement("small"), { textContent: item.detail }),
-        );
+        const part = (tag, text) => Object.assign(document.createElement(tag), { textContent: text });
+        row.append(part("b", item.label));
+        // Right after the id, where a long line about it can't push it out of sight.
+        if (item.used) row.append(part("em", "already used"));
+        row.append(part("small", item.detail));
         return row;
       }),
     );

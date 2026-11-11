@@ -60,7 +60,11 @@ const COMPLETE = {
     { id: "tidal", label: "Tidal Works \u00b7 Intern \u00b7 2015" },
   ],
   education: [{ id: "nordsee", label: "Nordsee University \u00b7 BSc Computer Science \u00b7 2015 \u2013 2018" }],
-  metric: [{ id: "invoice-errors", label: "40%" }, { id: "depots", label: "3 depots" }],
+  metric: [
+    { id: "invoice-errors", label: "40%" },
+    { id: "depots", label: "3 depots" },
+    { id: "long", label: "a metric said at great length, ".repeat(8) },
+  ],
 };
 
 const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -270,8 +274,8 @@ const CASES = [
   await page.keyboard.press("Enter");
   assert.equal(await seen(), '#employment("brightpath")\n#employment("|")[\n  - \n]\n');
   assert.deepEqual(await offered(), ["brightpath", "harbourline", "tidal"]);
-  assert.equal(await picked(), "brightpathBrightpath Logistics \u00b7 Software Engineer \u00b7 03/2019 \u2013 12/2022 \u00b7 already used");
-  assert.equal(await page.locator("#cv-complete li.used").count(), 1);
+  assert.equal(await picked(), "brightpathalready usedBrightpath Logistics \u00b7 Software Engineer \u00b7 03/2019 \u2013 12/2022");
+  assert.equal(await page.locator("#cv-complete em").count(), 1);
   // Down and Up go round, and Tab writes too. The caret lands after the call's bracket.
   await page.keyboard.press("ArrowUp");
   assert.equal(await picked(), "tidalTidal Works \u00b7 Intern \u00b7 2015");
@@ -290,6 +294,21 @@ const CASES = [
   assert.equal(await editor.inputValue(), '#employment("brightpath")\n#employment("")[\n  - \n]\n');
   assert.equal(await layer.textContent(), `${await editor.inputValue()}\n`);
 
+  // However long a line about an id is, and however far right the caret, the list stays inside the
+  // editor and shows every word.
+  await put(`${"x".repeat(150)} #metric("|")`);
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const list = document.getElementById("cv-complete").getBoundingClientRect();
+      const box = document.querySelector(".cv-code").getBoundingClientRect();
+      const cut = [...document.querySelectorAll("#cv-complete li > *")].filter((part) => part.scrollWidth > part.clientWidth + 1).length;
+      return [list.left >= box.left, list.right <= box.right, cut];
+    }),
+    [true, true, 0],
+  );
+  assert.deepEqual(await offered(), ["invoice-errors", "depots", "long"]);
+
   // An id can be found by the name it stands for, and choosing replaces the one that was there.
   await put('#employment("brightpath|")');
   await page.keyboard.press("Control+Space");
@@ -301,7 +320,7 @@ const CASES = [
   assert.equal(await seen(), '#employment("tidal")|');
   await put('#metric("|")\n#education("")');
   await page.keyboard.press("Control+Space");
-  assert.deepEqual(await offered(), ["invoice-errors", "depots"]);
+  assert.deepEqual(await offered(), ["invoice-errors", "depots", "long"]);
   await page.keyboard.press("Escape");
   assert.deepEqual(await offered(), []);
   await put('#metric("")\n#education("|")');

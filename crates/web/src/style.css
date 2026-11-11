@@ -606,12 +606,13 @@ form.act .cv-error { min-height: 0; padding: 4px 8px; border: 1px solid var(--wa
 .cv-code #cv-source { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; outline: 0; background: none; color: transparent; caret-color: var(--ink); resize: none; }
 /* The label's place in the form goes to the editor that now stands after it. */
 #cv-editor-form .cv-source:has(+ .cv-code) { flex: none; margin-bottom: -6px; }
-.cv-complete { position: absolute; z-index: 2; max-width: min(36rem, 100%); max-height: 14rem; overflow-y: auto; margin: 0; padding: 4px; list-style: none; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 6px 20px rgb(0 0 0 / .2); color: var(--ink); font-size: 13px; }
+.cv-complete { position: absolute; z-index: 2; max-width: min(40rem, 100%); max-height: 14rem; overflow-y: auto; margin: 0; padding: 4px; list-style: none; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 6px 20px rgb(0 0 0 / .2); color: var(--ink); font-size: 13px; }
 .cv-complete li { display: flex; align-items: baseline; gap: 12px; padding: 3px 8px; border-radius: 4px; cursor: pointer; }
 .cv-complete li[aria-selected="true"] { background: var(--chip); }
 .cv-complete b { flex: none; font: 600 13px var(--mono); }
-.cv-complete small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.cv-complete .used b { color: var(--muted); font-weight: 400; }
+/* A long line about a choice wraps under it. */
+.cv-complete small { min-width: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.cv-complete em { flex: none; padding: 0 6px; border-radius: 4px; background: var(--chip); color: var(--muted); font-size: 11px; font-style: normal; }
 @media (pointer: coarse) {
   .cv-complete li { align-items: center; min-height: 44px; }
 }
