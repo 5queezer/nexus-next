@@ -12,12 +12,13 @@ use typst::syntax::{FileId, RootedPath, Source, Span, VirtualPath, VirtualRoot};
 use typst::text::{Font, FontBook};
 use typst::utils::LazyHash;
 use typst::{Library, LibraryExt, World, WorldExt};
+use typst_ide::Jump;
 use typst_layout::{Page, PagedDocument};
 use typst_pdf::PdfOptions;
 
 use crate::{
-    Diagnostic, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError, RenderRequest,
-    Rendered, Severity,
+    Diagnostic, LinePlace, MAX_PAGES, MAX_PDF_BYTES, MAX_RENDER_RESULT_BYTES, RenderError,
+    RenderRequest, Rendered, Severity,
 };
 
 const NEXUS_TYP: &str = include_str!("nexus.typ");
@@ -173,6 +174,46 @@ impl World for CvWorld {
     }
 }
 
+impl typst_ide::IdeWorld for CvWorld {
+    fn upcast(&self) -> &dyn World {
+        self
+    }
+}
+
+/// For each placed word, where `/main.typ` writes it, as the compiler's own jump from a click on the
+/// word's start finds it. In UTF-16 units, as a browser counts a textarea's text. None for a word that
+/// the facts or the template library wrote.
+fn word_sources(
+    world: &CvWorld,
+    document: &PagedDocument,
+    places: &[LinePlace],
+) -> Vec<Vec<Option<u32>>> {
+    let source_of = |page: &Page, [x, y, width, height]: [f32; 4]| {
+        let size = page.frame.size();
+        // Inside the first letter's left half, where the jump lands before it.
+        let click = Point::new(
+            size.x * f64::from(x + width.min(height) / 8.0),
+            size.y * f64::from(y + height / 2.0),
+        );
+        match typst_ide::jump_from_click_in_frame(world, document, &page.frame, click)? {
+            Jump::File(id, byte) if id == world.main.id() => {
+                u32::try_from(world.main.lines().byte_to_utf16(byte)?).ok()
+            }
+            _ => None,
+        }
+    };
+    places
+        .iter()
+        .map(|place| {
+            let Some(page) = document.pages().get(place.page as usize) else {
+                return Vec::new();
+            };
+            let words = place.words.iter();
+            words.map(|word| source_of(page, *word)).collect()
+        })
+        .collect()
+}
+
 fn no_such_file(id: FileId) -> FileError {
     FileError::Other(Some(
         format!(
@@ -317,6 +358,10 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     refuse_odd_pages(&world, &document)?;
     let mut text = crate::extract::rendered_text(&document)?;
     text.layout = crate::layout::layout(&document, &text, crate::template::pages_of(&req.source));
+    // Only a picture is clicked on.
+    if req.preview_pages > 0 {
+        text.sources = word_sources(&world, &document, &text.places);
+    }
     let document = if req.stamp {
         stamped(&document)?
     } else {

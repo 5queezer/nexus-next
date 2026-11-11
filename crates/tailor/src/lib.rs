@@ -172,6 +172,11 @@ pub struct RenderedText {
     /// No check reads these and no approval stores them. Empty for a document of too many words.
     #[serde(default)]
     pub places: Vec<LinePlace>,
+    /// Where `/main.typ` writes each word of `places`, in UTF-16 units, or none for a word the facts
+    /// or the template library wrote: the editor's caret goes there from a click on the word in the
+    /// preview. Advice like `places`, and only there when a preview was asked for.
+    #[serde(default)]
+    pub sources: Vec<Vec<Option<u32>>>,
     /// How the pages are filled, and where a line or a page breaks badly. Advice like `places`: no
     /// check reads it and no approval stores it.
     #[serde(default)]

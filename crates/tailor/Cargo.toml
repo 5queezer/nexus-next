@@ -16,6 +16,7 @@ tiny-skia.workspace = true
 tokio = { workspace = true, features = ["io-util", "process", "sync", "time"] }
 ttf-parser.workspace = true
 typst.workspace = true
+typst-ide.workspace = true
 typst-layout.workspace = true
 typst-pdf.workspace = true
 typst-render.workspace = true

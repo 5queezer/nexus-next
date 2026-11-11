@@ -716,3 +716,55 @@ async fn valid_facts_with_odd_shapes_render() {
         rendered.text.lines
     );
 }
+
+/// A click on a word in the preview takes the editor's caret to where the source writes it. So each
+/// placed word names that place, counted as a browser counts, and a word the facts or the template
+/// wrote names none. A stamp over the page changes nothing of it.
+#[tokio::test]
+async fn each_word_of_a_preview_names_where_the_source_writes_it() {
+    let source = format!(
+        "{START}= Über 😀 uns\nAlpha *Bravo* Charlie\n#employment(\"brightpath\")[\n  - Built _Delta_ things\n]\n"
+    );
+    let render = |preview_pages, stamp| {
+        Renderer::InProcess.render(RenderRequest {
+            source: source.clone(),
+            facts: facts_en(),
+            pdf: false,
+            preview_pages,
+            stamp,
+        })
+    };
+    let text = render(1, true).await.unwrap().text;
+    assert_eq!(text.sources.len(), text.places.len());
+    let units = |word: &str| {
+        let at = source.find(word).unwrap();
+        Some(source[..at].encode_utf16().count() as u32)
+    };
+    let sources_of = |line: &str| {
+        let at = text.lines.iter().position(|l| l == line);
+        &text.sources[at.unwrap_or_else(|| panic!("{line}: {:?}", text.lines))]
+    };
+    assert_eq!(
+        sources_of("Über 😀 uns")[..],
+        [units("Über"), units("😀"), units("uns")]
+    );
+    assert_eq!(
+        sources_of("Alpha Bravo Charlie")[..],
+        [units("Alpha"), units("Bravo"), units("Charlie")]
+    );
+    let bullet = text.lines.iter().find(|line| line.contains("Delta"));
+    let bullet = sources_of(bullet.unwrap());
+    assert_eq!(
+        bullet[bullet.len() - 3..],
+        [units("Built"), units("Delta"), units("things")]
+    );
+    // The name comes from the facts, and the employer's line from the template.
+    assert!(sources_of("Mara Example").iter().all(Option::is_none));
+    let employer = text.lines.iter().find(|line| line.contains("Brightpath"));
+    assert!(sources_of(employer.unwrap()).iter().all(Option::is_none));
+    // Without a picture there is nothing to click on.
+    assert_eq!(
+        render(0, false).await.unwrap().text.sources,
+        Vec::<Vec<_>>::new()
+    );
+}

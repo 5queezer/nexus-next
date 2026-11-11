@@ -2250,6 +2250,31 @@ async fn unsaved_text_is_drawn_for_the_preview_and_stored_nowhere() {
     assert_eq!(picture(key, 2).await.0, StatusCode::NOT_FOUND);
     assert_eq!(picture("../x".to_owned(), 1).await.0, StatusCode::NOT_FOUND);
     assert!(revision_rows(&f.db).await.is_empty());
+    // A click on a word in the picture leads to where the text writes it. So the answer lists every
+    // word: its page, its box, and that place, or none for a word from the facts or the template.
+    let words = told["words"].as_array().unwrap();
+    let written: Vec<usize> = words
+        .iter()
+        .filter_map(|word| word[5].as_u64())
+        .map(|at| at as usize)
+        .collect();
+    let routing = modern.find("Built the routing service.").unwrap();
+    assert!(written.contains(&routing), "{words:?}");
+    assert!(
+        written.contains(&(routing + "Built the ".len())),
+        "{words:?}"
+    );
+    assert!(written.iter().all(|at| *at < modern.len()), "{words:?}");
+    let from_facts = words.iter().filter(|word| word[5].is_null()).count();
+    assert!(from_facts >= "Mara Example Brightpath Logistics".split(' ').count());
+    for word in words {
+        assert_eq!(word[0], 0, "{word}");
+        let share = |at: usize| word[at].as_f64().unwrap();
+        assert!(
+            share(1) + share(3) <= 1.0 && share(2) + share(4) <= 1.0,
+            "{word}"
+        );
+    }
 
     let broken = format!("{source}\n#nothing()\n");
     let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &broken)]).await;

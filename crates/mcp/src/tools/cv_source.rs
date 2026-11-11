@@ -1127,11 +1127,17 @@ pub(crate) async fn draw_unsaved(
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
-    let summary = json!({
+    let mut summary = json!({
         "pageCount": rendered.page_count,
         "factsVersion": state.version,
         "layout": rendered.text.layout,
     });
+    // Where the words stand in the pictures and where the source writes them, for a click on one to
+    // lead to the editor.
+    if pictures {
+        summary["places"] = json!(rendered.text.places);
+        summary["sources"] = json!(rendered.text.sources);
+    }
     let mut result = json_result(summary, false);
     for preview in &rendered.previews {
         result

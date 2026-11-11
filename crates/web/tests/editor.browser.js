@@ -94,6 +94,11 @@ const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="co
 </section></div></div></div></main>
 <script src="/assets/editor.js" defer></script><script src="/assets/cv.js" defer></script>`;
 
+// Where a compile would say the words of a text stand: each on its own line of the page, at a tenth
+// of its height a line, written where the text holds it. A word in capitals comes from the facts.
+const words_of = (text) =>
+  [...text.matchAll(/\p{L}+/gu)].map((word, line) => [0, 0.1, 0.1 * (line + 1), 0.2, 0.05, word[0] === word[0].toUpperCase() ? null : word.index]);
+
 const asset = (name) => fs.readFileSync(path.join(__dirname, name), "utf8");
 
 // What the tokenizer makes of a source: each coloured stretch as "kinds:text", plain text left out.
@@ -143,7 +148,7 @@ const CASES = [
       await held;
       // A text with `#broken` in it doesn't compile, at that word.
       const line = text.split("\n").findIndex((row) => row.includes("#broken"));
-      if (line < 0) return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 1, layout: [] } });
+      if (line < 0) return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 1, layout: [], words: words_of(text) } });
       const problem = { severity: "error", message: "unknown variable: broken", file: "/main.typ", line: line + 1, column: text.split("\n")[line].indexOf("#broken") + 2, hints: ["Is it spelled right?"] };
       return route.fulfill({ status: 422, json: { message: "This text doesn't compile.", tokens: [], diagnostics: [problem] } });
     }
@@ -526,6 +531,43 @@ const CASES = [
   assert.equal(await seen(), "#header()\nx|");
   await page.keyboard.press("Control+s");
   assert.deepEqual(await page.evaluate(() => window.sent), ["cv-save", "#header()\nx"]);
+
+  // A click on a word in the preview selects it in the editor, with one compile for where the words
+  // stand if the picture is not of this text. A word from the facts shows the line that says so.
+  const picture = page.locator("#cv-preview-pages img");
+  const click = (line) => picture.click({ position: { x: 0.2 * 100, y: (0.1 * line + 0.02) * 100 * (297 / 210) } });
+  await picture.evaluate((image) => {
+    image.style.width = "100px";
+  });
+  await editor.fill("alpha FACTS \u00fcber gamma\n");
+  const before = tried.length;
+  await click(3);
+  await page.waitForFunction(() => document.activeElement.id === "cv-source");
+  assert.equal(await selected(), "alpha FACTS \u27e6\u00fcber\u27e7 gamma\n");
+  assert.equal(await page.locator("#cv-find-miss").isHidden(), true);
+  await click(2);
+  await page.locator("#cv-find-miss").waitFor();
+  assert.equal(await selected(), "alpha FACTS \u27e6\u00fcber\u27e7 gamma\n");
+  await click(1);
+  await page.waitForFunction(() => document.getElementById("cv-find-miss").hidden);
+  assert.equal(await selected(), "\u27e6alpha\u27e7 FACTS \u00fcber gamma\n");
+  assert.equal(tried.length, before + 1);
+  // The word at the caret is marked in the picture while the picture is of this text.
+  const mark = () =>
+    page.evaluate(() => {
+      const mark = document.querySelector("#cv-preview > .picture-mark");
+      const image = document.querySelector("#cv-preview-pages img");
+      return mark && Math.round((mark.offsetTop - image.offsetTop) / image.offsetHeight * 10);
+    });
+  assert.equal(await mark(), 1);
+  await page.keyboard.press("End");
+  assert.equal(await mark(), 4);
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await mark(), null);
+  await page.keyboard.type("x");
+  assert.equal(await mark(), null);
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.equal(await mark(), 5);
 
   // The selects beside the editor still write its setup line, and the copy follows them.
   await editor.fill(SOURCE);
