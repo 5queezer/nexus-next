@@ -29,8 +29,9 @@ pub use cv_events::{
 pub use dashboard::dashboard_router;
 pub use openai_key::openai_key_router;
 pub use voice::{
-    IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL, OPENAI_KEY_FILE,
-    VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, tool_definitions, voice_status_router,
+    CONFIRMED_VOICE_TOOLS, IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL,
+    OPENAI_KEY_FILE, VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, tool_definitions,
+    voice_status_router,
 };
 
 /// Default response headers: no inline script or foreign asset can load, nothing sniffs types, and

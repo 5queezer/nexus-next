@@ -27,7 +27,10 @@ use nexus_core::repo::cv_facts;
 use nexus_mcp::{McpState, Renderer, all_tools};
 use nexus_server::config::{Access, ServeConfig};
 use nexus_server::serve::{self, OWNER};
-use nexus_web::{MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, VOICE_TOOLS, VoiceConfig, VoiceKey};
+use nexus_web::{
+    CONFIRMED_VOICE_TOOLS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, VOICE_TOOLS, VoiceConfig,
+    VoiceKey,
+};
 use reqwest::redirect::Policy;
 use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, Row};
@@ -308,7 +311,16 @@ impl Login {
         body["voiceSessionId"].as_str().unwrap().to_owned()
     }
 
+    /// As the page sends a call once the owner has tapped Allow, or one that needs no tap.
     async fn tool(&self, id: &str, name: &str, arguments: Value) -> (u16, Value) {
+        self.tool_request(
+            id,
+            json!({"name": name, "arguments": arguments, "confirmed": true}),
+        )
+        .await
+    }
+
+    async fn tool_request(&self, id: &str, request: Value) -> (u16, Value) {
         self.post(
             "/api/voice/tool",
             &[
@@ -316,7 +328,7 @@ impl Login {
                 ("x-nexus-csrf", &self.csrf),
                 ("x-nexus-voice-session", id),
             ],
-            json!({"name": name, "arguments": arguments}).to_string(),
+            request.to_string(),
         )
         .await
     }
@@ -425,6 +437,57 @@ fn lifecycle_arguments(id: &str, expected: &str, name: &str) -> Value {
         "mimeType": "application/pdf",
         "contentBase64": "JVBERi0=",
     })
+}
+
+/// What a posting talks the model into calling changes nothing until the owner has tapped: the page
+/// marks the request then, and without the mark these writes are refused before they run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_without_the_owners_tap_is_refused_and_changes_nothing() {
+    let h = start(Duration::from_secs(900), true).await;
+    let id = h.seed().await;
+    let login = h.login().await;
+    let voice = login.voice_id().await;
+    let expected = applications::get(&mut h.db.conn().await.unwrap(), id.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+        .updated_at
+        .as_str()
+        .to_owned();
+    let baseline = outside_cv(&h.db, h.dir.path()).await;
+    let revisions = revision_count(&h.db).await;
+
+    for name in CONFIRMED_VOICE_TOOLS {
+        let arguments = lifecycle_arguments(&id, &expected, name);
+        for request in [
+            json!({"name": name, "arguments": arguments}),
+            json!({"name": name, "arguments": arguments, "confirmed": false}),
+        ] {
+            let (status, body) = login.tool_request(&voice, request).await;
+            assert_eq!(status, 403, "{name}: {body}");
+            assert_eq!(
+                body["error"]["code"], "voice_confirmation_required",
+                "{name}: {body}"
+            );
+            assert!(body.get("output").is_none(), "{name}: {body}");
+        }
+        assert_eq!(outside_cv(&h.db, h.dir.path()).await, baseline, "{name}");
+    }
+    assert_eq!(revision_count(&h.db).await, revisions);
+
+    // A read and a note need no tap, and the refused write runs once the page says the owner tapped.
+    let read = json!({"name": "get_application", "arguments": {"id": id}});
+    let (status, body) = login.tool_request(&voice, read).await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
+    let note = lifecycle_arguments(&id, &expected, "append_application_note");
+    let note = json!({"name": "append_application_note", "arguments": note});
+    let (status, body) = login.tool_request(&voice, note).await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
+    let (status, body) = login
+        .tool(&voice, "archive_application", json!({"id": id}))
+        .await;
+    assert_eq!((status, &body["isError"]), (200, &json!(false)), "{body}");
+    assert_ne!(outside_cv(&h.db, h.dir.path()).await, baseline);
 }
 
 const UNKNOWN_NAMES: [&str; 10] = [

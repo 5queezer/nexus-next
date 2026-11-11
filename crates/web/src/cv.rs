@@ -1474,7 +1474,7 @@ fn voice_panel(
                         <button type="button" id="voice-interrupt" class="secondary" disabled>"Interrupt reply"</button>
                     </div>
                     <button type="button" id="voice-stop" class="quiet" hidden>"End conversation"</button>
-                    <p class="voice-privacy">{format!("Audio is sent to OpenAI. Up to {minutes} minutes per session.")}</p>
+                    <p class="voice-privacy">{format!("Your voice goes to OpenAI, and so does what the assistant reads or changes: applications, job descriptions, notes, contacts, document details and the CV with its facts. Up to {minutes} minutes per session.")}</p>
                 </div>
                 <div class="voice-history">
                     <section class="voice-conversation" aria-labelledby="voice-conversation-title">
