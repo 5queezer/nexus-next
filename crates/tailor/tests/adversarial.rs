@@ -1127,6 +1127,37 @@ async fn contact_details_only_from_the_facts() {
             Rule::ContactDetails,
             "#link(\"sms:555\")[Text me]",
         ),
+        // A browser resolves each of these to another account.
+        (
+            "a profile climbed out of",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/../other-user/repo\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of in escapes",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/%2E%2e/other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of by a backslash",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/..\\\\other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of around a tab",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/.\\t./other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of in text",
+            Rule::ContactDetails,
+            "See github.com/maraexample/../other-user/repo for code.",
+        ),
+        (
+            "climbed out of in text, in escapes",
+            Rule::ContactDetails,
+            "See github.com/maraexample/%2e%2e/other-user for code.",
+        ),
     ])
     .await;
 }
