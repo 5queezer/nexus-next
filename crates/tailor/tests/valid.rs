@@ -233,6 +233,60 @@ async fn a_long_word_hyphenated_at_a_line_end_is_read_whole() {
     assert_eq!(report.violations[0].rule, Rule::BannedPhrases);
 }
 
+/// What the review page marks in the picture: every word of every line has a box on its page.
+#[tokio::test]
+async fn each_word_of_a_line_has_its_place_on_the_page() {
+    let source =
+        format!("{START}Alpha *Bravo* Charlie\n\nDelta Bravo Echo\n#pagebreak()\nFoxtrot\n");
+    let text = render(&source, &Facts::default()).await.unwrap().text;
+    assert_eq!(text.places.len(), text.lines.len());
+    for (line, place) in text.lines.iter().zip(&text.places) {
+        assert_eq!(place.words.len(), line.split_whitespace().count(), "{line}");
+        for [x, y, w, h] in &place.words {
+            assert!(
+                *x >= 0.0 && *y >= 0.0 && *w > 0.0 && *h > 0.0,
+                "{line}: {place:?}"
+            );
+            assert!(x + w <= 1.0 && y + h <= 1.0, "{line}: {place:?}");
+        }
+    }
+    let place_of = |line: &str| &text.places[text.lines.iter().position(|l| l == line).unwrap()];
+    let (first, second) = (
+        place_of("Alpha Bravo Charlie"),
+        place_of("Delta Bravo Echo"),
+    );
+    assert_eq!(
+        (first.page, second.page, place_of("Foxtrot").page),
+        (0, 0, 1)
+    );
+    // Along the line, and a word in a run of its own, the bold one, ends before the next begins.
+    let [alpha, bravo, charlie] = first.words[..] else {
+        panic!("{first:?}")
+    };
+    assert!(
+        alpha[0] + alpha[2] <= bravo[0] && bravo[0] + bravo[2] <= charlie[0],
+        "{first:?}"
+    );
+    // The same word on a lower line stands lower.
+    assert!(
+        second.words[1][1] >= bravo[1] + bravo[3],
+        "{first:?} {second:?}"
+    );
+    // The places are no part of what an approval stores or the check reads.
+    let without = RenderedText {
+        places: Vec::new(),
+        ..text.clone()
+    };
+    assert_eq!(
+        nexus_tailor::review_text(&without),
+        nexus_tailor::review_text(&text)
+    );
+    assert_eq!(
+        check(&without, &Facts::default(), None, ""),
+        check(&text, &Facts::default(), None, "")
+    );
+}
+
 /// The owner's words are the owner's: on the line that states them they are no news.
 #[tokio::test]
 async fn a_claim_is_a_facts_own_only_beside_the_rest_of_it() {

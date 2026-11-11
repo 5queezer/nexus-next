@@ -949,15 +949,66 @@ fn legend_view(items: &[ReviewItem]) -> impl IntoView + use<> {
     view! { <ul class="legend" id="cv-legend">{rows}</ul> }
 }
 
+/// Where an item's token stands in the picture, for `cv.js` to mark while the pointer is on its word:
+/// `page:left,top,width,height` for each place, the page from 1 and the rest as shares of the page's
+/// size, joined by `;`. The whole line if the token isn't found among the line's words, and nothing
+/// for an item without a line or off the pages shown.
+fn token_boxes(review: &Review, item: &ReviewItem) -> Option<String> {
+    let at = item.line? as usize - 1;
+    let place = review.places.get(at)?;
+    if place.page as usize >= review.previews.len() || place.words.is_empty() {
+        return None;
+    }
+    let line = review.rendered_text.split('\n').nth(at)?;
+    let around = |boxes: &[[f32; 4]]| {
+        let left = boxes.iter().map(|b| b[0]).fold(1.0, f32::min);
+        let top = boxes.iter().map(|b| b[1]).fold(1.0, f32::min);
+        let width = boxes.iter().map(|b| b[0] + b[2]).fold(0.0, f32::max) - left;
+        let height = boxes.iter().map(|b| b[1] + b[3]).fold(0.0, f32::max) - top;
+        format!(
+            "{}:{left:.4},{top:.4},{width:.4},{height:.4}",
+            place.page + 1
+        )
+    };
+    let mut from = 0;
+    let spans: Vec<(usize, usize)> = line
+        .split_whitespace()
+        .map(|word| {
+            let start = from + line[from..].find(word).unwrap_or(0);
+            from = start + word.len();
+            (start, from)
+        })
+        .collect();
+    let mut found = Vec::new();
+    // The check replaces a control character with a space, which can make two words of one.
+    if spans.len() == place.words.len() && !item.token.is_empty() {
+        for (start, end) in whole_words(&line.to_ascii_lowercase(), &item.token) {
+            let first = spans.partition_point(|span| span.1 <= start);
+            let last = spans.partition_point(|span| span.0 < end);
+            if first < last {
+                found.push(around(&place.words[first..last]));
+            }
+        }
+    }
+    if found.is_empty() {
+        found.push(around(&place.words));
+    }
+    Some(found.join(";"))
+}
+
 /// One line with what to check on it. Each word names its rule by colour and by the legend's entry.
-fn review_group_view(group: &[&ReviewItem]) -> impl IntoView + use<> {
+fn review_group_view(review: &Review, group: &[&ReviewItem]) -> impl IntoView + use<> {
     let context = group[0].context.clone();
     let tokens: Vec<&str> = group.iter().map(|item| item.token.as_str()).collect();
     let chips: Vec<_> = group
         .iter()
         .map(|item| {
             view! {
-                <mark class=rule_kind(item.rule) aria-describedby=format!("cv-rule-{}", rule_of(item))>
+                <mark
+                    class=rule_kind(item.rule)
+                    aria-describedby=format!("cv-rule-{}", rule_of(item))
+                    data-boxes=token_boxes(review, item)
+                >
                     {item.token.clone()}
                 </mark>
                 " "
@@ -976,7 +1027,8 @@ fn review_group_view(group: &[&ReviewItem]) -> impl IntoView + use<> {
 
 /// The most serious come first, and stay open. A long first approval lists hundreds, and the rest must
 /// not push the button down: a measured 10 pages put it 16,000 px under the last picture.
-fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
+fn review_items_view(review: &Review) -> impl IntoView + use<> {
+    let items = &review.items;
     let listed = &items[..items.len().min(MAX_LISTED_ITEMS)];
     let mut open = Vec::new();
     let mut closed = Vec::new();
@@ -984,9 +1036,9 @@ fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
     for group in grouped(listed) {
         if opened < MAX_OPEN_ITEMS {
             opened += group.len();
-            open.push(review_group_view(&group));
+            open.push(review_group_view(review, &group));
         } else {
-            closed.push(review_group_view(&group));
+            closed.push(review_group_view(review, &group));
         }
     }
     let rest = items.len() - opened;
@@ -1101,7 +1153,7 @@ fn approval_view(
                             {format!("{marked} marked {} on {lines} {}.", plural(marked, "word"), plural(lines, "line"))}
                         </p>
                         {legend_view(&review.items)}
-                        {review_items_view(&review.items)}
+                        {review_items_view(review)}
                     })}
                     <span id="cv-checks-end"></span>
                 </div>
