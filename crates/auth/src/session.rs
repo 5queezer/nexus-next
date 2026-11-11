@@ -51,7 +51,8 @@ const DEVICE_KEY: &str = "known-device";
 /// Marks a browser that has logged in before. An attacker can hold the global backoff open with a
 /// few requests, which would lock the owner out of re-authorizing clients, so a marked browser's
 /// attempts count on a bucket of their own. It grants nothing else: the passphrase is still needed.
-/// Keyed by the stored hash, it survives restarts and dies when the passphrase changes.
+/// Keyed by the stored hash, it survives restarts and dies when the passphrase changes, except in
+/// the browser that changed it, which gets the new one.
 fn device_token(state: &AuthState) -> String {
     let hash = state.0.passphrase_hash.lock().unwrap();
     sign(hash.as_bytes(), DEVICE_PURPOSE, "")
@@ -569,7 +570,7 @@ pub(crate) async fn change_passphrase(
             );
         }
     };
-    with_cookie(
+    let response = with_cookie(
         html_page(
             StatusCode::OK,
             "Passphrase changed",
@@ -579,6 +580,13 @@ pub(crate) async fn change_passphrase(
         SESSION_COOKIE,
         "",
         0,
+    );
+    // The old mark died with the old hash, and this browser has just shown the passphrase.
+    with_cookie(
+        response,
+        DEVICE_COOKIE,
+        &device_token(&state),
+        DEVICE_TTL_SECS,
     )
 }
 

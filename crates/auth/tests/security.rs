@@ -2110,6 +2110,33 @@ async fn a_passphrase_change_finishes_after_the_client_has_left() {
     assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
 }
 
+/// Otherwise no browser is a known device after a change, and anyone can keep the owner out.
+#[tokio::test]
+async fn the_browser_that_changed_the_passphrase_stays_a_known_device() {
+    let h = Harness::new().await;
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    let old_mark = owner.cookies["__Host-nexus_device"].clone();
+    let done = change_passphrase(&mut owner, &h, PASSPHRASE, NEW_PASSPHRASE, NEW_PASSPHRASE).await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_ne!(owner.cookies["__Host-nexus_device"], old_mark);
+    exhaust_global_backoff(&h).await;
+
+    let mut stale = Browser::default();
+    stale
+        .cookies
+        .insert("__Host-nexus_device".to_owned(), old_mark);
+    let blocked = stale
+        .attempt_login(&h, NEW_PASSPHRASE, "198.51.100.200")
+        .await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    let reply = owner
+        .attempt_login(&h, NEW_PASSPHRASE, "198.51.100.202")
+        .await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+}
+
 #[tokio::test]
 async fn a_refused_passphrase_change_changes_nothing() {
     let h = Harness::new().await;
