@@ -316,7 +316,7 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
     }
     refuse_odd_pages(&world, &document)?;
     let mut text = crate::extract::rendered_text(&document)?;
-    text.layout = crate::layout::layout(&document, &text);
+    text.layout = crate::layout::layout(&document, &text, crate::template::pages_of(&req.source));
     let document = if req.stamp {
         stamped(&document)?
     } else {

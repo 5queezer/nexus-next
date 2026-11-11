@@ -2189,6 +2189,16 @@ async fn another_template_is_a_draft_with_only_the_show_line_changed() {
     assert!(page.contains("value=\"modern\" selected"), "{page}");
 
     assert_eq!(save_template(&f, 2, "fancy").await, StatusCode::BAD_REQUEST);
+    let fields = [
+        ("csrf", TOKEN),
+        ("expected", "2"),
+        ("template", "modern"),
+        ("pages", "3"),
+    ];
+    assert_eq!(
+        post(&f.app, &format!("{VARIANT}/save"), &fields).await.0,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(save_template(&f, 1, "banner").await, StatusCode::CONFLICT);
     assert_eq!(revision_rows(&f.db).await.len(), 2);
 }
@@ -2284,4 +2294,53 @@ async fn a_draft_lists_its_layout_notes_and_each_marks_its_line() {
     assert!(layout.contains("Page 2 holds only 1 line"), "{layout}");
     assert!(layout.contains("data-boxes=\"2:"), "{layout}");
     assert!(!layout.contains("breaks across pages"), "{layout}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_target_is_chosen_beside_the_template_and_the_preview_says_how_far_off() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert!(page.contains("id=\"cv-pages\""), "{page}");
+    assert!(
+        page.contains("<option value=\"\" selected>no target</option>"),
+        "{page}"
+    );
+
+    let aimed = source.replace("cv.with(lang: \"en\")", "cv.with(lang: \"en\", pages: 2)");
+    let fields = [("csrf", TOKEN), ("source", aimed.as_str())];
+    let (status, _, body) = post(&f.app, &format!("{VARIANT}/try"), &fields).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let told: Value = serde_json::from_str(&body).unwrap();
+    let layout: Vec<&str> = told["layout"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(layout[0].starts_with("1 page, the last "), "{layout:?}");
+    assert!(
+        layout[1].starts_with("Aiming for 2 full pages: the CV ends on page 1"),
+        "{layout:?}"
+    );
+
+    // Without the script, the form stores both choices as a draft.
+    let fields = [
+        ("csrf", TOKEN),
+        ("expected", "1"),
+        ("template", "classic"),
+        ("pages", "2"),
+    ];
+    assert_eq!(
+        post(&f.app, &format!("{VARIANT}/save"), &fields).await.0,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(revision_rows(&f.db).await[1].1, aimed);
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert!(
+        page.contains("<option value=\"2\" selected>2 full pages</option>"),
+        "{page}"
+    );
+    let (_, _, page) = get(&f.app, "/cv/variants/default?view=review").await;
+    assert!(page.contains("Aiming for 2 full pages"), "{page}");
 }

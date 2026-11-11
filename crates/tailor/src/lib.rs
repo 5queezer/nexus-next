@@ -22,7 +22,7 @@ pub use check::{
 };
 pub use template::{
     CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, TEMPLATES, default_source,
-    source_from_profile, template_of, with_template,
+    pages_of, source_from_profile, template_of, with_pages, with_template,
 };
 pub use worker::run_worker;
 
@@ -187,6 +187,8 @@ pub struct Layout {
     pub last_page_lines: u32,
     /// About how many more lines the last page takes.
     pub room_lines: u32,
+    /// How many full pages the source says it aims for.
+    pub target_pages: Option<u32>,
     pub notes: Vec<LayoutNote>,
 }
 
@@ -201,6 +203,8 @@ pub enum LayoutKind {
     EntrySplit,
     /// A last page that is nearly empty.
     ThinLastPage,
+    /// How far the CV is from the full pages its source aims for.
+    PageTarget,
 }
 
 /// One thing to look at, worded so that an agent can act on it.

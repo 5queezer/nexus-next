@@ -138,8 +138,9 @@
 }
 
 // The page setup. Start a CV with `#show: cv`, `#show: cv.with(lang: "de")` or
-// `#show: cv.with(template: "modern")`.
-#let cv(lang: "en", template: "classic", body) = {
+// `#show: cv.with(template: "modern")`. `pages` is how many full pages the CV aims for, which draws
+// nothing: the layout notes read it and say how far off the CV is.
+#let cv(lang: "en", template: "classic", pages: none, body) = {
   if template not in _templates {
     panic("no template \"" + template + "\". Known: " + _templates.keys().join(", "))
   }

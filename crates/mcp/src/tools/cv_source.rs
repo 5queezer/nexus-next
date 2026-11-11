@@ -152,6 +152,7 @@ fn layout_json(layout: &Layout) -> Value {
         "pages": layout.pages,
         "lastPageFill": layout.last_page_fill,
         "roomLines": layout.room_lines,
+        "targetPages": layout.target_pages,
         "notes": notes,
     })
 }
@@ -1122,7 +1123,7 @@ pub(crate) async fn draw_unsaved(ctx: &Ctx, name: &str, source: &str) -> ToolRes
     let summary = json!({
         "pageCount": rendered.page_count,
         "factsVersion": state.version,
-        "layout": layout_json(&rendered.text.layout),
+        "layout": rendered.text.layout,
     });
     let mut result = json_result(summary, false);
     for preview in &rendered.previews {

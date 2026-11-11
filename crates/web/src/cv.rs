@@ -27,8 +27,8 @@ use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
 use nexus_tailor::{
-    DiffLine, Language, LineChange, Metric, ReviewItem, Rule, TEMPLATES, review_diff, template_of,
-    with_template,
+    DiffLine, Language, Layout, LineChange, Metric, ReviewItem, Rule, TEMPLATES, pages_of,
+    review_diff, template_of, with_pages, with_template,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1062,6 +1062,17 @@ fn review_items_view(review: &Review) -> impl IntoView + use<> {
     }
 }
 
+fn fill_text(layout: &Layout) -> String {
+    format!(
+        "{} {}, the last {:.0}% full with room for about {} more {}.",
+        layout.pages,
+        plural(layout.pages as usize, "page"),
+        100.0 * layout.last_page_fill,
+        layout.room_lines,
+        plural(layout.room_lines as usize, "line"),
+    )
+}
+
 /// How the draft fills its pages, and where a line or a page breaks badly. Each note marks its line in
 /// the picture as a word to check does. Advice: nothing here stands between the owner and the button.
 fn layout_view(review: &Review) -> impl IntoView + use<> {
@@ -1090,16 +1101,7 @@ fn layout_view(review: &Review) -> impl IntoView + use<> {
     (layout.pages > 0).then(|| {
         view! {
             <h3>"Layout"</h3>
-            <p class="hint" id="cv-layout-fill">
-                {format!(
-                    "{} {}, the last {:.0}% full with room for about {} more {}.",
-                    layout.pages,
-                    plural(layout.pages as usize, "page"),
-                    100.0 * layout.last_page_fill,
-                    layout.room_lines,
-                    plural(layout.room_lines as usize, "line"),
-                )}
-            </p>
+            <p class="hint" id="cv-layout-fill">{fill_text(layout)}</p>
             <ul class="review-items" id="cv-layout">{notes}</ul>
         }
     })
@@ -1340,6 +1342,7 @@ fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use
             <p class="hint" id="cv-preview-unsaved" role="status" hidden>
                 "This is the text in the editor, which isn't saved yet."
             </p>
+            <ul class="hint" id="cv-preview-layout" hidden></ul>
             <p class="banner warn" id="cv-preview-note" role="status" hidden></p>
         </section>
     }
@@ -1510,12 +1513,13 @@ fn editor_view(
     }
 }
 
-/// Another design for the source. With `cv.js` the choice rewrites the `#show: cv` line in the editor,
+/// Another design for the source, and how many full pages it aims for. With `cv.js` the choice rewrites the `#show: cv` line in the editor,
 /// shows in the preview, and is saved with the text. Without it the form stores the saved source in
 /// that template as a draft. A line this can't read is the editor's to change.
 fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl IntoView + use<> {
     let current = template_of(text).map(str::to_owned);
     let unreadable = current.is_none();
+    let pages = pages_of(text);
     view! {
         <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-template-form">
             <input type="hidden" name="csrf" value=token.to_owned() />
@@ -1528,13 +1532,20 @@ fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl 
                         }).collect::<Vec<_>>()}
                     </select>
                 </label>
-                <button type="submit" class="secondary" id="cv-template-save" disabled=unreadable>"Save draft in this template"</button>
+                <label>"Pages"
+                    <select name="pages" id="cv-pages" disabled=unreadable>
+                        <option value="" selected=pages.is_none()>"no target"</option>
+                        <option value="1" selected=pages == Some(1)>"1 full page"</option>
+                        <option value="2" selected=pages == Some(2)>"2 full pages"</option>
+                    </select>
+                </label>
+                <button type="submit" class="secondary" id="cv-template-save" disabled=unreadable>"Save draft with these"</button>
             </div>
             <p class="hint" id="cv-template-unreadable" hidden=!unreadable>
-                "This source sets up its page in its own way, so change the template in its #show: cv line by hand."
+                "This source sets up its page in its own way, so change the template and the pages in its #show: cv line by hand."
             </p>
             <p class="hint" id="cv-template-hint" hidden=unreadable>
-                "Stores the saved source with only its #show: cv line changed, as a draft for you to approve. Text typed above and not saved is left out."
+                "Stores the saved source with only its #show: cv line changed, as a draft for you to approve. Text typed above and not saved is left out. The pages are what the CV aims for: the layout notes then say how far off it is."
             </p>
         </form>
     }
@@ -1737,7 +1748,14 @@ async fn save(
     // a base it stores a draft.
     let (source, summary) = match template {
         Some(template) => {
-            let Some(source) = with_template(base_source, template) else {
+            let pages = match form.get("pages").map_or("", String::as_str) {
+                "" => Some(None),
+                pages => pages.parse().ok().map(Some),
+            };
+            let source = with_template(base_source, template)
+                .zip(pages)
+                .and_then(|(source, pages)| with_pages(&source, pages));
+            let Some(source) = source else {
                 return Err(PageError(StatusCode::BAD_REQUEST));
             };
             kept.typed_source = Some(source.clone());
@@ -2056,7 +2074,16 @@ async fn try_source(
     let count = pages.len();
     let (cache, stored) = (cv.cache.clone(), format!("{key}-draft"));
     let _ = tokio::task::spawn_blocking(move || cache.put(&stored, version, &pages)).await;
-    Json(json!({"key": key, "version": version, "pages": count})).into_response()
+    // The same advice the review lists, as sentences under the picture.
+    let layout: Option<Layout> = serde_json::from_value(told.value["layout"].clone()).ok();
+    let notes: Vec<String> = layout
+        .iter()
+        .flat_map(|layout| {
+            let notes = layout.notes.iter().map(|note| note.message.clone());
+            std::iter::once(fill_text(layout)).chain(notes)
+        })
+        .collect();
+    Json(json!({"key": key, "version": version, "pages": count, "layout": notes})).into_response()
 }
 
 #[derive(Deserialize)]

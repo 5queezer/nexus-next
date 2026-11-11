@@ -60,6 +60,7 @@
     }
     if (run !== previewRun) return;
     byId("cv-preview-unsaved").hidden = true;
+    byId("cv-preview-layout").hidden = true;
     if (ok) {
       setNote(byId("cv-preview-note"), "");
       showImages(body.revision, body.pages, body.state);
@@ -329,6 +330,11 @@
     }
     setNote(byId("cv-preview-note"), "");
     byId("cv-preview-unsaved").hidden = false;
+    const notes = byId("cv-preview-layout");
+    notes.replaceChildren(
+      ...body.layout.map((text) => Object.assign(document.createElement("li"), { textContent: text })),
+    );
+    notes.hidden = !body.layout.length;
     showPages(
       body.pages,
       (page) => `Preview of the text in the editor, page ${page}`,
@@ -339,7 +345,7 @@
   const SHOW = "#show: cv";
 
   // The line that sets up the page, as the server reads it: exactly one, with only `lang` and
-  // `template` as quoted words. Null for any other, which is then left alone.
+  // `template` as quoted words and `pages` as 1 or 2. Null for any other, which is then left alone.
   function showLine(source) {
     let found = null;
     let at = 0;
@@ -357,8 +363,9 @@
           if (!arg.trim()) continue;
           const colon = arg.indexOf(":");
           const key = arg.slice(0, colon).trim();
-          const value = /^"([A-Za-z0-9-]*)"$/.exec(arg.slice(colon + 1).trim());
-          if (colon < 0 || !value || !["lang", "template"].includes(key) || key in set) return null;
+          const said = arg.slice(colon + 1).trim();
+          const value = key === "pages" ? /^([12])$/.exec(said) : /^"([A-Za-z0-9-]*)"$/.exec(said);
+          if (colon < 0 || !value || !["lang", "template", "pages"].includes(key) || key in set) return null;
           set[key] = value[1];
         }
         found = { start: at, end: at + text.length, set };
@@ -368,10 +375,12 @@
     return found;
   }
 
-  // The template select and the editor's `#show: cv` line say the same thing, whichever was changed.
+  // The template and pages selects and the editor's `#show: cv` line say the same thing, whichever was
+  // changed.
   function chooseTemplate() {
     const editor = byId("cv-source");
     const select = byId("cv-template");
+    const pages = byId("cv-pages");
     if (!editor || !select) return;
     let timer = null;
     byId("cv-template-save").hidden = true;
@@ -379,21 +388,29 @@
     const follow = () => {
       const line = showLine(editor.value);
       select.disabled = !line;
+      pages.disabled = !line;
       byId("cv-template-unreadable").hidden = !!line;
+      if (!line) return;
       // An unknown name selects nothing.
-      if (line) select.value = line.set.template || select.options[0].value;
+      select.value = line.set.template || select.options[0].value;
+      pages.value = line.set.pages || "";
     };
-    select.addEventListener("change", () => {
+    const chosen = () => {
       const line = showLine(editor.value);
       if (!line) return;
       const args = [];
       if ("lang" in line.set) args.push(`lang: "${line.set.lang}"`);
-      if (select.value !== select.options[0].value) args.push(`template: "${select.value}"`);
+      // With nothing selected, the name typed by hand stays.
+      const template = select.selectedIndex < 0 ? line.set.template : select.value;
+      if (template && template !== select.options[0].value) args.push(`template: "${template}"`);
+      if (pages.value) args.push(`pages: ${pages.value}`);
       const show = args.length ? `${SHOW}.with(${args.join(", ")})` : SHOW;
       editor.value = editor.value.slice(0, line.start) + show + editor.value.slice(line.end);
       clearTimeout(timer);
       tryPreview();
-    });
+    };
+    select.addEventListener("change", chosen);
+    pages.addEventListener("change", chosen);
     editor.addEventListener("input", () => {
       follow();
       clearTimeout(timer);

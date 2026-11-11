@@ -4,8 +4,8 @@ mod common;
 
 use common::{content_de, content_en, facts_de, facts_en, render};
 use nexus_tailor::{
-    CvContent, Facts, RenderError, RenderRequest, Renderer, TEMPLATES, check, source_from_profile,
-    template_of, with_template,
+    CvContent, Facts, RenderError, RenderRequest, Renderer, TEMPLATES, check, pages_of,
+    source_from_profile, template_of, with_pages, with_template,
 };
 
 /// A CV long enough for a second page.
@@ -161,6 +161,51 @@ fn only_the_show_line_changes_with_the_template() {
         "#show: cv.with(template: \"compact\")\r\n#header()"
     );
     assert_eq!(with_template(source, "fancy"), None);
+}
+
+#[test]
+fn the_page_target_is_kept_and_set_beside_the_template() {
+    let source = "#import \"/nexus.typ\": *\n#show: cv.with(lang: \"de\")\n#header()\n";
+    assert_eq!(pages_of(source), None);
+    let two = with_pages(source, Some(2)).unwrap();
+    assert_eq!(
+        two,
+        source.replace("lang: \"de\"", "lang: \"de\", pages: 2")
+    );
+    assert_eq!(
+        (pages_of(&two), template_of(&two)),
+        (Some(2), Some("classic"))
+    );
+    let modern = with_template(&two, "modern").unwrap();
+    assert_eq!(
+        modern,
+        source.replace(
+            "lang: \"de\"",
+            "lang: \"de\", template: \"modern\", pages: 2"
+        )
+    );
+    assert_eq!(
+        with_pages(&modern, Some(1)).unwrap(),
+        modern.replace("pages: 2", "pages: 1")
+    );
+    assert_eq!(
+        with_pages(&with_template(&modern, "classic").unwrap(), None).unwrap(),
+        source
+    );
+    assert_eq!(with_pages(source, Some(3)), None);
+    for other in [
+        "pages: 3",
+        "pages: \"2\"",
+        "pages: 1, pages: 2",
+        "pages: auto",
+    ] {
+        let source = format!("#show: cv.with({other})\n");
+        assert_eq!(
+            (pages_of(&source), template_of(&source)),
+            (None, None),
+            "{other}"
+        );
+    }
 }
 
 #[test]

@@ -4,7 +4,9 @@ mod common;
 
 use common::{content_en, facts_en, render};
 use nexus_tailor::CvContent;
-use nexus_tailor::{Layout, LayoutKind, TEMPLATES, source_from_profile, with_template};
+use nexus_tailor::{
+    Layout, LayoutKind, TEMPLATES, pages_of, source_from_profile, with_pages, with_template,
+};
 
 const START: &str = "#import \"/nexus.typ\": *\n#show: cv\n#header()\n";
 
@@ -199,4 +201,89 @@ async fn the_last_page_says_how_full_it_is_and_when_that_is_next_to_nothing() {
         note.message
     );
     assert!(stray.last_page_fill < 0.1);
+}
+
+/// What the owner aims for is in the source, and the notes say how far off the CV is, in lines.
+#[tokio::test]
+async fn a_page_target_says_how_far_off_the_cv_is() {
+    let target = |layout: &Layout| {
+        let note = &layout.notes[0];
+        assert_eq!(note.kind, LayoutKind::PageTarget, "{layout:#?}");
+        note.message.clone()
+    };
+    let one = source_from_profile(&content_en());
+    let plain = layout_of(&one).await;
+    assert_eq!(plain.target_pages, None);
+    assert!(!kinds(&plain).contains(&LayoutKind::PageTarget));
+
+    let roomy = layout_of(&with_pages(&one, Some(1)).unwrap()).await;
+    assert_eq!((roomy.target_pages, roomy.pages), (Some(1), 1));
+    let said = target(&roomy);
+    assert!(
+        said.starts_with("Aiming for 1 full page: page 1 is 5"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("room for about {} more lines", roomy.room_lines)),
+        "{said}"
+    );
+    // Only the note differs from the source that names no target.
+    assert_eq!(roomy.notes[1..], plain.notes[..]);
+
+    let short = target(&layout_of(&with_pages(&one, Some(2)).unwrap()).await);
+    assert!(
+        short.starts_with("Aiming for 2 full pages: the CV ends on page 1"),
+        "{short}"
+    );
+    let lines: u32 = short
+        .split("About ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((60..110).contains(&lines), "{short}");
+
+    let long = with_pages(&source_from_profile(&long_en()), Some(1)).unwrap();
+    let over = layout_of(&long).await;
+    let said = target(&over);
+    assert_eq!(
+        said,
+        format!(
+            "Aiming for 1 full page: about {} lines over, on page 2. Cut that much.",
+            over.last_page_lines
+        )
+    );
+    assert!(over.last_page_lines > 10);
+
+    let fits = target(&layout_of(&with_pages(&long, Some(2)).unwrap()).await);
+    assert!(
+        fits.starts_with("Aiming for 2 full pages: page 2 is 5"),
+        "{fits}"
+    );
+}
+
+#[tokio::test]
+async fn a_page_target_draws_nothing() {
+    let plain = source_from_profile(&content_en());
+    let aimed = with_pages(&plain, Some(2)).unwrap();
+    assert_eq!(pages_of(&aimed), Some(2));
+    let draw = |source: String| async move {
+        nexus_tailor::Renderer::InProcess
+            .render(nexus_tailor::RenderRequest {
+                source,
+                facts: facts_en(),
+                pdf: true,
+                preview_pages: 1,
+                stamp: false,
+            })
+            .await
+            .unwrap()
+    };
+    let (plain, aimed) = (draw(plain).await, draw(aimed).await);
+    assert_eq!(plain.pdf, aimed.pdf);
+    assert_eq!(plain.previews, aimed.previews);
+    assert_eq!(plain.text.lines, aimed.text.lines);
 }

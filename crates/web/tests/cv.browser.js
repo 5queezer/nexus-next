@@ -9,11 +9,13 @@ const SOURCE = '#import "/nexus.typ": *\n#show: cv.with(lang: "de")\n\n#header()
 const PAGE = `<!doctype html><meta charset="utf-8">
 <div id="cv-workspace" data-variant="default" data-revision="1" data-state="draft" data-view="edit">
   <section id="cv-preview"><div id="cv-preview-pages"><img alt=""></div>
-    <p id="cv-preview-unsaved" hidden></p><p id="cv-preview-note" hidden></p></section>
+    <p id="cv-preview-unsaved" hidden></p><ul id="cv-preview-layout" hidden></ul>
+    <p id="cv-preview-note" hidden></p></section>
   <form id="cv-editor-form"><input type="hidden" name="csrf" value="token">
     <textarea id="cv-source" name="source">${SOURCE}</textarea></form>
   <form id="cv-template-form">
     <select id="cv-template"><option>classic</option><option>modern</option><option>banner</option></select>
+    <select id="cv-pages"><option value="">no target</option><option>1</option><option>2</option></select>
     <button id="cv-template-save">Save draft in this template</button>
     <p id="cv-template-unreadable" hidden>By hand.</p><p id="cv-template-hint"></p></form>
 </div><script src="/assets/cv.js"></script>`;
@@ -31,7 +33,7 @@ const PAGE = `<!doctype html><meta charset="utf-8">
     }
     if (url.pathname.endsWith("/try")) {
       tried.push(new URLSearchParams(route.request().postData()).get("source"));
-      return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 2 } });
+      return route.fulfill({ json: { key: "k".repeat(64), version: 3, pages: 2, layout: ["2 pages.", "A note."] } });
     }
     if (url.pathname.endsWith("/preview.json")) {
       return route.fulfill({ json: { revision: 1, state: "draft", pages: 1 } });
@@ -54,18 +56,37 @@ const PAGE = `<!doctype html><meta charset="utf-8">
   assert.equal(tried.at(-1), await editor.inputValue());
   assert.deepEqual(await sources(), [1, 2].map((n) => `/cv/variants/default/try.png?key=${"k".repeat(64)}&version=3&page=${n}`));
 
+  assert.deepEqual(await page.locator("#cv-preview-layout li").allTextContents(), ["2 pages.", "A note."]);
+
+  // The page target is written beside the template, and taken away again.
+  const pages = page.locator("#cv-pages");
+  await pages.selectOption("2");
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "modern", pages: 2'));
+  await select.selectOption("banner");
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "banner", pages: 2'));
+  await pages.selectOption("");
+  await select.selectOption("modern");
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'lang: "de", template: "modern"'));
+
   // Back to the first template is the stored text again, with the stored picture.
   await select.selectOption("classic");
   assert.equal(await editor.inputValue(), SOURCE);
   await page.waitForFunction(() => document.getElementById("cv-preview-unsaved").hidden);
+  assert.equal(await page.locator("#cv-preview-layout").isHidden(), true);
   assert.deepEqual(await sources(), ["/cv/variants/default/preview.png?revision=1&page=1&state=draft"]);
 
   // The select follows the line typed by hand, an unknown name selects nothing, and typing is drawn.
   await editor.fill(SOURCE.replace('lang: "de"', 'template: "banner"'));
   assert.equal(await select.inputValue(), "banner");
   await page.waitForFunction(() => !document.getElementById("cv-preview-unsaved").hidden);
-  await editor.fill(SOURCE.replace('lang: "de"', 'template: "fancy"'));
+  await editor.fill(SOURCE.replace('lang: "de"', 'template: "fancy", pages: 1'));
   assert.equal(await select.evaluate((element) => element.selectedIndex), -1);
+  assert.equal(await pages.inputValue(), "1");
+  // A name the select doesn't know stays when the pages change.
+  await pages.selectOption("2");
+  assert.equal(await editor.inputValue(), SOURCE.replace('lang: "de"', 'template: "fancy", pages: 2'));
+  await editor.fill(SOURCE.replace('lang: "de"', "pages: 3"));
+  assert.equal(await pages.isDisabled(), true);
 
   // A line it can't read turns the select off and leaves the text alone.
   const own = SOURCE.replace(")\n\n", ") // mine\n\n");

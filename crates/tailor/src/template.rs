@@ -8,6 +8,7 @@ use crate::Facts;
 /// What `get_cv_source` tells an agent about `/nexus.typ`.
 pub const TEMPLATE_HELP: &str = r#"Start a source with `#import "/nexus.typ": *` and `#show: cv` (or `#show: cv.with(lang: "de")`).
 `#show: cv.with(template: "modern")` draws the same source in another design: `classic` (the default), `modern`, `banner`, `sidebar` or `compact`.
+`#show: cv.with(pages: 1)` or `pages: 2` names how many full pages the owner wants. It changes nothing by itself: `layout` in a `patch_cv` or `render_cv_pdf` reply says how far off the CV is, in lines, and which lines and pages break badly, so cut or add text and read it again.
 Hard facts are rendered by id, never typed: `#header()`, `#contact()`, `#employment("id")[- a bullet]`, `#employment("id")` for one compact line, `#education("id")`, `#languages()`, `#metric("key")`.
 Wording helpers: `= Section`, `#skills("Category")[Rust, Go]`, `#project("Name", stack: "Rust", url: "example.org")[What it does.]`.
 Only /main.typ, /nexus.typ and /facts.json exist. A page is 200 to 1200 pt on each side. No images, packages, `hide` or `pdf.attach`. Text stays upright and at its natural spacing: no `rotate`, `skew`, mirroring, stretching, `tracking` that stacks or spreads glyphs, or a `stroke` over 0.1 em. Every letter must reach the reader, judged on the drawn page: nothing painted over it, text a reader can tell from what it really stands on, and only letters the fonts have (Latin, Greek, Cyrillic, Hebrew; no letters in math, digits are fine). A small mark drawn on text isn't refused, but the owner is told of it. Emails and URLs come from `#contact()`; a link's text is free unless it shows a contact value."#;
@@ -17,9 +18,17 @@ pub const TEMPLATES: [&str; 5] = ["classic", "modern", "banner", "sidebar", "com
 
 const SHOW: &str = "#show: cv";
 
-/// Where the line that sets up the page stands, with its `lang` and `template`. None unless the
-/// source has exactly one, written as this module writes it: no other is safe to rewrite.
-fn show_line(source: &str) -> Option<(std::ops::Range<usize>, Option<&str>, Option<&str>)> {
+/// The line that sets up the page: where it stands, and what it sets.
+struct ShowLine<'a> {
+    at: std::ops::Range<usize>,
+    lang: Option<&'a str>,
+    template: Option<&'a str>,
+    pages: Option<u32>,
+}
+
+/// None unless the source has exactly one such line, written as this module writes it: no other is
+/// safe to rewrite.
+fn show_line(source: &str) -> Option<ShowLine<'_>> {
     let mut found = None;
     let mut at = 0;
     for line in source.split_inclusive('\n') {
@@ -32,20 +41,31 @@ fn show_line(source: &str) -> Option<(std::ops::Range<usize>, Option<&str>, Opti
                 "" => "",
                 rest => rest.strip_prefix(".with(")?.strip_suffix(')')?,
             };
-            let (mut lang, mut template) = (None, None);
+            let mut show = ShowLine {
+                at: at..at + text.len(),
+                lang: None,
+                template: None,
+                pages: None,
+            };
             for arg in args.split(',').filter(|arg| !arg.trim().is_empty()) {
                 let (key, value) = arg.split_once(':')?;
-                let value = value.trim().strip_prefix('"')?.strip_suffix('"')?;
-                if !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    return None;
-                }
+                let value = value.trim();
+                let word = || {
+                    let word = value.strip_prefix('"')?.strip_suffix('"')?;
+                    word.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+                        .then_some(word)
+                };
                 match key.trim() {
-                    "lang" if lang.is_none() => lang = Some(value),
-                    "template" if template.is_none() => template = Some(value),
+                    "lang" if show.lang.is_none() => show.lang = Some(word()?),
+                    "template" if show.template.is_none() => show.template = Some(word()?),
+                    "pages" if show.pages.is_none() && matches!(value, "1" | "2") => {
+                        show.pages = value.parse().ok();
+                    }
                     _ => return None,
                 }
             }
-            found = Some((at..at + text.len(), lang, template));
+            found = Some(show);
         }
         at += line.len();
     }
@@ -55,33 +75,54 @@ fn show_line(source: &str) -> Option<(std::ops::Range<usize>, Option<&str>, Opti
 /// The template a source names, or the first if it names none. None if its `#show: cv` line can't be
 /// read.
 pub fn template_of(source: &str) -> Option<&str> {
-    show_line(source).map(|(_, _, template)| template.unwrap_or(TEMPLATES[0]))
+    show_line(source).map(|show| show.template.unwrap_or(TEMPLATES[0]))
 }
 
-/// `source` drawn in another template: only its `#show: cv` line changes, and the first template is
-/// written as no argument. None if that line can't be read or there is no such template.
-pub fn with_template(source: &str, template: &str) -> Option<String> {
-    let (line, lang, _) = show_line(source)?;
-    if !TEMPLATES.contains(&template) {
-        return None;
-    }
+/// How many full pages a source says it aims for: 1 or 2, or none if it names no target or its
+/// `#show: cv` line can't be read.
+pub fn pages_of(source: &str) -> Option<u32> {
+    show_line(source)?.pages
+}
+
+/// `source` with its `#show: cv` line saying this, and nothing else changed.
+fn rewritten(source: &str, show: &ShowLine, template: &str, pages: Option<u32>) -> String {
     let mut args = Vec::new();
-    if let Some(lang) = lang {
+    if let Some(lang) = show.lang {
         args.push(format!("lang: \"{lang}\""));
     }
     if template != TEMPLATES[0] {
         args.push(format!("template: \"{template}\""));
     }
-    let show = if args.is_empty() {
+    if let Some(pages) = pages {
+        args.push(format!("pages: {pages}"));
+    }
+    let line = if args.is_empty() {
         SHOW.to_owned()
     } else {
         format!("{SHOW}.with({})", args.join(", "))
     };
-    Some(format!(
-        "{}{show}{}",
-        &source[..line.start],
-        &source[line.end..]
-    ))
+    format!(
+        "{}{line}{}",
+        &source[..show.at.start],
+        &source[show.at.end..]
+    )
+}
+
+/// `source` drawn in another template: only its `#show: cv` line changes, and the first template is
+/// written as no argument. None if that line can't be read or there is no such template.
+pub fn with_template(source: &str, template: &str) -> Option<String> {
+    let show = show_line(source)?;
+    TEMPLATES
+        .contains(&template)
+        .then(|| rewritten(source, &show, template, show.pages))
+}
+
+/// `source` aiming for 1 or 2 full pages, or for none: only its `#show: cv` line changes. None if that
+/// line can't be read or the target is another.
+pub fn with_pages(source: &str, pages: Option<u32>) -> Option<String> {
+    let show = show_line(source)?;
+    matches!(pages, None | Some(1 | 2))
+        .then(|| rewritten(source, &show, show.template.unwrap_or(TEMPLATES[0]), pages))
 }
 
 /// One job in a generated CV. Tier 3 renders as one compact line.

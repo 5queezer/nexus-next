@@ -188,11 +188,16 @@ fn plural(count: usize, word: &str) -> String {
     format!("{count} {word}{}", if count == 1 { "" } else { "s" })
 }
 
-pub(crate) fn layout(document: &PagedDocument, text: &RenderedText) -> Layout {
+/// A last page fuller than this is a full page.
+const FULL_PAGE: f64 = 0.9;
+
+/// `target` is how many full pages the source aims for.
+pub(crate) fn layout(document: &PagedDocument, text: &RenderedText, target: Option<u32>) -> Layout {
     let pages = u32::try_from(document.pages().len()).unwrap_or(u32::MAX);
     let parts = parts(document, text);
     let mut out = Layout {
         pages,
+        target_pages: target,
         ..Layout::default()
     };
     let (Some(last), Some(page)) = (pages.checked_sub(1), document.pages().last()) else {
@@ -353,6 +358,53 @@ pub(crate) fn layout(document: &PagedDocument, text: &RenderedText) -> Layout {
         });
     }
     notes.sort_by_key(|note| (note.page, note.at));
+    if let Some(target) = target {
+        let fill = 100.0 * out.last_page_fill;
+        let page_lines = ((bottom - top) / pitch).floor() as u32;
+        let aim = plural(target as usize, "full page");
+        let message = if pages > target {
+            let mut over: Vec<(u32, usize)> = parts
+                .iter()
+                .filter(|part| part.page >= target)
+                .map(|part| (part.page, part.line))
+                .collect();
+            over.dedup();
+            format!(
+                "Aiming for {aim}: about {} over, on {}. Cut that much.",
+                plural(over.len(), "line"),
+                if pages == target + 1 {
+                    format!("page {pages}")
+                } else {
+                    format!("pages {} to {pages}", target + 1)
+                },
+            )
+        } else if pages < target {
+            format!(
+                "Aiming for {aim}: the CV ends on page {pages}, {fill:.0}% full. About {} more fill them.",
+                plural(
+                    (out.room_lines + (target - pages) * page_lines) as usize,
+                    "line"
+                ),
+            )
+        } else if f64::from(out.last_page_fill) < FULL_PAGE {
+            format!(
+                "Aiming for {aim}: page {pages} is {fill:.0}% full, with room for about {}.",
+                plural(out.room_lines as usize, "more line"),
+            )
+        } else {
+            format!("Aiming for {aim}: met, page {pages} is {fill:.0}% full.")
+        };
+        notes.insert(
+            0,
+            LayoutNote {
+                kind: LayoutKind::PageTarget,
+                page: pages,
+                line: String::new(),
+                at: None,
+                message,
+            },
+        );
+    }
     out.notes = notes;
     out
 }
