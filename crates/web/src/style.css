@@ -514,10 +514,11 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 body:has(#cv-workspace) .top > div { max-width: none; }
 main:has(#cv-workspace) { max-width: none; margin: 0; padding: 0; }
 main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin: 12px 16px; }
-.cv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-.cv-head .hero { margin: 0; align-items: center; }
+.cv-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.cv-head .hero { margin: 0; }
 /* Two variants can stand at the same revision, so the name is what the eye meets first. */
-.cv-head h1 { font-size: 28px; line-height: 1.1; overflow-wrap: anywhere; }
+/* Every label in the row stands on the name's baseline, so the name is only a little larger. */
+.cv-head h1 { font-size: 22px; line-height: 1.25; overflow-wrap: anywhere; }
 .cv-head .preview-actions { margin-left: auto; }
 /* Small beside the title on a wide screen. The narrow one below gives them a finger's height again. */
 .cv-head .preview-actions .button { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line); background: none; font-size: 13px; }
