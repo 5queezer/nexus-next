@@ -296,6 +296,7 @@ details[open] > summary { border-bottom: 1px solid var(--line); }
 .actions details + details { border-top: 1px solid var(--line); }
 form.act { display: grid; gap: 12px; padding: 12px 0 16px; }
 form.act label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+form.act label.check { display: flex; gap: 8px; }
 form.act input[type="text"], form.act input[type="email"], form.act input[type="tel"],
 form.act input[type="password"], form.act input[type="datetime-local"], form.act textarea, form.act select {
   font: inherit;
@@ -438,7 +439,7 @@ button.hold svg { width: 26px; height: 26px; flex: 0 0 auto; }
 button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 .voice-stage #voice-talk-hint { margin: 12px 0; font-size: 12px; }
 .check { display: flex; gap: 8px; align-items: center; min-height: 44px; }
-.check input { width: 20px; height: 20px; }
+.check input { flex: none; width: 20px; height: 20px; }
 .voice-handsfree { text-align: left; padding: 10px 0; border-block: 1px solid var(--line); }
 .voice-handsfree small { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
 .voice-privacy { font-size: 12px; color: var(--muted); margin: 20px auto 0; max-width: 34ch; }
