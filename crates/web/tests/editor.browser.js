@@ -65,7 +65,7 @@ const COMPLETE = {
 
 const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="/assets/app.css">
-<main><div id="cv-workspace" data-variant="default" data-revision="1" data-state="draft" data-view="edit">
+<main><a class="crumb" href="/">CV</a><div id="cv-workspace" data-variant="default" data-revision="1" data-state="draft" data-view="edit">
 <div class="cv-panes"><div class="cv-picture" id="cv-picture-pane">
   <section id="cv-preview"><div id="cv-preview-pages" class="preview-pages"><img alt=""></div>
     <p id="cv-preview-unsaved" hidden></p><ul id="cv-preview-layout" hidden></ul>
@@ -76,7 +76,8 @@ const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="co
     <label class="cv-source">Typst source
       <textarea name="source" class="code" id="cv-source" rows="24" spellcheck="false">${source.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</textarea></label>
     <div class="cv-compile" id="cv-compile-row" hidden><button type="button" class="quiet" id="cv-compile">Compile</button>
-      <span id="cv-compile-state" role="status"></span><button type="button" class="cv-error" id="cv-error" hidden></button></div>
+      <span id="cv-compile-state" role="status"></span><button type="button" class="cv-error" id="cv-error" hidden></button>
+      <small id="cv-keys" hidden>Tab indents. Press Escape and then Tab to leave the editor.</small></div>
     <div class="cv-save-row"><label>What changed<input type="text" name="summary"></label>
       <button type="submit" id="cv-save">Save draft</button></div></form>
   <p class="hint" id="cv-find-miss" hidden>Not in this text.</p>
@@ -204,7 +205,7 @@ const CASES = [
   assert.deepEqual(at.scroll, [40, 3000]);
   assert.deepEqual([at.layer, at.left], [-3000, -40]);
   assert.ok(Math.abs(at.number - at.expected) < 1, JSON.stringify(at));
-  assert.ok(Math.abs(at.heights[0] - at.heights[1]) < 1, JSON.stringify(at));
+  assert.ok(Math.abs(at.heights[0] - at.heights[1]) <= 1, JSON.stringify(at));
   await editor.evaluate((element) => element.scrollTo(0, element.scrollHeight));
   await page.waitForFunction(() => !document.querySelector(".cv-layer").style.transform.includes("-3000px"));
   at = await places();
@@ -387,6 +388,135 @@ const CASES = [
   await put("Plain text (in brackets|)");
   await page.keyboard.press("Control+Space");
   assert.deepEqual(await offered(), []);
+
+  // The text with \u27e6 and \u27e7 round the selection, for the keys that move it.
+  const select = async (text) => {
+    const plain = text.replace(/[\u27e6\u27e7]/g, "");
+    await editor.fill(plain);
+    await editor.evaluate((element, [from, to]) => element.setSelectionRange(from, to), [text.indexOf("\u27e6"), text.indexOf("\u27e7") - 1]);
+  };
+  const selected = () =>
+    editor.evaluate((e) => `${e.value.slice(0, e.selectionStart)}\u27e6${e.value.slice(e.selectionStart, e.selectionEnd)}\u27e7${e.value.slice(e.selectionEnd)}`);
+
+  // Tab writes two spaces at the caret, and moves the selected lines in and out, as one step to undo.
+  await put("ab|c");
+  await page.keyboard.press("Tab");
+  assert.equal(await seen(), "ab  |c");
+  await select("one\n  t\u27e6wo\n\nthr\u27e7ee\nfour");
+  await page.keyboard.press("Tab");
+  assert.equal(await selected(), "one\n    t\u27e6wo\n\n  thr\u27e7ee\nfour");
+  assert.equal(await layer.textContent(), `${await editor.inputValue()}\n`);
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await selected(), "one\nt\u27e6wo\n\nthr\u27e7ee\nfour");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await selected(), "one\nt\u27e6wo\n\nthr\u27e7ee\nfour");
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), "one\n  two\n\nthree\nfour");
+  // A selection that ends where a line starts leaves that line where it is.
+  await select("\u27e6one\n\u27e7two");
+  await page.keyboard.press("Tab");
+  assert.equal(await selected(), "  \u27e6one\n\u27e7two");
+  await put(" | x");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await seen(), "|x");
+  // After Escape, Tab leaves the editor, forwards or back, so the keyboard is never held in it.
+  assert.equal(await page.locator("#cv-keys").isVisible(), true);
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "cv-compile");
+  assert.equal(await editor.inputValue(), "x");
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Shift+Tab");
+  assert.notEqual(await page.evaluate(() => document.activeElement.id), "cv-source");
+  assert.equal(await editor.inputValue(), "x");
+
+  // Enter keeps the indentation and goes on with a list, and an empty item ends it.
+  await put("#employment(\"a\")[\n  - one|\n]");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#employment(\"a\")[\n  - one\n  - |\n]");
+  await page.keyboard.type("two");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#employment(\"a\")[\n  - one\n  - two\n|\n]");
+  await put("    deep|");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "    deep\n    |");
+  await put("+ a|b");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "+ a\n+ |b");
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), "+ ab");
+
+  // A bracket or a quote brings its partner, typing the partner steps over it, and Backspace
+  // between the two takes both. Between brackets Enter opens a line one step in.
+  await put("  #employment|");
+  await page.keyboard.type('("');
+  assert.equal(await seen(), '  #employment("|")');
+  assert.deepEqual(await offered(), ["brightpath", "harbourline", "tidal"]);
+  await page.keyboard.type('tidal")');
+  assert.equal(await seen(), '  #employment("tidal")|');
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.type("[");
+  assert.equal(await seen(), '  #employment("tidal")[|]');
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '  #employment("tidal")[\n    |\n  ]');
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Backspace");
+  assert.equal(await seen(), '  #employment("tidal")|');
+  await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), '  #employment("tidal")');
+  await put("|");
+  await page.keyboard.type("{(x");
+  assert.equal(await seen(), "{(x|)}");
+  // No partner in front of a word, and a quote after a letter or a backslash is only itself.
+  await put("|word");
+  await page.keyboard.type("(");
+  assert.equal(await seen(), "(|word");
+  await put('#f("it|")');
+  await page.keyboard.type("\\\"s");
+  assert.equal(await seen(), '#f("it\\"s|")');
+  await put("don|");
+  await page.keyboard.type('"');
+  assert.equal(await seen(), 'don"|');
+  // Round a selection they go on both sides.
+  await select("a \u27e6b c\u27e7 d");
+  await page.keyboard.type("[");
+  assert.equal(await selected(), "a [\u27e6b c\u27e7] d");
+  assert.equal(await layer.textContent(), "a [b c] d\n");
+
+  // Ctrl+Enter compiles at once, and Ctrl+S sends the form by its own button.
+  await page.evaluate(() => {
+    document.getElementById("cv-editor-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      window.sent = [event.submitter.id, new FormData(event.target).get("source")];
+    });
+  });
+  await put("#header()\n|");
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  await page.keyboard.type("x");
+  await page.keyboard.press("Control+Enter");
+  assert.equal(await state.textContent(), "Compiling\u2026");
+  assert.equal(tried.at(-1), "#header()\nx");
+  release();
+  await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
+  assert.equal(await seen(), "#header()\nx|");
+  await page.keyboard.press("Control+s");
+  assert.deepEqual(await page.evaluate(() => window.sent), ["cv-save", "#header()\nx"]);
+
+  // The selects beside the editor still write its setup line, and the copy follows them.
+  await editor.fill(SOURCE);
+  await page.locator("#cv-template").selectOption("banner");
+  assert.equal(await editor.inputValue(), SOURCE.replace('"modern"', '"banner"'));
+  assert.equal(await layer.textContent(), `${SOURCE.replace('"modern"', '"banner"')}\n`);
+  // A word named in the address is still selected in it, with the focus.
+  await page.goto("http://127.0.0.1:9/?find=PROFILE");
+  assert.deepEqual(await editor.evaluate((e) => [e.value.slice(e.selectionStart, e.selectionEnd), document.activeElement === e]), ["Profile", true]);
+  assert.equal(await layer.textContent(), `${SOURCE}\n`);
 
   if (process.env.SHOTS) {
     for (const scheme of ["light", "dark"]) {

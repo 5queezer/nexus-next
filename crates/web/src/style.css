@@ -589,12 +589,19 @@ mark.layout { background: var(--line); color: var(--ink); }
 .cv-code { position: relative; flex: 1 1 auto; display: flex; min-height: 60vh; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .cv-code:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cv-gutter, .cv-layer, .cv-code #cv-source { font: 13px/19px var(--mono); tab-size: 2; }
-.cv-gutter { flex: none; min-width: 2.75rem; overflow: hidden; padding: 8px 0; border-right: 1px solid var(--line); color: var(--muted); text-align: right; user-select: none; -webkit-user-select: none; }
+.cv-gutter { flex: none; min-width: 2.75rem; overflow: clip; padding: 8px 0; border-right: 1px solid var(--line); color: var(--muted); text-align: right; user-select: none; -webkit-user-select: none; }
 .cv-gutter div div { padding: 0 8px; }
 .cv-gutter .error { background: var(--warn-bg); color: var(--warn); box-shadow: inset 3px 0 var(--warn); }
 .cv-compile { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: 13px; }
+/* The keys are a keyboard's. */
+#cv-keys { flex: 1 1 100%; }
+@media (pointer: coarse) {
+  #cv-keys { display: none; }
+}
 form.act .cv-error { min-height: 0; padding: 4px 8px; border: 1px solid var(--warn); background: var(--warn-bg); color: var(--warn); text-align: left; overflow-wrap: anywhere; }
-.cv-text { position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+/* Clipped, not hidden: a browser that brings the caret into view would scroll a hidden box, and
+   the copy with it. */
+.cv-text { position: relative; flex: 1 1 auto; min-width: 0; overflow: clip; }
 .cv-layer { position: absolute; top: 0; left: 0; min-width: 100%; margin: 0; padding: 8px 10px; color: var(--ink); white-space: pre; pointer-events: none; }
 .cv-code #cv-source { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; outline: 0; background: none; color: transparent; caret-color: var(--ink); resize: none; }
 /* The label's place in the form goes to the editor that now stands after it. */

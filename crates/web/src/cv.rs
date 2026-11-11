@@ -1586,6 +1586,9 @@ fn editor_view(
                     <button type="button" class="quiet" id="cv-compile">"Compile"</button>
                     <span id="cv-compile-state" role="status"></span>
                     <button type="button" class="cv-error" id="cv-error" hidden></button>
+                    <small id="cv-keys" hidden>
+                        "Tab indents. Press Escape and then Tab to leave the editor. Ctrl+Space completes, Ctrl+Enter compiles, Ctrl+S saves."
+                    </small>
                 </div>
                 <div class="cv-save-row">
                     <label>"What changed"

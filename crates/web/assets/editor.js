@@ -1,6 +1,6 @@
-// The source editor on a variant page: colours, line numbers and completion on top of the plain
-// textarea, which stays the form's field and the only holder of the text. Without this file the
-// textarea works as it is.
+// The source editor on a variant page: colours, line numbers, completion and a few keys on top of the
+// plain textarea, which stays the form's field and the only holder of the text. Without this file
+// the textarea works as it is.
 (() => {
   const editor = document.getElementById("cv-source");
   if (!editor) return;
@@ -527,19 +527,86 @@
     if (row) accept(offered.items[[...list.children].indexOf(row)]);
   });
 
+  // Tab moves the lines of the selection in by two spaces, and Shift+Tab out. With nothing selected,
+  // Tab writes the two spaces where the caret is.
+  function indent(out) {
+    const text = editor.value;
+    const { selectionStart: a, selectionEnd: b } = editor;
+    if (!out && a === b) return edit(a, b, "  ", a + 2);
+    const from = text.lastIndexOf("\n", a - 1) + 1;
+    // A selection that ends at the start of a line doesn't hold that line.
+    const end = text.indexOf("\n", b > a && text[b - 1] === "\n" ? b - 1 : b);
+    const to = end < 0 ? text.length : end;
+    const lines = text.slice(from, to).split("\n");
+    const moved = lines.map((line) => (out ? line.replace(/^ {1,2}|^\t/, "") : line && `  ${line}`));
+    const block = moved.join("\n");
+    if (block.length === to - from) return;
+    const start = Math.max(from, a + moved[0].length - lines[0].length);
+    edit(from, to, block, start, Math.max(start, b + block.length - (to - from)));
+  }
+
+  const PAIRS = { "(": ")", "[": "]", "{": "}", '"': '"' };
+
+  // Enter keeps the line's indentation and goes on with its list. An item left empty ends the list,
+  // and between a pair of brackets the caret gets a line of its own, one step in.
+  function newline() {
+    const text = editor.value;
+    const { selectionStart: a, selectionEnd: b } = editor;
+    const from = text.lastIndexOf("\n", a - 1) + 1;
+    const [, pad, mark = "", rest] = /^([ \t]*)([-+] )?(.*)$/.exec(text.slice(from, a));
+    const opened = text[a - 1];
+    if (a === b && mark && !rest && (a === text.length || text[a] === "\n")) edit(from, a, "", from);
+    else if (a === b && opened !== '"' && PAIRS[opened] && PAIRS[opened] === text[a]) {
+      edit(a, b, `\n${pad}  \n${pad}`, a + pad.length + 3);
+    } else edit(a, b, `\n${pad}${mark}`, a + 1 + pad.length + mark.length);
+  }
+
+  // Brackets and quotes come in pairs: one typed brings the other, or goes round the selection.
+  // Typing the one that is already there steps over it, and Backspace between the two takes both.
+  // Says whether the key was dealt with.
+  function paired(key) {
+    const text = editor.value;
+    const { selectionStart: a, selectionEnd: b } = editor;
+    const before = text[a - 1] || "";
+    const next = text[a] || "";
+    if (key === "Backspace") {
+      if (a !== b || !next || PAIRS[before] !== next) return false;
+      edit(a - 1, a + 1, "", a - 1);
+    } else if (a === b && next === key && Object.values(PAIRS).includes(key) && before !== "\\") {
+      editor.setSelectionRange(a + 1, a + 1);
+      close();
+      return true;
+    } else if (!(key in PAIRS)) return false;
+    else if (a !== b) edit(a, b, key + text.slice(a, b) + PAIRS[key], a + 1, b + 1);
+    // Not in front of a word. And a quote after a letter or a backslash closes or is written out.
+    else if (/[^\s)\]}]/.test(next) || (key === '"' && /[\p{L}\p{N}\\"]/u.test(before))) return false;
+    else edit(a, a, key + PAIRS[key], a + 1);
+    suggest(false);
+    return true;
+  }
+
+  // Set by Escape: the next Tab then leaves the editor, as it does anywhere else on the page.
+  let leaving = false;
+  document.getElementById("cv-keys").hidden = false;
+
   editor.addEventListener("keydown", (event) => {
     if (event.isComposing) return;
     const { key } = event;
-    if (event.ctrlKey && key === " ") {
-      event.preventDefault();
-      suggest(true);
-      return;
-    }
-    if (!offered || event.ctrlKey || event.metaKey || event.altKey) return;
-    if (key === "ArrowDown" || key === "ArrowUp") choose(chosen + (key === "ArrowDown" ? 1 : -1));
-    else if (key === "Enter" || (key === "Tab" && !event.shiftKey)) accept(offered.items[chosen]);
-    else if (key === "Escape") close();
-    else {
+    const leave = leaving;
+    if (key !== "Shift") leaving = false;
+    const command = event.ctrlKey || event.metaKey;
+    if (event.ctrlKey && key === " ") suggest(true);
+    else if (command && key === "s") editor.form.requestSubmit(document.getElementById("cv-save"));
+    else if (command && key === "Enter") document.getElementById("cv-compile").click();
+    else if (command || event.altKey) return;
+    else if (offered && (key === "ArrowDown" || key === "ArrowUp")) choose(chosen + (key === "ArrowDown" ? 1 : -1));
+    else if (offered && (key === "Enter" || (key === "Tab" && !event.shiftKey))) accept(offered.items[chosen]);
+    else if (key === "Escape") {
+      if (offered) close();
+      else leaving = true;
+    } else if (key === "Tab" && !leave) indent(event.shiftKey);
+    else if (key === "Enter") newline();
+    else if (!paired(key)) {
       // The caret leaves what the list was for.
       if (key.startsWith("Arrow") || key === "Home" || key === "End") close();
       return;
