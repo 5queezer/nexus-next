@@ -89,6 +89,36 @@ pub fn date(at: &Timestamp, tz: Tz) -> String {
     day(at, tz).format("%b %d, %Y").to_string()
 }
 
+/// The parts of the date on the application page's next card: `Mon`, `16`, and `Nov` or, when the
+/// value has a time, `Nov, 13:00`.
+pub fn day_parts(at: &Timestamp, tz: Tz) -> (String, String, String) {
+    let day = day(at, tz);
+    let month = if is_date_only(at) {
+        day.format("%b").to_string()
+    } else {
+        at.to_datetime()
+            .with_timezone(&tz)
+            .format("%b, %H:%M")
+            .to_string()
+    };
+    (
+        day.format("%a").to_string(),
+        day.format("%-d").to_string(),
+        month,
+    )
+}
+
+/// How far a day is from today, in words.
+pub fn days_away(day: NaiveDate, today: NaiveDate) -> String {
+    match (day - today).num_days() {
+        0 => "today".to_owned(),
+        1 => "tomorrow".to_owned(),
+        -1 => "yesterday".to_owned(),
+        days if days > 0 => format!("in {days} days"),
+        days => format!("{} days ago", -days),
+    }
+}
+
 /// A bare date for date-only values, a zoned date-time otherwise.
 pub fn moment(at: &Timestamp, tz: Tz) -> String {
     if is_date_only(at) {
@@ -188,6 +218,23 @@ mod tests {
         ] {
             assert_eq!(date_time(&ts(utc), MADRID), shown);
         }
+    }
+
+    #[test]
+    fn the_next_card_date_has_a_time_only_when_the_value_has_one() {
+        let parts = |utc| day_parts(&ts(utc), MADRID);
+        let own = |a: &str, b: &str, c: &str| (a.to_owned(), b.to_owned(), c.to_owned());
+        assert_eq!(
+            parts("2026-11-16T12:00:00Z"),
+            own("Mon", "16", "Nov, 13:00")
+        );
+        assert_eq!(parts("2026-11-06T00:00:00.000Z"), own("Fri", "6", "Nov"));
+        let today = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+        let away = |d| days_away(NaiveDate::from_ymd_opt(2026, 11, d).unwrap(), today);
+        assert_eq!(
+            [away(11), away(12), away(16), away(10), away(8)],
+            ["today", "tomorrow", "in 5 days", "yesterday", "3 days ago"]
+        );
     }
 
     #[test]

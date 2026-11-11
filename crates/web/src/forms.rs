@@ -410,7 +410,7 @@ pub(crate) async fn submit(
     actions.flash = Some(failure_notice(&failure.1));
     actions.failed = Some(kind);
     actions.typed = form;
-    Ok((failure.0, Html(detail_page(&dash, id, actions).await?)).into_response())
+    Ok((failure.0, Html(detail_page(&dash, id, actions, "").await?)).into_response())
 }
 
 fn value<'a>(actions: &'a Actions, name: &str, saved: &'a str) -> String {
@@ -432,13 +432,29 @@ fn hidden(actions: &Actions, application: &Application, with_nonce: bool) -> imp
     }
 }
 
-/// The notice and the forms. Each is a `<details>` that opens when it is the one that failed.
-pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
+/// The notice and the forms, for the application page to place. Note, event and contact are each a
+/// `<details>` that opens when it is the one that failed. Triage and archive are bare forms: the
+/// page puts them inside its own disclosures, `#triage` and `#archive`.
+pub struct Forms {
+    pub flash: AnyView,
+    pub note: AnyView,
+    pub event: AnyView,
+    pub triage: AnyView,
+    pub contact: AnyView,
+    pub archive: AnyView,
+}
+
+pub fn actions_view(a: &Application, x: &Actions) -> Forms {
     let open = |form: &str| x.failed == Some(form);
     let action = |form: &str| format!("/applications/{}/{form}", a.id);
+    // A failed form may sit further down the page than its notice.
+    let to_form = x.failed.map(|form| {
+        let id = if form == "unarchive" { "archive" } else { form };
+        view! { " " <a href=format!("#{id}")>"Go to the form"</a> }
+    });
     let flash = x.flash.as_ref().map(|flash| {
         view! {
-            <p class=if flash.ok { "banner" } else { "banner warn" } role="status">{flash.text.clone()}</p>
+            <p class=if flash.ok { "banner" } else { "banner warn" } role="status">{flash.text.clone()}{to_form}</p>
         }
     });
     let what = value(x, "what", "");
@@ -460,33 +476,27 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
     };
     let archive = if a.archived_at.is_some() {
         view! {
-            <details open=open("unarchive")>
-                <summary>"Restore to the pipeline"</summary>
-                <form method="post" action=action("unarchive") class="act">
-                    {hidden(x, a, false)}
-                    <button type="submit">"Restore"</button>
-                </form>
-            </details>
+            <form method="post" action=action("unarchive") class="act">
+                {hidden(x, a, false)}
+                <p class="hint">"Restore to the pipeline"</p>
+                <button type="submit">"Restore"</button>
+            </form>
         }
         .into_any()
     } else {
         view! {
-            <details open=open("archive")>
-                <summary>"Archive"</summary>
-                <form method="post" action=action("archive") class="act">
-                    {hidden(x, a, false)}
-                    <p class="hint">"Takes it out of the pipeline and the calendar. You can restore it."</p>
-                    <button type="submit" class="danger">"Archive\u{2026}"</button>
-                </form>
-            </details>
+            <form method="post" action=action("archive") class="act">
+                {hidden(x, a, false)}
+                <p class="hint">"Takes it out of the pipeline and the calendar. You can restore it."</p>
+                <button type="submit" class="danger">"Archive\u{2026}"</button>
+            </form>
         }
         .into_any()
     };
-    view! {
-        <h2 id="actions">"Update"</h2>
-        {flash}
-        <div class="card actions">
-            <details open=open("note")>
+    Forms {
+        flash: flash.into_any(),
+        note: view! {
+            <details id="note" open=open("note")>
                 <summary>"Add a note"</summary>
                 <form method="post" action=action("note") class="act">
                     {hidden(x, a, true)}
@@ -496,7 +506,10 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
                     <button type="submit">"Add note"</button>
                 </form>
             </details>
-            <details open=open("event")>
+        }
+        .into_any(),
+        event: view! {
+            <details id="event" open=open("event")>
                 <summary>"Record what happened"</summary>
                 <form method="post" action=action("event") class="act">
                     {hidden(x, a, true)}
@@ -519,20 +532,23 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
                     <button type="submit">"Record"</button>
                 </form>
             </details>
-            <details open=open("triage")>
-                <summary>"Rating and triage"</summary>
-                <form method="post" action=action("triage") class="act">
-                    {hidden(x, a, false)}
-                    <label>"Rating (1 to 5)" {number("rating", a.rating)}</label>
-                    <label>"Triage priority (1 to 5)" {number("triageQuality", a.triage_quality)}</label>
-                    <label>"Triage reason"
-                        <input type="text" name="triageReason" maxlength="1000"
-                            value=value(x, "triageReason", a.triage_reason.as_deref().unwrap_or_default()) />
-                    </label>
-                    <button type="submit">"Save"</button>
-                </form>
-            </details>
-            <details open=open("contact")>
+        }
+        .into_any(),
+        triage: view! {
+            <form method="post" action=action("triage") class="act">
+                {hidden(x, a, false)}
+                <label>"Rating (1 to 5)" {number("rating", a.rating)}</label>
+                <label>"Triage priority (1 to 5)" {number("triageQuality", a.triage_quality)}</label>
+                <label>"Triage reason"
+                    <input type="text" name="triageReason" maxlength="1000"
+                        value=value(x, "triageReason", a.triage_reason.as_deref().unwrap_or_default()) />
+                </label>
+                <button type="submit">"Save"</button>
+            </form>
+        }
+        .into_any(),
+        contact: view! {
+            <details id="contact" open=open("contact")>
                 <summary>"Add a contact"</summary>
                 <form method="post" action=action("contact") class="act">
                     {hidden(x, a, false)}
@@ -544,7 +560,8 @@ pub fn actions_view(a: &Application, x: &Actions) -> impl IntoView {
                     <button type="submit">"Add contact"</button>
                 </form>
             </details>
-            {archive}
-        </div>
+        }
+        .into_any(),
+        archive,
     }
 }

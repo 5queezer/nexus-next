@@ -547,3 +547,130 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
      up to date, and comes back with an approval, when the panel has none. */
   body:has(#cv-approval .approve-form) #cv-preview-pages { display: none; }
 }
+
+/* Application page */
+.tag.state { align-self: center; padding: 2px 10px; color: var(--ink); font-weight: 600; }
+.tag.state::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--s-inbound);
+}
+.tag.state.applied::before { background: var(--s-applied); }
+.tag.state.interview::before { background: var(--s-interview); }
+.tag.state.offer::before { background: var(--s-offer); }
+.tag.state.rejected::before { background: var(--s-rejected); }
+.app-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.menu { position: relative; }
+.menu > summary, .menu[open] > summary { padding: 7px 14px; border: 0; color: var(--ink); list-style: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 2;
+  min-width: 15rem;
+  padding: 4px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+}
+.menu > div a { display: flex; align-items: center; min-height: 44px; text-decoration: none; }
+.menu > div a + a { border-top: 1px solid var(--line); }
+
+.next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 20px;
+  margin-top: 20px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.next.overdue { border-color: var(--warn); }
+.next time {
+  flex: none;
+  display: grid;
+  min-width: 76px;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: var(--chip);
+  text-align: center;
+}
+.next time span { color: var(--muted); font-size: 12px; }
+.next time span:first-child, .next .away { text-transform: uppercase; letter-spacing: 0.06em; }
+.next time b { font-size: 24px; line-height: 1.15; }
+.next > div { flex: 1 1 11rem; min-width: 0; }
+.next p { margin: 0; overflow-wrap: anywhere; }
+.next .away { color: var(--muted); font-size: 12px; }
+.next .what { font-size: 17px; font-weight: 600; white-space: pre-wrap; }
+.next .what a { color: var(--accent); font-weight: 400; }
+
+.app-grid { display: grid; gap: 0 32px; }
+.app-grid > div { min-width: 0; }
+.app-grid :target { scroll-margin-top: 12px; }
+.app-grid .card.actions > * + * { border-top: 1px solid var(--line); }
+.app-side summary { justify-content: space-between; gap: 12px; }
+.app-side summary .dim { font-size: 13px; font-weight: 400; }
+.app-side h3 { margin-top: 12px; }
+.app-side .links { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.app-side .links a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent); }
+.scores { margin: 12px 0 0; }
+.scores:empty { display: none; }
+.submission + .submission { border-top: 1px solid var(--line); }
+
+.tl-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin: 32px 0 10px; }
+.tl-head h2 { margin: 0; }
+.timeline > li.interview::before { background: var(--s-interview); }
+.timeline > li.stage::before { background: var(--s-applied); }
+.timeline > li.other::before { background: var(--muted); }
+.timeline .line { margin: 4px 0 0; overflow-wrap: anywhere; }
+.fold { display: flex; flex-direction: column-reverse; }
+.fold > details[open] + p { display: none; }
+.fold > details > summary, .timeline .more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: underline;
+}
+.fold > details[open] > summary span:first-child, .fold > details:not([open]) > summary span:last-child { display: none; }
+.older { border-top: 1px solid var(--line); }
+.older > summary { display: flex; align-items: center; min-height: 44px; }
+
+@media (pointer: coarse) {
+  .fold > details > summary, .timeline .more > summary, .tl-head .chip { display: inline-flex; align-items: center; min-height: 44px; }
+}
+@media (min-width: 56rem) {
+  .app-grid { grid-template-columns: minmax(0, 1fr) 20rem; align-items: start; }
+  .app-side dl.facts { grid-template-columns: 7.5rem minmax(0, 1fr); }
+}
+@media (max-width: 40rem) {
+  /* The two header actions stay in reach as a bar at the bottom of the screen. */
+  .app-actions {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+  }
+  .app-actions .button { justify-content: center; }
+  .menu { position: static; }
+  .menu > summary { display: flex; }
+  .menu > div { left: 16px; right: 16px; top: auto; bottom: 100%; }
+  body:has(.app-actions) .foot { padding-bottom: 96px; }
+}

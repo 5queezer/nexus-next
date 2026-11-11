@@ -430,6 +430,103 @@ pub struct Detail<'a> {
     pub submissions: &'a [Submission],
     pub clock: Clock,
     pub actions: &'a Actions,
+    /// The timeline filter from the address: `notes`, `interviews`, or anything else for all.
+    pub show: &'a str,
+}
+
+/// Stored text with its web addresses as links, and the first address. Only `http://` and
+/// `https://` start a link, so a stored `javascript:` URL stays text. Leptos escapes the rest.
+fn linked(text: &str) -> (Vec<AnyView>, Option<String>) {
+    let mut parts = Vec::new();
+    let mut plain = String::new();
+    let mut first = None;
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let lower = piece.to_ascii_lowercase();
+        let start = [lower.find("http://"), lower.find("https://")]
+            .into_iter()
+            .flatten()
+            .min();
+        let url = start.map(|start| {
+            let rest = &piece[start..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || "<>\"".contains(c))
+                .unwrap_or(rest.len());
+            rest[..end].trim_end_matches(|c: char| ".,;:!?)]}'".contains(c))
+        });
+        match (start, url) {
+            (Some(start), Some(url)) if !url.ends_with("://") => {
+                first.get_or_insert_with(|| url.to_owned());
+                plain.push_str(&piece[..start]);
+                parts.push(std::mem::take(&mut plain).into_any());
+                parts.push(
+                    view! { <a href=url.to_owned() rel="noopener noreferrer">{url.to_owned()}</a> }
+                        .into_any(),
+                );
+                plain.push_str(&piece[start + url.len()..]);
+            }
+            _ => plain.push_str(piece),
+        }
+    }
+    parts.push(plain.into_any());
+    (parts, first)
+}
+
+/// Long text as its beginning, with all of it behind "Show all". Both are in the page, so it works
+/// without JavaScript and the browser's search finds the rest.
+fn fold(text: &str, class: &'static str, chars: usize) -> AnyView {
+    const LINES: usize = 4;
+    let end = [
+        text.char_indices().nth(chars).map(|(at, _)| at),
+        text.match_indices('\n').nth(LINES - 1).map(|(at, _)| at),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
+    let Some(end) = end else {
+        return view! { <p class=class>{text.to_owned()}</p> }.into_any();
+    };
+    view! {
+        <div class="fold">
+            <details>
+                <summary><span>"Show all"</span><span>"Show less"</span></summary>
+                <p class=class>{text.to_owned()}</p>
+            </details>
+            <p class=class>{format!("{}\u{2026}", text[..end].trim_end().trim_end_matches('.'))}</p>
+        </div>
+    }
+    .into_any()
+}
+
+/// The next step, large: its day, how far away that is, the next action with its links.
+fn next_card(a: &Application, clock: Clock, overdue: bool) -> Option<impl IntoView + use<>> {
+    let action = a.next_action.as_deref().filter(|action| !action.is_empty());
+    if action.is_none() && a.follow_up_at.is_none() {
+        return None;
+    }
+    let date = a.follow_up_at.as_ref().map(|at| {
+        let (weekday, day, month) = format::day_parts(at, clock.tz);
+        view! {
+            <time datetime=at.to_string()><span>{weekday}</span><b>{day}</b><span>{month}</span></time>
+        }
+    });
+    let away = queue::follow_up_day(a, clock.tz)
+        .map(|day| format!(" \u{b7} {}", format::days_away(day, clock.today)));
+    let (text, link) = linked(action.unwrap_or("Follow up"));
+    Some(view! {
+        <section class=if overdue { "next overdue" } else { "next" } aria-label="Next step">
+            {date}
+            <div>
+                <p class="away">
+                    "Next"{away}
+                    {overdue.then(|| view! { " " <span class="tag warn">"overdue"</span> })}
+                </p>
+                <p class="what">{text}</p>
+            </div>
+            {link.map(|href| view! {
+                <a class="button secondary" href=href rel="noopener noreferrer">"Open link"</a>
+            })}
+        </section>
+    })
 }
 
 pub fn detail(d: Detail<'_>) -> impl IntoView {
@@ -446,27 +543,13 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
     });
     let stage = a.current_stage.as_deref().map(format::humanize);
     let status = format::status_label(&a.status).to_owned();
-    let overview = facts(vec![
-        ("Status", Some(Fact::Text(status))),
+    let overview = vec![
         ("Stage", stage.map(Fact::Text)),
-        ("Rating", count_of(a.rating, " / 5")),
-        (
-            "Triage",
-            a.triage_quality.map(|q| {
-                let reason = a.triage_reason.as_deref().filter(|r| !r.is_empty());
-                Fact::Text(match reason {
-                    Some(reason) => format!("{q} / 5: {reason}"),
-                    None => format!("{q} / 5"),
-                })
-            }),
-        ),
-        ("Next action", text(a.next_action.as_deref())),
         ("Follow-up", follow_up),
         ("Last contact", stamp(&a.last_contact, tz)),
         ("Applied", stamp(&a.applied_at, tz)),
         ("Source", text(a.source.as_deref())),
         ("Incoming source", text(a.incoming_source.as_deref())),
-        ("Resume ID", text(a.resume_id.as_deref())),
         (
             "Auto-rejected",
             a.auto_rejected.then(|| {
@@ -478,7 +561,13 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
                 )
             }),
         ),
-    ]);
+    ];
+    let overview = overview.iter().any(|(_, fact)| fact.is_some()).then(|| {
+        view! {
+            <h2>"Status"</h2>
+            <div class="card">{facts(overview)}</div>
+        }
+    });
     let band = a
         .salary_band_mentioned
         .then(|| "Salary band mentioned in the posting".to_owned());
@@ -530,123 +619,339 @@ pub fn detail(d: Detail<'_>) -> impl IntoView {
             "Event version",
             Some(Fact::Text(a.event_version.to_string())),
         ),
+        ("Resume ID", text(a.resume_id.as_deref())),
     ]);
     let archived = a.archived_at.as_ref().map(|at| {
         view! {
             <p class="banner">{format!("Archived on {}. It stays out of the default pipeline and the calendar.", format::date_time(at, tz))}</p>
         }
     });
-    let prose = |heading: &'static str, body: Option<&str>| {
-        body.filter(|b| !b.is_empty()).map(|body| {
-            view! {
-                <h2>{heading}</h2>
-                <div class="card"><p class="prose">{body.to_owned()}</p></div>
-            }
-        })
-    };
+    let summary = a.notes.as_deref().filter(|b| !b.is_empty()).map(|body| {
+        view! {
+            <h2>"Summary"</h2>
+            <div class="card">{fold(body, "prose", 420)}</div>
+        }
+    });
+    let job_summary = a
+        .job_summary
+        .as_deref()
+        .filter(|b| !b.is_empty())
+        .map(|body| view! { <p class="prose">{body.to_owned()}</p> });
     let description = a
         .job_description
         .as_deref()
         .filter(|d| !d.is_empty())
         .map(|body| {
             view! {
-                <h2>"Job description"</h2>
-                <div class="card">
-                    <details>
-                        <summary>{format!("{} characters", body.chars().count())}</summary>
-                        <div class="scroll"><p class="prose">{body.to_owned()}</p></div>
-                    </details>
-                </div>
+                <details>
+                    <summary>
+                        "Job description"
+                        <span class="dim">{format!("{} characters", body.chars().count())}</span>
+                    </summary>
+                    <div class="scroll"><p class="prose">{body.to_owned()}</p></div>
+                </details>
             }
         });
+    let scores = [("Rating", a.rating), ("Triage", a.triage_quality)]
+        .into_iter()
+        .filter_map(|(label, score)| {
+            score.map(
+                |score| view! { <span class="tag">{format!("{label} {score} / 5")}</span> " " },
+            )
+        })
+        .collect_view();
+    let triage_reason = a
+        .triage_reason
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .map(|reason| view! { <p class="prose">{reason.to_owned()}</p> });
+    let papers = if d.documents.is_empty() && d.submissions.is_empty() {
+        view! { <p class="empty">"No documents or submissions yet."</p> }.into_any()
+    } else {
+        view! {
+            <details>
+                <summary>
+                    "Documents and submissions"
+                    <span class="dim">{format!("{} and {}", d.documents.len(), d.submissions.len())}</span>
+                </summary>
+                <h3>{format!("Documents ({})", d.documents.len())}</h3>
+                {documents(d.documents, tz)}
+                <h3>{format!("Submissions ({})", d.submissions.len())}</h3>
+                {submissions(d.submissions, d.documents, tz)}
+            </details>
+        }
+        .into_any()
+    };
+    let failed = |form: &str| d.actions.failed == Some(form);
+    let restore = a.archived_at.is_some();
+    let forms = forms::actions_view(a, d.actions);
     view! {
         <a class="crumb" href="/">"\u{2190} Pipeline"</a>
         <div class="hero">
             <span class="id">{format!("#{}", a.id)}</span>
             <h1>{a.company.clone()}</h1>
+            <span class=format!("tag state {}", a.status)>{status}</span>
+            {a.rating.map(|rating| view! { <span class="dim">{format!("Rating {rating} / 5")}</span> })}
+            <div class="app-actions">
+                <a class="button" href="#note">"Add a note"</a>
+                <details class="menu">
+                    <summary class="button secondary">"More"</summary>
+                    <div>
+                        <a href="#event">"Record what happened"</a>
+                        <a href="#triage">"Rating and triage"</a>
+                        <a href="#contact">"Add a contact"</a>
+                        <a href="#archive">{if restore { "Restore to the pipeline" } else { "Archive" }}</a>
+                    </div>
+                </details>
+            </div>
         </div>
         <p class="sub">{a.role.clone()}</p>
         {archived}
-        <h2>"Application"</h2>
-        <div class="card">{overview}</div>
-        {prose("Notes", a.notes.as_deref())}
-        {prose("Job summary", a.job_summary.as_deref())}
-        {forms::actions_view(a, d.actions)}
-        <h2>"Role and posting"</h2>
-        <div class="card">{role}</div>
-        {description}
-        <h2>{format!("Timeline ({})", d.events.len())}</h2>
-        {timeline(d.events, d.contacts, tz)}
-        <h2>{format!("Contacts ({})", d.contacts.len())}</h2>
-        {contacts(d.contacts)}
-        <h2>{format!("Documents ({})", d.documents.len())}</h2>
-        {documents(d.documents, tz)}
-        <h2>{format!("Submissions ({})", d.submissions.len())}</h2>
-        {submissions(d.submissions, d.documents, tz)}
-        <h2>"Record"</h2>
-        <div class="card">{record}</div>
+        {next_card(a, d.clock, overdue)}
+        <div class="app-grid">
+            <div>
+                <h2 id="actions">"Update"</h2>
+                {forms.flash}
+                <div class="card actions">{forms.note}{forms.event}</div>
+                {summary}
+                {timeline(a.id, d.events, d.contacts, tz, d.show)}
+            </div>
+            <div class="app-side">
+                <h2>{format!("People ({})", d.contacts.len())}</h2>
+                <div class="card actions">{contacts(d.contacts)}{forms.contact}</div>
+                {overview}
+                <h2>"Details"</h2>
+                <div class="card actions">
+                    <details id="triage" open=failed("triage")>
+                        <summary>
+                            "Triage"
+                            <span class="dim">{a.triage_quality.map(|q| format!("{q} / 5"))}</span>
+                        </summary>
+                        <p class="scores">{scores}</p>
+                        {triage_reason}
+                        {forms.triage}
+                    </details>
+                    <details>
+                        <summary>"Role and posting"</summary>
+                        {job_summary}
+                        {role}
+                    </details>
+                    {description}
+                    {papers}
+                    <details id="archive" open=failed("archive") || failed("unarchive")>
+                        <summary>
+                            {if restore { "Record and restore" } else { "Record and archive" }}
+                            <span class="dim">{format!("Version {}", a.event_version)}</span>
+                        </summary>
+                        {record}
+                        {forms.archive}
+                    </details>
+                </div>
+            </div>
+        </div>
     }
 }
 
 fn none_yet(what: &str) -> impl IntoView {
-    view! { <div class="card"><p class="empty">{format!("No {what}.")}</p></div> }
+    view! { <p class="empty">{format!("No {what}.")}</p> }
 }
 
-fn timeline(events: &[ApplicationEvent], contacts: &[Contact], tz: Tz) -> impl IntoView {
-    if events.is_empty() {
-        return none_yet("events").into_any();
+/// How many timeline entries show before "Show N older entries".
+const NEWEST: usize = 6;
+
+/// The filter an event falls under, which is also the class that colours its dot.
+fn event_kind(event_type: &str) -> &'static str {
+    match event_type {
+        "note_added" => "note",
+        "stage_changed" => "stage",
+        kind if kind.starts_with("interview_") => "interview",
+        _ => "other",
     }
-    let items = events
+}
+
+/// `Stage: A → B` for a pair of metadata values, in one line, and whether the value moved.
+fn change(label: &str, from: Option<String>, to: Option<String>) -> Option<(String, bool)> {
+    let (from, to) = (
+        from.as_deref().map(format::humanize),
+        to.as_deref().map(format::humanize),
+    );
+    match (from, to) {
+        (Some(from), Some(to)) if from != to => {
+            Some((format!("{label}: {from} \u{2192} {to}"), true))
+        }
+        (_, Some(to)) => Some((format!("{label}: {to}"), false)),
+        (Some(from), None) => Some((format!("{label}: was {from}"), false)),
+        (None, None) => None,
+    }
+}
+
+fn timeline_entry(event: &ApplicationEvent, contacts: &[Contact], tz: Tz) -> impl IntoView + use<> {
+    let metadata = event.metadata.as_ref().and_then(|m| m.0.as_object());
+    let value = |key: &str| match metadata?.get(key)? {
+        Value::String(s) if !s.is_empty() => Some(format::metadata_text(s, tz)),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    };
+    let mut stage = change("Stage", value("fromStage"), value("toStage"));
+    let mut status = change("Status", value("fromStatus"), value("toStatus"));
+    let staged = event.r#type == "stage_changed";
+    let title = match event.r#type.as_str() {
+        "note_added" => "Note".to_owned(),
+        "stage_changed" => stage
+            .take()
+            .or_else(|| status.take())
+            .map(|(line, _)| line)
+            .unwrap_or_else(|| format::event_label(&event.r#type)),
+        other => format::event_label(other),
+    };
+    // A stage change shows what moved. On any other event these are a side effect, kept in Details.
+    let (lines, details): (Vec<_>, Vec<_>) = stage
+        .into_iter()
+        .chain(status)
+        .partition(|(_, moved)| staged && *moved);
+    let mut lines: Vec<String> = lines.into_iter().map(|(line, _)| line).collect();
+    let mut details: Vec<String> = details.into_iter().map(|(line, _)| line).collect();
+    let mut shown: Vec<String> = Vec::new();
+    let mut note = None;
+    for (key, label) in VISIBLE_METADATA {
+        let Some(text) = value(key) else { continue };
+        match key {
+            "fromStage" | "toStage" | "fromStatus" | "toStatus" => {}
+            "note" => note = Some(text),
+            "interviewType" | "scheduledAt" | "followUpAt" | "outcome" | "reason" => {
+                shown.push(format!("{label}: {text}"));
+            }
+            _ => details.push(format!("{label}: {text}")),
+        }
+    }
+    if !shown.is_empty() {
+        lines.push(shown.join(" \u{b7} "));
+    }
+    if let Some(contact) = event
+        .contact_id
+        .as_deref()
+        .and_then(|id| contacts.iter().find(|c| c.id.to_string() == id))
+    {
+        details.push(format!("Contact: {}", contact.name));
+    }
+    let by = [event.actor.as_deref(), event.source.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" via ");
+    if !by.is_empty() {
+        details.push(format!("By: {by}"));
+    }
+    let details = (!details.is_empty()).then(|| {
+        view! {
+            <details class="more">
+                <summary>"Details"</summary>
+                <ul>{details.into_iter().map(|d| view! { <li>{d}</li> }).collect_view()}</ul>
+            </details>
+        }
+    });
+    view! {
+        <li class=event_kind(&event.r#type)>
+            <div class="t">
+                <b>{title}</b>
+                <time datetime=event.occurred_at.to_string()>{format::date_time(&event.occurred_at, tz)}</time>
+            </div>
+            {lines.into_iter().map(|line| view! { <p class="line">{line}</p> }).collect_view()}
+            {note.map(|note| fold(&note, "note", 240))}
+            {details}
+        </li>
+    }
+}
+
+fn timeline(
+    id: i64,
+    events: &[ApplicationEvent],
+    contacts: &[Contact],
+    tz: Tz,
+    show: &str,
+) -> impl IntoView {
+    let count = |kind: &str| {
+        events
+            .iter()
+            .filter(|event| event_kind(&event.r#type) == kind)
+            .count()
+    };
+    let filters = [
+        ("all", "All", events.len(), None),
+        ("notes", "Notes", count("note"), Some("note")),
+        (
+            "interviews",
+            "Interviews",
+            count("interview"),
+            Some("interview"),
+        ),
+    ];
+    let current = filters
         .iter()
-        .map(|event| {
-            let metadata = event.metadata.as_ref().and_then(|m| m.0.as_object());
-            let mut details: Vec<String> = Vec::new();
-            let mut note = None;
-            if let Some(metadata) = metadata {
-                for (key, label) in VISIBLE_METADATA {
-                    let text = match metadata.get(key) {
-                        Some(Value::String(s)) if !s.is_empty() => format::metadata_text(s, tz),
-                        Some(Value::Number(n)) => n.to_string(),
-                        Some(Value::Bool(b)) => b.to_string(),
-                        _ => continue,
-                    };
-                    if key == "note" {
-                        note = Some(text);
-                    } else {
-                        details.push(format!("{label}: {text}"));
-                    }
-                }
-            }
-            if let Some(contact) = event
-                .contact_id
-                .as_deref()
-                .and_then(|id| contacts.iter().find(|c| c.id.to_string() == id))
-            {
-                details.push(format!("Contact: {}", contact.name));
-            }
-            let by = [event.actor.as_deref(), event.source.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(" via ");
-            let details = (!details.is_empty()).then(|| {
-                view! { <ul>{details.into_iter().map(|d| view! { <li>{d}</li> }).collect_view()}</ul> }
-            });
+        .find(|(name, ..)| *name == show)
+        .unwrap_or(&filters[0]);
+    let chips = filters
+        .iter()
+        .map(|(name, label, count, _)| {
+            let href = match *name {
+                "all" => format!("/applications/{id}#timeline"),
+                name => format!("/applications/{id}?show={name}#timeline"),
+            };
             view! {
-                <li>
-                    <div class="t">
-                        <b>{format::event_label(&event.r#type)}</b>
-                        <time datetime=event.occurred_at.to_string()>{format::date_time(&event.occurred_at, tz)}</time>
-                    </div>
-                    {(!by.is_empty()).then(|| view! { <span class="dim">{by}</span> })}
-                    {note.map(|note| view! { <p class="note">{note}</p> })}
-                    {details}
-                </li>
+                <a class="chip" href=href aria-current=(*name == current.0).to_string()>
+                    {*label}<small>{*count}</small>
+                </a>
             }
         })
         .collect_view();
-    view! { <div class="card"><ol class="timeline">{items}</ol></div> }.into_any()
+    let mut entries = events
+        .iter()
+        .filter(|event| {
+            current
+                .3
+                .is_none_or(|kind| event_kind(&event.r#type) == kind)
+        })
+        .map(|event| timeline_entry(event, contacts, tz));
+    let newest: Vec<_> = entries.by_ref().take(NEWEST).collect();
+    let older: Vec<_> = entries.collect();
+    let body = if newest.is_empty() {
+        none_yet(match current.0 {
+            "notes" => "notes",
+            "interviews" => "interviews",
+            _ => "events",
+        })
+        .into_any()
+    } else {
+        let older = (!older.is_empty()).then(|| {
+            view! {
+                <details class="older">
+                    <summary>{format!("Show {} older entries", older.len())}</summary>
+                    <ol class="timeline">{older}</ol>
+                </details>
+            }
+        });
+        view! { <ol class="timeline">{newest}</ol>{older} }.into_any()
+    };
+    view! {
+        <div class="tl-head">
+            <h2 id="timeline">"Timeline"</h2>
+            <nav class="chips" aria-label="Timeline filter">{chips}</nav>
+        </div>
+        <div class="card">{body}</div>
+    }
+}
+
+/// An email address as a `mailto:` link, when the stored text looks like one.
+fn mailto(email: &str) -> AnyView {
+    match email.split_once('@') {
+        Some((name, host)) if !name.is_empty() && !host.is_empty() => {
+            let href = format!("mailto:{}@{}", percent_encode(name), percent_encode(host));
+            view! { <a href=href>{email.to_owned()}</a> }.into_any()
+        }
+        _ => email.to_owned().into_any(),
+    }
 }
 
 fn contacts(contacts: &[Contact]) -> impl IntoView {
@@ -665,21 +970,22 @@ fn contacts(contacts: &[Contact]) -> impl IntoView {
                     None => url.to_owned().into_any(),
                 }
             });
-            let detail = [c.role.as_deref(), c.email.as_deref(), c.phone.as_deref()]
+            let detail = [c.role.as_deref(), c.phone.as_deref()]
                 .into_iter()
                 .flatten()
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" \u{b7} ");
+            let email = c.email.as_deref().filter(|e| !e.is_empty()).map(mailto);
             view! {
                 <li>
                     <span><b>{c.name.clone()}</b><small>{detail}</small></span>
-                    <span>{linked_in}</span>
+                    <span class="links">{email}{linked_in}</span>
                 </li>
             }
         })
         .collect_view();
-    view! { <div class="card"><ul class="items">{items}</ul></div> }.into_any()
+    view! { <ul class="items">{items}</ul> }.into_any()
 }
 
 fn documents(documents: &[Document], tz: Tz) -> impl IntoView {
@@ -714,7 +1020,7 @@ fn documents(documents: &[Document], tz: Tz) -> impl IntoView {
             }
         })
         .collect_view();
-    view! { <div class="card"><ul class="items">{items}</ul></div> }.into_any()
+    view! { <ul class="items">{items}</ul> }.into_any()
 }
 
 fn answers(answers: &Value) -> impl IntoView {
@@ -809,7 +1115,7 @@ fn submissions(submissions: &[Submission], documents: &[Document], tz: Tz) -> im
             ]);
             let count = s.answers.0.as_array().map_or(0, Vec::len);
             view! {
-                <div class="card">
+                <div class="submission">
                     {overview}
                     <details open>
                         <summary>{format!("Answers ({count})")}</summary>

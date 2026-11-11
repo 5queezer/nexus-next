@@ -242,6 +242,11 @@ async fn an_empty_note_is_refused_and_everything_typed_is_kept() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("A contact needs a name."));
     assert!(page.contains("kept@example.com"));
+    assert!(
+        page.contains(r##"<a href="#contact">Go to the form</a>"##)
+            && page.contains(r#"<details id="contact" open>"#),
+        "the notice leads to the form, which is open: {page}"
+    );
     assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     assert!(!page.contains("<script>"));
     assert!(event_types(&f.db, id).await.is_empty());
@@ -301,6 +306,10 @@ async fn triage_and_rating_are_saved_and_cleared() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(page.contains("Rating must be a whole number from 1 to 5."));
     assert!(page.contains("kept"));
+    assert!(
+        page.contains(r#"<details id="triage" open>"#),
+        "the failed form's section is open"
+    );
 }
 
 #[tokio::test]

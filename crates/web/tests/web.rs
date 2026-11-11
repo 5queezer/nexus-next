@@ -322,6 +322,9 @@ async fn detail_shows_everything_and_marks_missing_files() {
             && page.contains("Scheduled for: Mar 05, 2026, 15:30 CET")
     );
     assert!(page.contains("Contact: Rita Recruiter"));
+    assert!(page.contains("Documents (2)") && page.contains("Submissions (1)"));
+    assert!(!page.contains("No documents or submissions yet."));
+    assert!(page.contains("Rating 4 / 5") && page.contains("Build things"));
     assert!(page.contains("Why us?") && page.contains("90,000 to 100,000 EUR / year, flexible"));
     assert!(page.contains(&format!("/api/documents/{}/download", present.id)));
     assert!(page.contains("file missing"));
@@ -652,6 +655,151 @@ async fn raw(db: &Db, sql: &str) {
 }
 
 /// Every value here passes the columns' checks, which only look at a timestamp's shape and whether
+#[tokio::test]
+async fn the_next_card_shows_the_follow_up_and_links_only_web_addresses() {
+    let f = fixture().await;
+    let quiet = add_app(&f.db, "Quiet Co", "applied", |_| {}).await;
+    let page = html(&f.app, &format!("/applications/{quiet}")).await;
+    assert!(!page.contains(r#"class="next"#), "no next step, no card");
+
+    let id = add_app(&f.db, "Next Co", "interview", |fields| {
+        fields.follow_up_at = Some(Some(ts("2099-01-12T13:00:00Z")));
+        fields.next_action = Some(Some(
+            "Call at https://meet.example.com/abc-defg. Not javascript:alert(1) or <b>bold</b>"
+                .to_owned(),
+        ));
+    })
+    .await;
+    let page = html(&f.app, &format!("/applications/{id}")).await;
+    assert!(page.contains(r#"class="next""#), "{page}");
+    assert!(page.contains("<b>12</b>") && page.contains("Jan, 14:00"));
+    assert!(page.contains("in ") && page.contains(" days"));
+    let link = r#"href="https://meet.example.com/abc-defg" rel="noopener noreferrer""#;
+    assert_eq!(page.matches(link).count(), 2, "in the text and as a button");
+    assert!(page.contains("Call at <a ") && page.contains("abc-defg</a>. Not javascript:"));
+    assert!(page.contains("Open link"));
+    assert!(!page.contains("href=\"javascript:") && page.contains("javascript:alert(1)"));
+    assert!(page.contains("&lt;b&gt;bold&lt;/b&gt;") && !page.contains("<b>bold"));
+
+    let late = add_app(&f.db, "Late Co", "applied", |fields| {
+        fields.follow_up_at = Some(Some(ts("2020-01-02T00:00:00Z")));
+    })
+    .await;
+    let page = html(&f.app, &format!("/applications/{late}")).await;
+    assert!(page.contains(r#"class="next overdue""#), "{page}");
+    assert!(page.contains("days ago") && page.contains(r#"<span class="tag warn">overdue</span>"#));
+    assert!(!page.contains("Open link"));
+}
+
+#[tokio::test]
+async fn the_timeline_is_compact_filtered_and_complete() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "Busy Co", "interview", |_| {}).await;
+    add_event(
+        &f.db,
+        id,
+        "stage_changed",
+        "2026-03-01T09:00:00Z",
+        json!({"fromStage": "take_home", "toStage": "presentation_confirmed",
+               "fromStatus": "applied", "toStatus": "interview", "channel": "email"}),
+    )
+    .await;
+    for day in 2..=4 {
+        add_event(
+            &f.db,
+            id,
+            "note_added",
+            &format!("2026-03-0{day}T09:00:00Z"),
+            json!({"note": format!("Note number {day}. {}", "Long text. ".repeat(40))}),
+        )
+        .await;
+    }
+    for day in 5..=8 {
+        add_event(
+            &f.db,
+            id,
+            "interview_scheduled",
+            &format!("2026-03-0{day}T09:00:00Z"),
+            json!({"interviewType": format!("round-{day}"), "toStage": "screening"}),
+        )
+        .await;
+    }
+
+    let page = html(&f.app, &format!("/applications/{id}")).await;
+    assert!(
+        page.contains("Stage: Take home \u{2192} Presentation confirmed")
+            && page.contains("Status: Applied \u{2192} Interview"),
+        "{page}"
+    );
+    assert!(!page.contains("Previous stage") && !page.contains("New status"));
+    assert!(
+        page.contains("<li>Stage: Screening</li>"),
+        "on another event it is a detail: {page}"
+    );
+    assert!(page.contains("Channel: email") && page.contains("By: owner via mcp"));
+    assert!(page.contains("Show 2 older entries"));
+    let older = page.split("Show 2 older entries").nth(1).unwrap();
+    assert!(older.contains("Note number 2") && older.contains("Stage: Take home"));
+    assert!(!older.contains("Note number 3"));
+    assert!(page.contains("Show all") && page.contains(&"Long text. ".repeat(40)));
+    for chip in [
+        format!(
+            r#"href="/applications/{id}#timeline" aria-current="true" class="chip">All<small>8</small>"#
+        ),
+        format!(
+            r#"href="/applications/{id}?show=notes#timeline" aria-current="false" class="chip">Notes<small>3</small>"#
+        ),
+        format!(
+            r#"href="/applications/{id}?show=interviews#timeline" aria-current="false" class="chip">Interviews<small>4</small>"#
+        ),
+    ] {
+        assert!(page.contains(&chip), "{chip}\n{page}");
+    }
+
+    let notes = html(&f.app, &format!("/applications/{id}?show=notes")).await;
+    assert!(notes.contains(r#"aria-current="true" class="chip">Notes<small>3</small>"#));
+    assert!(notes.contains("Note number 2") && notes.contains("Note number 4"));
+    assert!(!notes.contains("round-5") && !notes.contains("Stage: Take home"));
+    assert!(!notes.contains("older entries"));
+    let interviews = html(&f.app, &format!("/applications/{id}?show=interviews")).await;
+    assert!(interviews.contains("Interview type: round-8") && !interviews.contains("Note number"));
+    let unknown = html(&f.app, &format!("/applications/{id}?show=x")).await;
+    assert!(unknown.contains(r#"aria-current="true" class="chip">All<small>8</small>"#));
+}
+
+#[tokio::test]
+async fn people_get_mail_links_and_empty_papers_are_one_line() {
+    let f = fixture().await;
+    let id = add_app(&f.db, "People Co", "applied", |_| {}).await;
+    let page = html(&f.app, &format!("/applications/{id}")).await;
+    assert!(page.contains("People (0)") && page.contains("No contacts."));
+    assert_eq!(page.matches("No documents or submissions yet.").count(), 1);
+    assert!(!page.contains("Documents (0)") && !page.contains("Submissions (0)"));
+
+    for (name, email) in [
+        ("Rita Recruiter", Some("rita@example.com")),
+        ("Odd Address", Some("not an address")),
+        ("No Mail", None),
+    ] {
+        let contact = NewContact {
+            name: name.to_owned(),
+            email: email.map(str::to_owned),
+            role: Some("Talent".to_owned()),
+            linked_in: Some("https://www.linkedin.com/in/example".to_owned()),
+            ..Default::default()
+        };
+        contacts::create(&mut f.db.conn().await.unwrap(), id, &contact)
+            .await
+            .unwrap();
+    }
+    let page = html(&f.app, &format!("/applications/{id}")).await;
+    assert!(page.contains("People (3)"));
+    assert!(page.contains(r#"<a href="mailto:rita@example.com">rita@example.com</a>"#));
+    assert_eq!(page.matches("href=\"mailto:").count(), 1);
+    assert!(page.contains("not an address"));
+    assert_eq!(page.matches(">LinkedIn</a>").count(), 3);
+}
+
 /// JSON parses. Agents can't store most of them, but the pages must not depend on that.
 const NOT_A_DATE: &str = "2026-99-99T99:99:99.999Z";
 

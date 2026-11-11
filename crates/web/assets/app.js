@@ -29,6 +29,23 @@ window.addEventListener("pageshow", (event) => {
   }
 });
 
+// A link to a form that is closed opens it, and closes the menu the link sits in. Without this the
+// link still leads to the form's closed line.
+function openTarget(hash) {
+  const target = hash.length > 1 && document.getElementById(hash.slice(1));
+  if (!(target instanceof HTMLDetailsElement)) return;
+  target.open = true;
+  target.querySelector("textarea, select, input:not([type=hidden])")?.focus({ preventScroll: true });
+}
+
+document.addEventListener("click", (event) => {
+  const link = event.target instanceof Element && event.target.closest("a[href^='#']");
+  if (!link) return;
+  openTarget(link.getAttribute("href"));
+  link.closest("details.menu")?.removeAttribute("open");
+});
+openTarget(window.location.hash);
+
 // The assistant lives in a named window, so navigating Nexus does not end its WebRTC session. The
 // link carries only an immutable record ID (or CV variant name), never page text that could become
 // an instruction to the model.
