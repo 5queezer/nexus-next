@@ -1600,6 +1600,51 @@ async fn a_page_no_cv_needs_is_a_compile_error() {
     }
 }
 
+/// A bleed widens the PDF's sheet beyond the page, and a viewer shows all of it: no picture, no stamp
+/// and no page size reaches there. Set before `#show: cv`, it outlives the template's own page setup.
+#[tokio::test]
+async fn a_bleed_is_a_compile_error() {
+    let word = "#for i in range(8) { place(top + left, dx: -80pt + i * 6pt, dy: 100pt, rect(width: 4pt, height: 30pt, fill: black)) }";
+    for (name, source) in [
+        (
+            "shapes in a bleed set before the template",
+            format!(
+                "#import \"/nexus.typ\": *\n#set page(bleed: 100pt)\n#show: cv\n#header()\n{word}\n"
+            ),
+        ),
+        (
+            "shapes in a bleed set after it",
+            format!("{START}#set page(bleed: 100pt)\n{word}\n"),
+        ),
+        (
+            "a bleed past the largest page",
+            "#import \"/nexus.typ\": *\n#set page(bleed: 1500pt)\n#show: cv\n#header()\n"
+                .to_owned(),
+        ),
+        (
+            "on one side",
+            format!("{START}#set page(bleed: (left: 0.01pt))\nWork.\n"),
+        ),
+        (
+            "only the last page",
+            format!("{START}Work.\n#pagebreak()\n#set page(bleed: 3mm)\nMore.\n"),
+        ),
+    ] {
+        match render(&source, &facts_en()).await {
+            Err(RenderError::Diagnostics(errors)) => assert!(
+                errors.iter().any(|e| e.message.contains("has a bleed")),
+                "{name}: {errors:?}"
+            ),
+            other => panic!(
+                "{name}: wanted a compile error, got {:?}",
+                other.map(|r| r.text.lines)
+            ),
+        }
+    }
+    let none = format!("{START}#set page(bleed: 0pt)\nWork.\n");
+    assert!(render(&none, &facts_en()).await.is_ok());
+}
+
 /// What remains is stamped on every page, wherever you look. Judged by pixels against the same page
 /// unstamped, and each quarter must show a real part of the stamp, not a stray corner of it.
 #[tokio::test]
