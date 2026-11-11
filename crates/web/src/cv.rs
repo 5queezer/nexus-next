@@ -1062,6 +1062,49 @@ fn review_items_view(review: &Review) -> impl IntoView + use<> {
     }
 }
 
+/// How the draft fills its pages, and where a line or a page breaks badly. Each note marks its line in
+/// the picture as a word to check does. Advice: nothing here stands between the owner and the button.
+fn layout_view(review: &Review) -> impl IntoView + use<> {
+    let layout = &review.layout;
+    let notes: Vec<_> = layout
+        .notes
+        .iter()
+        .map(|note| {
+            let boxes = note.at.and_then(|(line, first, count)| {
+                let place = review.places.get(line)?;
+                let words = place.words.get(first..first + count)?;
+                let left = words.iter().map(|b| b[0]).fold(1.0, f32::min);
+                let top = words.iter().map(|b| b[1]).fold(1.0, f32::min);
+                let width = words.iter().map(|b| b[0] + b[2]).fold(0.0, f32::max) - left;
+                let height = words.iter().map(|b| b[1] + b[3]).fold(0.0, f32::max) - top;
+                Some(format!("{}:{left:.4},{top:.4},{width:.4},{height:.4}", place.page + 1))
+            });
+            view! {
+                <li>
+                    <small class="context">{note.message.clone()}</small>
+                    <span class="chips"><mark class="layout" data-boxes=boxes>{note.line.clone()}</mark></span>
+                </li>
+            }
+        })
+        .collect();
+    (layout.pages > 0).then(|| {
+        view! {
+            <h3>"Layout"</h3>
+            <p class="hint" id="cv-layout-fill">
+                {format!(
+                    "{} {}, the last {:.0}% full with room for about {} more {}.",
+                    layout.pages,
+                    plural(layout.pages as usize, "page"),
+                    100.0 * layout.last_page_fill,
+                    layout.room_lines,
+                    plural(layout.room_lines as usize, "line"),
+                )}
+            </p>
+            <ul class="review-items" id="cv-layout">{notes}</ul>
+        }
+    })
+}
+
 /// The owner's reading of what they are about to approve: above the editor, since it comes first.
 fn approval_view(
     variant: &str,
@@ -1160,6 +1203,7 @@ fn approval_view(
                         {legend_view(&review.items)}
                         {review_items_view(review)}
                     })}
+                    {layout_view(review)}
                     <span id="cv-checks-end"></span>
                 </div>
                 <div class="approval-foot">

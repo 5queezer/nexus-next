@@ -2261,3 +2261,27 @@ async fn the_editor_has_the_template_select_with_its_fallback_button() {
         assert!(page.contains(part), "{part}\n{page}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_lists_its_layout_notes_and_each_marks_its_line() {
+    let f = locked().await;
+    let source = approved_start(&f).await;
+    let stray = format!("{source}\n#pagebreak()\nBuilt the routing service.\n");
+    // Without the mark of its base, a save is a draft.
+    let fields = [
+        ("csrf", TOKEN),
+        ("expected", "1"),
+        ("source", stray.as_str()),
+    ];
+    let (status, _, _) = post(&f.app, &format!("{VARIANT}/save"), &fields).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, page) = get(&f.app, "/cv/variants/default?view=review").await;
+    let layout = page
+        .split("id=\"cv-layout-fill\"")
+        .nth(1)
+        .expect("the layout list");
+    assert!(layout.contains("2 pages, the last"), "{layout}");
+    assert!(layout.contains("Page 2 holds only 1 line"), "{layout}");
+    assert!(layout.contains("data-boxes=\"2:"), "{layout}");
+    assert!(!layout.contains("breaks across pages"), "{layout}");
+}

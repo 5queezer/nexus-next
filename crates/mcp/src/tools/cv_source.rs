@@ -16,9 +16,9 @@ use nexus_core::repo::cv_facts::{self, FactsState};
 use nexus_core::repo::cv_revisions::{self as repo, NewRevision, Revision, Variant};
 use nexus_core::repo::documents::{self as documents_repo, NewDocument};
 use nexus_tailor::{
-    CvContent, CvEmployment, CvProject, CvSkills, Facts, MAX_PAGES, RenderError, RenderRequest,
-    Rendered, Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source, review_text,
-    source_from_profile,
+    CvContent, CvEmployment, CvProject, CvSkills, Facts, Layout, MAX_PAGES, RenderError,
+    RenderRequest, Rendered, Report, ReviewItem, TEMPLATE_HELP, Violation, check, default_source,
+    review_text, source_from_profile,
 };
 use rmcp::model::{CallToolResult, ContentBlock, ResourceContents};
 use serde_json::{Value, json};
@@ -137,6 +137,23 @@ pub(super) async fn is_approved(
     Ok(state.is_locked()
         && approvals::is_approved(conn, variant_id, source_sha256, &facts_sha256(&state.facts))
             .await?)
+}
+
+/// The layout notes as a reply carries them: how the pages are filled, and the first 20 things to look
+/// at. Advice for the next edit, which no state depends on.
+fn layout_json(layout: &Layout) -> Value {
+    let notes: Vec<Value> = layout
+        .notes
+        .iter()
+        .take(20)
+        .map(|note| json!({"kind": note.kind, "page": note.page, "line": note.line, "message": note.message}))
+        .collect();
+    json!({
+        "pages": layout.pages,
+        "lastPageFill": layout.last_page_fill,
+        "roomLines": layout.room_lines,
+        "notes": notes,
+    })
 }
 
 /// `state` and what comes with it, for a reply about a revision.
@@ -753,6 +770,7 @@ fn written(
         ),
     });
     add_standing(&mut out, name, approved, items);
+    out["layout"] = layout_json(&rendered.text.layout);
     if !rendered.warnings.is_empty() {
         out["diagnostics"] = json!(rendered.warnings);
     }
@@ -1043,6 +1061,7 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
         approved,
         &report.review_items,
     );
+    summary["layout"] = layout_json(&rendered.text.layout);
     if !rendered.warnings.is_empty() {
         summary["diagnostics"] = json!(rendered.warnings);
     }
@@ -1100,7 +1119,11 @@ pub(crate) async fn draw_unsaved(ctx: &Ctx, name: &str, source: &str) -> ToolRes
     if !report.violations.is_empty() {
         return Ok(violation_error(&report.violations));
     }
-    let summary = json!({"pageCount": rendered.page_count, "factsVersion": state.version});
+    let summary = json!({
+        "pageCount": rendered.page_count,
+        "factsVersion": state.version,
+        "layout": layout_json(&rendered.text.layout),
+    });
     let mut result = json_result(summary, false);
     for preview in &rendered.previews {
         result
@@ -1156,6 +1179,7 @@ pub(crate) async fn review(
         rendered_text: String::new(),
         previews: Vec::new(),
         places: Vec::new(),
+        layout: Layout::default(),
         baseline,
         baseline_revision,
         baseline_is_own,
@@ -1203,6 +1227,7 @@ pub(crate) async fn review(
     review.items = report.review_items;
     review.marked = rendered.text.marked;
     review.places = rendered.text.places;
+    review.layout = rendered.text.layout;
     Ok(Ok(review))
 }
 

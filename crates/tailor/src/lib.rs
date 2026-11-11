@@ -7,6 +7,7 @@ mod check;
 mod compile;
 mod extract;
 mod ink;
+mod layout;
 mod template;
 mod worker;
 
@@ -170,6 +171,50 @@ pub struct RenderedText {
     /// No check reads these and no approval stores them. Empty for a document of too many words.
     #[serde(default)]
     pub places: Vec<LinePlace>,
+    /// How the pages are filled, and where a line or a page breaks badly. Advice like `places`: no
+    /// check reads it and no approval stores it.
+    #[serde(default)]
+    pub layout: Layout,
+}
+
+/// See [`RenderedText::layout`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Layout {
+    pub pages: u32,
+    /// How much of the last page's text height is used, from 0 to 1.
+    pub last_page_fill: f32,
+    pub last_page_lines: u32,
+    /// About how many more lines the last page takes.
+    pub room_lines: u32,
+    pub notes: Vec<LayoutNote>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LayoutKind {
+    /// A wrapped paragraph, bullet or contact line whose last line holds one word or next to nothing.
+    Stub,
+    /// A section heading at the bottom of a page, with its section on the next.
+    HeadingAlone,
+    /// An employment, education or project entry a page break cuts in two.
+    EntrySplit,
+    /// A last page that is nearly empty.
+    ThinLastPage,
+}
+
+/// One thing to look at, worded so that an agent can act on it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutNote {
+    pub kind: LayoutKind,
+    /// From 1.
+    pub page: u32,
+    /// The line it is about, as it reads.
+    pub line: String,
+    /// That line among [`RenderedText::places`], with its first word there and how many.
+    pub at: Option<(usize, usize, usize)>,
+    pub message: String,
 }
 
 /// Where a line's words stand on its page.

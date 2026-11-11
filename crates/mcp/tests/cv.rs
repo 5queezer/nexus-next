@@ -3377,3 +3377,39 @@ async fn a_review_says_when_its_baseline_is_a_locks() {
         review.source_diff
     );
 }
+
+/// Advice for the agent's next edit: how the pages are filled and what breaks badly, by line and page.
+#[tokio::test]
+async fn a_patch_and_a_render_say_how_the_pages_are_filled() {
+    let server = locked_server().await;
+    let patched = patch(
+        &server,
+        0,
+        "#header()",
+        "#header()\n#pagebreak()\nBackend engineer.",
+    )
+    .await
+    .ok();
+    for reply in [
+        patched,
+        render(&server, json!({"previewPages": 0}))
+            .await
+            .text_json(),
+    ] {
+        let layout = &reply["layout"];
+        assert_eq!(layout["pages"], 2, "{reply}");
+        assert!(layout["lastPageFill"].as_f64().unwrap() > 0.1, "{reply}");
+        assert!(layout["roomLines"].as_u64().is_some(), "{reply}");
+        for note in layout["notes"].as_array().unwrap() {
+            assert!(
+                note["message"].as_str().unwrap().contains("page"),
+                "{reply}"
+            );
+            assert!(
+                note["page"].as_u64().is_some() && note["line"].is_string(),
+                "{reply}"
+            );
+            assert!(note.get("at").is_none(), "{reply}");
+        }
+    }
+}

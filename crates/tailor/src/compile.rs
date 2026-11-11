@@ -315,7 +315,8 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
         return Err(RenderError::TooManyPages);
     }
     refuse_odd_pages(&world, &document)?;
-    let text = crate::extract::rendered_text(&document)?;
+    let mut text = crate::extract::rendered_text(&document)?;
+    text.layout = crate::layout::layout(&document, &text);
     let document = if req.stamp {
         stamped(&document)?
     } else {

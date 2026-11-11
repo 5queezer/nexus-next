@@ -109,6 +109,10 @@
 // Marks what a side column takes.
 #let _side = metadata("nexus-side")
 
+// Mark where an entry starts and ends, for the layout notes to tell when a page break cuts one.
+#let _entry = metadata("nexus-entry")
+#let _entry-end = metadata("nexus-entry-end")
+
 // The sections with something marked for the side column, and the rest, each in the order written.
 // A `#show` or `#set` rule in the source wraps all that follows it, which stays whole in the main column.
 #let _split(body) = {
@@ -166,7 +170,11 @@
   }
 }
 
-#let _contact(t, fill) = {
+// The width of the text on a page.
+#let _room(t) = 21cm - 2 * t.margin.at("x", default: 0cm) - t.margin.at("left", default: 0cm) - t.margin.at("right", default: 0cm)
+
+// `width` is the room the details have.
+#let _contact(t, fill, width) = {
   let c = facts.contact
   let parts = ()
   if c.email != "" { parts.push(link("mailto:" + c.email, c.email)) }
@@ -174,11 +182,21 @@
   if c.location != "" { parts.push(c.location) }
   if c.linkedin != "" { parts.push(link(_url(c.linkedin), c.linkedin)) }
   if c.github != "" { parts.push(link(_url(c.github), c.github)) }
-  text(size: t.small, fill: fill, parts.map(box).join(t.sep))
+  // Details that need two lines are shared out evenly, so that none stands alone on the second.
+  let line(parts) = text(size: t.small, fill: fill, parts.map(box).join(t.sep))
+  let widths = range(1, parts.len()).map(n => (n, calc.max(measure(line(parts.slice(0, n))).width, measure(line(parts.slice(n))).width)))
+  let even = widths.filter(w => w.at(1) <= width).sorted(key: w => w.at(1)).at(0, default: none)
+  if t.sep == linebreak() or even == none or measure(line(parts)).width <= width {
+    line(parts)
+  } else {
+    line(parts.slice(0, even.at(0)))
+    linebreak()
+    line(parts.slice(even.at(0)))
+  }
 }
 
 // One line of contact details: email, phone, location, LinkedIn, GitHub.
-#let contact() = context _contact(_theme.get(), _theme.get().muted)
+#let contact() = context _contact(_theme.get(), _theme.get().muted, _room(_theme.get()))
 
 // The name and contact line at the top of a CV.
 #let header() = _side + context {
@@ -189,7 +207,7 @@
     block(width: 100%, below: 1.6em, fill: t.accent, outset: (x: t.margin.x, top: t.margin.top, bottom: 1em))[
       #name
       #v(-0.3em)
-      #_contact(t, t.detail)
+      #_contact(t, t.detail, _room(t))
     ]
   } else if t.header == "line" {
     grid(
@@ -197,13 +215,13 @@
       column-gutter: 1em,
       align: (bottom + left, bottom + right),
       name,
-      _contact(t, t.detail),
+      _contact(t, t.detail, _room(t) - measure(name).width - 1em.to-absolute()),
     )
   } else {
     block(below: 0.9em)[
       #name
       #v(-0.45em)
-      #_contact(t, t.detail)
+      #_contact(t, t.detail, _room(t))
       #if t.header == "bar" { v(0.15em); line(length: 2.4cm, stroke: 2.5pt + t.accent) }
     ]
   }
@@ -225,7 +243,7 @@
 #let employment(id, ..body) = {
   let e = _find(facts.employment, "id", id, "employment")
   let bullets = body.pos().at(0, default: none)
-  context {
+  _entry + context {
     let t = _theme.get()
     if bullets == none {
       let place = if e.location != "" { [ · #e.location] }
@@ -238,14 +256,14 @@
         #bullets
       ]
     }
-  }
+  } + _entry-end
 }
 
 // One qualification, by id.
 #let education(id) = {
   let e = _find(facts.education, "id", id, "education")
   let place = if e.location != "" { [ · #e.location] }
-  context {
+  _entry + context {
     let t = _theme.get()
     block(above: 0.7em, below: 0.7em)[
       #_dated(t, [#strong(e.institution)#place], e.date)
@@ -253,7 +271,7 @@
       #e.qualification
       #if e.details != "" { linebreak(); text(size: t.small, fill: t.muted, e.details) }
     ]
-  }
+  } + _entry-end
 }
 
 // All languages with their levels.
@@ -266,8 +284,8 @@
 #let skills(category, items) = _side + block(above: 0.5em, below: 0.5em)[#strong(category): #items]
 
 // A side project: `#project("Name", stack: "Rust", url: "example.org")[What it does.]`
-#let project(name, stack: "", url: "", description) = context block(above: 0.7em, below: 0.7em)[
+#let project(name, stack: "", url: "", description) = _entry + context block(above: 0.7em, below: 0.7em)[
   #strong(if url != "" { link(_url(url), name) } else { name })#if stack != "" [ · #text(fill: _theme.get().muted, stack)]
   #linebreak()
   #description
-]
+] + _entry-end

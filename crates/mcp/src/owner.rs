@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use nexus_tailor::{LinePlace, MAX_PAGES, ReviewItem};
+use nexus_tailor::{Layout, LinePlace, MAX_PAGES, ReviewItem};
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -33,6 +33,8 @@ pub struct Review {
     /// Where the words of each line of `rendered_text` stand in `previews`, from the same compile.
     /// Shorter than the text, which goes on with what the PDF says beyond its pages.
     pub places: Vec<LinePlace>,
+    /// How this draft fills its pages, from the same compile. Advice, and no part of what is approved.
+    pub layout: Layout,
     /// The approved text this draft is read against, or none if no approved text stands for it.
     pub baseline: Option<String>,
     pub baseline_revision: Option<i64>,
