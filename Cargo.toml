@@ -64,8 +64,8 @@ typst-layout = "=0.15.1"
 typst-pdf = "=0.15.1"
 typst-render = "=0.15.1"
 unicode-normalization = "0.1.26"
-rustls = { version = "=0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "=1.0.7"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "=1.0.12"
 rustix = { version = "1.1.6", default-features = false, features = ["std", "param"] }
 
 [profile.release]
