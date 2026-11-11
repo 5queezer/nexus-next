@@ -789,12 +789,17 @@ async fn render_variant(
             </div>
         </div>
     };
-    let scripts: &[&str] = if voice_config.is_some() {
-        &["cv.js", "voice.js"]
-    } else {
-        &["cv.js"]
-    };
-    let html = views::page_with_scripts(variant, Nav::Cv, counts, body, scripts);
+    // The editor's script comes first: it moves the textarea, which would drop the selection `cv.js`
+    // makes for `find`.
+    let scripts: Vec<&str> = [
+        (mode == Mode::Edit).then_some("editor.js"),
+        Some("cv.js"),
+        voice_config.is_some().then_some("voice.js"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let html = views::page_with_scripts(variant, Nav::Cv, counts, body, &scripts);
     let mut response = Html(html).into_response();
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(&csp(voice_config)) {

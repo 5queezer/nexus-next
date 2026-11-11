@@ -2433,3 +2433,16 @@ async fn a_rule_and_its_words_name_each_other_and_each_line_leads_to_the_source(
     assert!(page.contains("id=\"cv-find-miss\""), "{page}");
     assert!(page.contains("href=\"/cv/facts\""), "{page}");
 }
+
+/// The editor's script moves the textarea, so it runs before the script that selects a word in it,
+/// and only the view with the textarea loads it.
+#[tokio::test]
+async fn the_editor_script_comes_with_the_edit_view_and_before_the_page_script() {
+    let f = locked().await;
+    let (_, _, page) = get(&f.app, EDIT).await;
+    let editor = page.find("/assets/editor.js").expect("the editor's script");
+    assert!(editor < page.find("/assets/cv.js").unwrap(), "{page}");
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
+    assert!(!page.contains("/assets/editor.js"), "{page}");
+    assert!(page.contains("/assets/cv.js"), "{page}");
+}
