@@ -27,8 +27,8 @@ use nexus_core::repo::{applications, cv_approvals};
 use nexus_core::{Db, Error, Timestamp};
 use nexus_mcp::{CallToolResult, McpState, Review, owner};
 use nexus_tailor::{
-    DiffLine, Language, Layout, LayoutKind, LineChange, Metric, ReviewItem, Rule, TEMPLATES,
-    pages_of, review_diff, template_of, with_density, with_pages, with_template,
+    DiffLine, Facts, HELPERS, Language, Layout, LayoutKind, LineChange, Metric, ReviewItem, Rule,
+    TEMPLATES, pages_of, review_diff, template_of, with_density, with_pages, with_template,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -738,11 +738,15 @@ async fn render_variant(
     };
     let panel = match mode {
         Mode::Review => approval_view(variant, token, &review).into_any(),
-        Mode::Edit => view! {
-            {editor_view(variant, token, &text, expected, saves_approved, &outcome)}
-            {voice_view(variant, voice_config, token)}
+        Mode::Edit => {
+            let mut conn = cv.db.conn().await?;
+            let complete = completions(&cv_facts::get(&mut conn).await?.facts);
+            view! {
+                {editor_view(variant, token, &text, expected, saves_approved, &outcome, complete)}
+                {voice_view(variant, voice_config, token)}
+            }
+            .into_any()
         }
-        .into_any(),
         Mode::History => {
             revisions_view(variant, token, head, page, &revisions, &items, cv.tz).into_any()
         }
@@ -1500,6 +1504,50 @@ fn voice_panel(
     .into_any()
 }
 
+/// What `editor.js` completes with, as JSON: the helpers of `/nexus.typ`, the templates, and each id
+/// in the facts with a line that says whose it is. It goes into an attribute, which Leptos escapes,
+/// so no value in the facts can end it.
+fn completions(facts: &Facts) -> String {
+    let said = |parts: &[&str]| {
+        let parts: Vec<_> = parts
+            .iter()
+            .filter(|part| !part.is_empty())
+            .copied()
+            .collect();
+        parts.join(" \u{b7} ")
+    };
+    let helpers: Vec<_> = HELPERS
+        .iter()
+        .map(|(name, snippet, about)| json!({"name": name, "snippet": snippet, "about": about}))
+        .collect();
+    let employment: Vec<_> = facts
+        .employment
+        .iter()
+        .map(|job| json!({"id": job.id, "label": said(&[&job.company, &job.title, &job.date])}))
+        .collect();
+    let education: Vec<_> = facts
+        .education
+        .iter()
+        .map(|entry| {
+            let label = said(&[&entry.institution, &entry.qualification, &entry.date]);
+            json!({"id": entry.id, "label": label})
+        })
+        .collect();
+    let metric: Vec<_> = facts
+        .metrics
+        .iter()
+        .map(|metric| json!({"id": metric.key, "label": metric.text}))
+        .collect();
+    json!({
+        "helpers": helpers,
+        "templates": TEMPLATES,
+        "employment": employment,
+        "education": education,
+        "metric": metric,
+    })
+    .to_string()
+}
+
 /// The form's fragment brings a refused save back to its problems.
 fn editor_view(
     variant: &str,
@@ -1508,9 +1556,10 @@ fn editor_view(
     expected: i64,
     saves_approved: bool,
     outcome: &Outcome,
+    complete: String,
 ) -> impl IntoView + use<> {
     view! {
-        <section id="cv-editor">
+        <section id="cv-editor" data-complete=complete>
             <h2>"Source"</h2>
             {outcome.typed_source.is_some().then(|| flash_view(outcome.flash.as_ref()))}
             {(!outcome.violations.is_empty()).then(|| violations_view(&outcome.violations))}

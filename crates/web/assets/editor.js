@@ -1,5 +1,6 @@
-// The source editor on a variant page: colours and line numbers on top of the plain textarea, which
-// stays the form's field and the only holder of the text. Without this file the textarea works as it is.
+// The source editor on a variant page: colours, line numbers and completion on top of the plain
+// textarea, which stays the form's field and the only holder of the text. Without this file the
+// textarea works as it is.
 (() => {
   const editor = document.getElementById("cv-source");
   if (!editor) return;
@@ -256,7 +257,10 @@
   const layer = document.createElement("pre");
   layer.className = "cv-layer";
   layer.setAttribute("aria-hidden", "true");
-  editor.before(box);
+  // The label keeps only its words, so that nothing drawn around the textarea is read out as its name.
+  const label = editor.closest("label");
+  label.htmlFor = editor.id;
+  label.after(box);
   pane.append(layer, editor);
   box.append(gutter, pane);
 
@@ -319,8 +323,243 @@
     editor.scrollTop = Math.max(0, (line - 1) * height - editor.clientHeight / 2);
   });
 
-  editor.addEventListener("input", paint);
-  editor.addEventListener("scroll", follow);
+  // Every change this file makes goes through the browser's own editing, the only way that keeps its
+  // undo history: `setRangeText` and `value` both drop it. The selection then goes to `start`.
+  let quiet = false;
+  function edit(from, to, text, start, end = start) {
+    quiet = true;
+    editor.setSelectionRange(from, to);
+    if (!document.execCommand(text ? "insertText" : "delete", false, text)) {
+      editor.setRangeText(text);
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    quiet = false;
+    editor.setSelectionRange(start, end);
+  }
+
+  const known = JSON.parse(document.getElementById("cv-editor").dataset.complete);
+  // What can follow a `#`: the helpers of /nexus.typ, which the server lists, and Typst's own words.
+  const helpers = [
+    ...known.helpers,
+    { snippet: "let ", about: "Name a value or a function" },
+    { snippet: "set ", about: "Set a default, such as #set text(size: 10pt)" },
+    { snippet: 'import "/nexus.typ": *', about: "The helpers, at the top of a source" },
+  ].map(({ name = "", snippet, about }) => ({
+    name,
+    label: `#${snippet.split("(")[0].trim()}`,
+    detail: about,
+    text: snippet.replace("|", ""),
+    caret: snippet.includes("|") ? snippet.indexOf("|") : snippet.length,
+  }));
+  const quoted = (words) => words.map((word) => `"${word}"`);
+  // The named arguments of a call, and the values of those that have only a few.
+  const ARGS = {
+    "cv.with": {
+      lang: quoted(["en", "de"]),
+      template: quoted(known.templates),
+      pages: ["1", "2"],
+      density: ["-2", "-1", "0", "1", "2"],
+    },
+    "#project": { stack: null, url: null },
+  };
+
+  // Whether a `#` at `at` starts code, which it doesn't in a string, a comment, raw text or math.
+  function startsCode(text, at) {
+    let inside = false;
+    tokenize(text.slice(0, at + 1), (kind, from, to) => {
+      if (from < at && to > at) inside = true;
+    });
+    return !inside;
+  }
+
+  // The `(` the caret stands in, looking back over closed pairs, or -1.
+  function opener(text, at) {
+    let depth = 0;
+    for (let open = at - 1; open >= 0 && at - open < 2000; open -= 1) {
+      if (text[open] === ")") depth += 1;
+      else if (text[open] === "(" && depth-- === 0) return open;
+    }
+    return -1;
+  }
+
+  // What can be written at the caret: the choices, and the stretch of text one of them replaces.
+  // Argument names come only once a letter is typed, or when `asked`.
+  function completions(asked) {
+    const text = editor.value;
+    const at = editor.selectionStart;
+    if (at !== editor.selectionEnd) return null;
+    const line = text.slice(text.lastIndexOf("\n", at - 1) + 1, at);
+    let found;
+    if ((found = /#(employment|education|metric)\("([^"\n]*)$/.exec(line))) {
+      const [, kind, typed] = found;
+      const from = at - typed.length;
+      // The whole id goes, up to the quote that closes it.
+      const rest = /^[^"\n]*(?=")/.exec(text.slice(at));
+      const to = at + (rest ? rest[0].length : 0);
+      const others = text.slice(0, from) + text.slice(to);
+      const used = new Set([...others.matchAll(new RegExp(`#${kind}\\("([^"\n]*)"`, "g"))].map((call) => call[1]));
+      const items = known[kind]
+        .filter(({ id, label }) => id.startsWith(typed) || label.toLowerCase().includes(typed.toLowerCase()))
+        .map(({ id, label }) => ({
+          label: id,
+          detail: used.has(id) ? `${label} \u00b7 already used` : label,
+          used: used.has(id),
+          text: id,
+        }));
+      // The caret then goes past what closes the call.
+      return { from, to, items, skip: text.startsWith('")', to) ? 2 : 0 };
+    }
+    if ((found = /#([\p{L}_-]*)$/u.exec(line)) && line[found.index - 1] !== "\\" && startsCode(text, at - found[0].length)) {
+      const typed = found[1];
+      const items = helpers.filter((helper) => helper.label.startsWith(`#${typed}`) || helper.name.startsWith(typed));
+      return { from: at - typed.length, to: at, items };
+    }
+    const open = opener(text, at);
+    const call = /(cv\.with|#project)$/.exec(text.slice(Math.max(0, open - 20), Math.max(0, open)));
+    const args = call && ARGS[call[1]];
+    if (!args) return null;
+    const said = text.slice(open + 1, at);
+    const last = said.slice(said.lastIndexOf(",") + 1);
+    if ((found = /^\s*([a-z]+):\s*("?)([\w-]*)$/.exec(last)) && args[found[1]]) {
+      const [, name, quote, typed] = found;
+      // A value half typed goes whole, with the quote that closes it.
+      const rest = (quote ? /^[\w-]*"?/ : /^[\w-]*/).exec(text.slice(at))[0];
+      const items = args[name]
+        .filter((value) => value.replaceAll('"', "").startsWith(typed))
+        .map((value) => ({ label: value, detail: "", text: value }));
+      return { from: at - quote.length - typed.length, to: at + rest.length, items };
+    }
+    // Inside a string there is no name to write.
+    if (said.split('"').length % 2 === 0) return null;
+    found = /^\s*([a-z]*)$/.exec(last);
+    if (!found || !(found[1] || asked)) return null;
+    const whole = said + text.slice(at).split(")")[0];
+    const items = Object.keys(args)
+      .filter((name) => name.startsWith(found[1]) && !new RegExp(`\\b${name}\\s*:`).test(whole))
+      .map((name) => ({
+        label: name,
+        detail: args[name] ? args[name].join(", ").replaceAll('"', "") : "",
+        text: args[name] ? `${name}: ` : `${name}: ""`,
+        caret: args[name] ? undefined : name.length + 3,
+      }));
+    return { from: at - found[1].length, to: at, items };
+  }
+
+  const list = document.createElement("ul");
+  list.id = "cv-complete";
+  list.className = "cv-complete";
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", "Completions");
+  list.hidden = true;
+  box.append(list);
+  editor.setAttribute("aria-controls", list.id);
+  const measure = document.createElement("canvas").getContext("2d");
+  let offered = null;
+  let chosen = 0;
+
+  function choose(index) {
+    chosen = (index + offered.items.length) % offered.items.length;
+    [...list.children].forEach((row, at) => row.setAttribute("aria-selected", String(at === chosen)));
+    const row = list.children[chosen];
+    list.scrollTop = Math.min(row.offsetTop, Math.max(list.scrollTop, row.offsetTop + row.offsetHeight - list.clientHeight));
+    editor.setAttribute("aria-activedescendant", row.id);
+  }
+
+  // Under the start of what a choice replaces, or over it where the editor ends too soon for the list.
+  function place() {
+    const style = getComputedStyle(editor);
+    const before = editor.value.slice(0, offered.from).split("\n");
+    measure.font = `${style.fontSize} ${style.fontFamily}`;
+    const left = pane.offsetLeft + parseFloat(style.paddingLeft) + measure.measureText(before.at(-1).replaceAll("\t", "  ")).width - editor.scrollLeft;
+    const line = parseFloat(style.lineHeight);
+    const top = parseFloat(style.paddingTop) + before.length * line - editor.scrollTop;
+    const over = top - line - list.offsetHeight;
+    list.style.left = `${Math.max(0, Math.min(left, box.clientWidth - list.offsetWidth))}px`;
+    list.style.top = `${top + list.offsetHeight > box.clientHeight && over >= 0 ? over : top}px`;
+  }
+
+  function close() {
+    offered = null;
+    list.hidden = true;
+    editor.removeAttribute("aria-activedescendant");
+  }
+
+  function offer(found) {
+    offered = found;
+    list.replaceChildren(
+      ...found.items.map((item, index) => {
+        const row = document.createElement("li");
+        row.id = `cv-complete-${index}`;
+        row.setAttribute("role", "option");
+        if (item.used) row.className = "used";
+        row.append(
+          Object.assign(document.createElement("b"), { textContent: item.label }),
+          Object.assign(document.createElement("small"), { textContent: item.detail }),
+        );
+        return row;
+      }),
+    );
+    list.hidden = false;
+    place();
+    choose(0);
+  }
+
+  // A single choice that is already written is no choice.
+  function suggest(asked) {
+    const found = completions(asked);
+    const written = found && found.items.length === 1 && found.items[0].text === editor.value.slice(found.from, found.to);
+    if (found && found.items.length && !written) offer(found);
+    else close();
+  }
+
+  // Writes a choice, and offers what it leads to: the ids inside a new call, the values after a name.
+  function accept(item) {
+    const { from, to, skip = 0 } = offered;
+    close();
+    edit(from, to, item.text, from + (item.caret ?? item.text.length + skip));
+    suggest(true);
+  }
+
+  // A press on the list must not take the focus, and with it the caret, from the textarea.
+  list.addEventListener("mousedown", (event) => event.preventDefault());
+  list.addEventListener("click", (event) => {
+    const row = event.target.closest("li");
+    if (row) accept(offered.items[[...list.children].indexOf(row)]);
+  });
+
+  editor.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
+    const { key } = event;
+    if (event.ctrlKey && key === " ") {
+      event.preventDefault();
+      suggest(true);
+      return;
+    }
+    if (!offered || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (key === "ArrowDown" || key === "ArrowUp") choose(chosen + (key === "ArrowDown" ? 1 : -1));
+    else if (key === "Enter" || (key === "Tab" && !event.shiftKey)) accept(offered.items[chosen]);
+    else if (key === "Escape") close();
+    else {
+      // The caret leaves what the list was for.
+      if (key.startsWith("Arrow") || key === "Home" || key === "End") close();
+      return;
+    }
+    event.preventDefault();
+  });
+
+  editor.addEventListener("input", (event) => {
+    paint();
+    if (quiet) return;
+    // Typing offers what fits. A paste, an undo or a text set from outside does not.
+    if (/^(insertText|insertCompositionText|deleteContentBackward)$/.test(event.inputType)) suggest(false);
+    else close();
+  });
+  editor.addEventListener("scroll", () => {
+    follow();
+    if (offered) place();
+  });
+  editor.addEventListener("blur", close);
+  editor.addEventListener("mousedown", close);
   paint();
   follow();
 })();

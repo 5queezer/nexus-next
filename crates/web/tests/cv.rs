@@ -2261,7 +2261,10 @@ async fn unsaved_text_is_drawn_for_the_preview_and_stored_nowhere() {
     assert_eq!(problem["line"], broken.lines().count());
     assert_eq!(problem["column"], 2);
     assert_eq!(problem["file"], "/main.typ");
-    assert!(problem["message"].as_str().unwrap().contains("nothing"), "{body}");
+    assert!(
+        problem["message"].as_str().unwrap().contains("nothing"),
+        "{body}"
+    );
     assert!(revision_rows(&f.db).await.is_empty());
 }
 
@@ -2451,9 +2454,68 @@ async fn the_editor_script_comes_with_the_edit_view_and_before_the_page_script()
     assert!(editor < page.find("/assets/cv.js").unwrap(), "{page}");
     // What only the scripts can work stays out of sight without them.
     assert!(page.contains("id=\"cv-compile-row\" hidden"), "{page}");
-    assert!(page.contains("id=\"cv-compile-state\" role=\"status\""), "{page}");
+    assert!(
+        page.contains("id=\"cv-compile-state\" role=\"status\""),
+        "{page}"
+    );
     assert!(page.contains("id=\"cv-error\" hidden"), "{page}");
     let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
     assert!(!page.contains("/assets/editor.js"), "{page}");
     assert!(page.contains("/assets/cv.js"), "{page}");
+}
+
+/// What the editor completes with comes in an attribute: the helpers, the templates and the ids in
+/// the facts, each with a line that says whose it is. No value in the facts can end the attribute.
+#[tokio::test]
+async fn the_editor_gets_the_ids_in_the_facts_and_no_value_breaks_out() {
+    let f = fixture().await;
+    let evil = "</script><script>alert(1)</script> \"quoted\" 'single' & <b>";
+    let version = facts_row(&f.db).await.version.to_string();
+    let metrics = format!("invoice-errors: 40%\nevil: {evil}");
+    let fields = [
+        ("csrf", TOKEN),
+        ("expected", version.as_str()),
+        ("metrics", metrics.as_str()),
+    ];
+    assert_eq!(post(&f.app, "/cv/facts", &fields).await.0, StatusCode::OK);
+
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert!(!page.contains("<script>alert(1)"), "{page}");
+    let at = page.find("data-complete=\"").expect("the attribute") + "data-complete=\"".len();
+    let raw = &page[at..at + page[at..].find('"').unwrap()];
+    assert!(!raw.contains(['<', '>']), "{raw}");
+    let told: Value = serde_json::from_str(&unescape(raw)).expect("JSON to the closing quote");
+    assert_eq!(told["metric"][1], json!({"id": "evil", "label": evil}));
+    assert_eq!(
+        told["metric"][0],
+        json!({"id": "invoice-errors", "label": "40%"})
+    );
+    assert_eq!(
+        told["employment"],
+        json!([{"id": "brightpath", "label": "Brightpath Logistics · Software Engineer · 03/2019 – 12/2022"}])
+    );
+    let school = &told["education"][0];
+    assert_eq!(
+        school["label"],
+        "Nordsee University · BSc Computer Science · 2015 – 2018"
+    );
+    assert!(
+        school["id"].as_str().is_some_and(|id| !id.is_empty()),
+        "{school}"
+    );
+    assert_eq!(told["templates"], json!(nexus_tailor::TEMPLATES));
+    let names: Vec<_> = told["helpers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|helper| helper["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"employment") && names.contains(&"cv"),
+        "{names:?}"
+    );
+    assert_eq!(told["helpers"][3]["snippet"], "employment(\"|\")[\n  - \n]");
+    // The other views have no editor to complete in.
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=history")).await;
+    assert!(!page.contains("data-complete"), "{page}");
 }

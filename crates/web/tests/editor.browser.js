@@ -43,12 +43,24 @@ Backend engineer with *nine years* in freight software, _mostly_ in Rust. \\#1 i
 #v(gap)
 `;
 
+// As the server writes it, from `HELPERS` and the facts.
 const COMPLETE = {
-  helpers: [],
+  helpers: [
+    { name: "cv", snippet: "show: cv.with(|)", about: "The page setup" },
+    { name: "header", snippet: "header()", about: "Your name and contact line" },
+    { name: "employment", snippet: 'employment("|")[\n  - \n]', about: "One job by id" },
+    { name: "education", snippet: 'education("|")', about: "One qualification by id" },
+    { name: "metric", snippet: 'metric("|")', about: "A metric's locked wording" },
+    { name: "project", snippet: 'project("|", stack: "", url: "")[]', about: "A side project" },
+  ],
   templates: ["classic", "modern", "banner"],
-  employment: [],
-  education: [],
-  metric: [],
+  employment: [
+    { id: "brightpath", label: "Brightpath Logistics \u00b7 Software Engineer \u00b7 03/2019 \u2013 12/2022" },
+    { id: "harbourline", label: "Harbourline \u00b7 Developer \u00b7 2016 \u2013 2019" },
+    { id: "tidal", label: "Tidal Works \u00b7 Intern \u00b7 2015" },
+  ],
+  education: [{ id: "nordsee", label: "Nordsee University \u00b7 BSc Computer Science \u00b7 2015 \u2013 2018" }],
+  metric: [{ id: "invoice-errors", label: "40%" }, { id: "depots", label: "3 depots" }],
 };
 
 const page_of = (source) => `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark">
@@ -235,11 +247,165 @@ const CASES = [
   await page.waitForFunction(() => document.getElementById("cv-compile-state").textContent === "Preview is up to date");
   assert.equal(tried.at(-1), SOURCE.replace("#header()", "#contact()"));
 
+  // The text with `|` where the caret stands, written and read back that way.
+  const put = async (text) => {
+    await editor.fill(text.replace("|", ""));
+    await editor.evaluate((element, at) => element.setSelectionRange(at, at), text.indexOf("|"));
+  };
+  const seen = () => editor.evaluate((e) => `${e.value.slice(0, e.selectionStart)}|${e.value.slice(e.selectionEnd)}`);
+  const offered = () =>
+    page.locator("#cv-complete:not([hidden]) li").evaluateAll((rows) => rows.map((row) => row.querySelector("b").textContent));
+  const picked = () => page.locator('#cv-complete li[aria-selected="true"]').textContent();
+
+  // After a `#` come the helpers, narrowed by what is typed. Enter writes one with the caret where
+  // its id goes, and the ids in the facts follow, each saying whose it is and whether it is used.
+  await put('#employment("brightpath")\n|\n');
+  await page.keyboard.type("#");
+  assert.deepEqual(await offered(), ["#show: cv.with", "#header", "#employment", "#education", "#metric", "#project", "#let", "#set", '#import "/nexus.typ": *']);
+  await page.keyboard.type("e");
+  assert.deepEqual(await offered(), ["#employment", "#education"]);
+  assert.equal(await picked(), "#employmentOne job by id");
+  assert.equal(await editor.getAttribute("aria-activedescendant"), "cv-complete-0");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#employment("brightpath")\n#employment("|")[\n  - \n]\n');
+  assert.deepEqual(await offered(), ["brightpath", "harbourline", "tidal"]);
+  assert.equal(await picked(), "brightpathBrightpath Logistics \u00b7 Software Engineer \u00b7 03/2019 \u2013 12/2022 \u00b7 already used");
+  assert.equal(await page.locator("#cv-complete li.used").count(), 1);
+  // Down and Up go round, and Tab writes too. The caret lands after the call's bracket.
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await picked(), "tidalTidal Works \u00b7 Intern \u00b7 2015");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Tab");
+  assert.equal(await seen(), '#employment("brightpath")\n#employment("harbourline")|[\n  - \n]\n');
+  assert.deepEqual(await offered(), []);
+  assert.equal(await layer.textContent(), `${await editor.inputValue()}\n`);
+  // Each choice is one step back for the browser's undo.
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), '#employment("brightpath")\n#employment("")[\n  - \n]\n');
+  await page.keyboard.press("Control+z");
+  assert.equal(await editor.inputValue(), '#employment("brightpath")\n#e\n');
+  await page.keyboard.press("Control+y");
+  assert.equal(await editor.inputValue(), '#employment("brightpath")\n#employment("")[\n  - \n]\n');
+  assert.equal(await layer.textContent(), `${await editor.inputValue()}\n`);
+
+  // An id can be found by the name it stands for, and choosing replaces the one that was there.
+  await put('#employment("brightpath|")');
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), []);
+  await put('#employment("|brightpath")');
+  await page.keyboard.type("tid");
+  assert.deepEqual(await offered(), ["tidal"]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#employment("tidal")|');
+  await put('#metric("|")\n#education("")');
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), ["invoice-errors", "depots"]);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await offered(), []);
+  await put('#metric("")\n#education("|")');
+  await page.keyboard.type("nord");
+  assert.deepEqual(await offered(), ["nordsee"]);
+
+  // Escape closes the list, and then Enter is a line break again. So is one when no list was open.
+  await put("|");
+  await page.keyboard.type("#he");
+  assert.deepEqual(await offered(), ["#header"]);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#he\n|");
+  // A click writes a choice as well, and the textarea keeps the focus.
+  await page.keyboard.type("#he");
+  await page.locator("#cv-complete li").click();
+  assert.equal(await seen(), "#he\n#header()|");
+  assert.equal(await editor.evaluate((element) => document.activeElement === element), true);
+
+  // No helpers where a `#` is no code: in a string, a comment, raw text, or after a backslash.
+  for (const text of ['#skills("|")', "// note |", "`raw |`", "\\|"]) {
+    await put(text);
+    await page.keyboard.type("#");
+    assert.deepEqual(await offered(), [], text);
+  }
+
+  // In the page setup come its arguments, without the ones written, and then their values. The
+  // select beside the editor follows what a choice writes.
+  await put('#show: cv.with(lang: "en", |)');
+  await page.keyboard.type("x");
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), ["template", "pages", "density"]);
+  assert.equal(await picked(), "templateclassic, modern, banner");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#show: cv.with(lang: "en", template: |)');
+  assert.deepEqual(await offered(), ['"classic"', '"modern"', '"banner"']);
+  await page.keyboard.type('"b');
+  assert.deepEqual(await offered(), ['"banner"']);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#show: cv.with(lang: "en", template: "banner"|)');
+  assert.equal(await page.locator("#cv-template").inputValue(), "banner");
+  await page.keyboard.type(", p");
+  assert.deepEqual(await offered(), ["pages"]);
+  await page.keyboard.press("Enter");
+  assert.deepEqual(await offered(), ["1", "2"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#show: cv.with(lang: "en", template: "banner", pages: 2|)');
+  assert.deepEqual(await offered(), []);
+  assert.equal(await page.locator("#cv-pages").inputValue(), "2");
+  await page.keyboard.type(", density: ");
+  assert.deepEqual(await offered(), ["-2", "-1", "0", "1", "2"]);
+  await page.keyboard.type("-");
+  assert.deepEqual(await offered(), ["-2", "-1"]);
+  await put('#show: cv.with(lang: "|en")');
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), ['"en"', '"de"']);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#show: cv.with(lang: "de"|)');
+  // A new setup line offers its arguments at once.
+  await put("|");
+  await page.keyboard.type("#sh");
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), "#show: cv.with(|)");
+  assert.deepEqual(await offered(), ["lang", "template", "pages", "density"]);
+
+  // A project's named arguments, with the caret between their quotes, and none inside a string.
+  await put('#project("Tidewatch", |)[]');
+  await page.keyboard.type("s");
+  assert.deepEqual(await offered(), ["stack"]);
+  await page.keyboard.press("Enter");
+  assert.equal(await seen(), '#project("Tidewatch", stack: "|")[]');
+  assert.deepEqual(await offered(), []);
+  await page.keyboard.type("Rust, u");
+  assert.deepEqual(await offered(), []);
+  await put('#project("Tidewatch", stack: "Rust", |)[]');
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), ["url"]);
+  // Elsewhere there is nothing to offer, and asking says so by showing nothing.
+  await put("Plain text (in brackets|)");
+  await page.keyboard.press("Control+Space");
+  assert.deepEqual(await offered(), []);
+
   if (process.env.SHOTS) {
     for (const scheme of ["light", "dark"]) {
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto("http://127.0.0.1:9/");
       await page.screenshot({ path: path.join(process.env.SHOTS, `editor-${scheme}.png`) });
+      // A problem marked, some text selected and the list of ids open.
+      await put(SOURCE.replace("#header()", "#broken").replace('#employment("harbourline")', '#employment("|")'));
+      await page.locator("#cv-compile").click();
+      await page.locator("#cv-error").waitFor();
+      await editor.focus();
+      await editor.evaluate((element) => {
+        element.setSelectionRange(element.value.indexOf("Backend"), element.value.indexOf(" in freight"));
+        element.scrollTop = 0;
+      });
+      await page.screenshot({ path: path.join(process.env.SHOTS, `editor-${scheme}-selected.png`) });
+      await editor.evaluate((element) => element.setSelectionRange(element.value.indexOf('("")') + 2, element.value.indexOf('("")') + 2));
+      await page.keyboard.press("Control+Space");
+      await page.screenshot({ path: path.join(process.env.SHOTS, `editor-${scheme}-list.png`) });
     }
   }
 

@@ -223,3 +223,21 @@ fn a_show_line_written_another_way_is_left_alone() {
         assert_eq!(with_template(source, "modern"), None, "{source}");
     }
 }
+
+/// The editor completes from `HELPERS`, so a helper added to `/nexus.typ` has to be added there too.
+#[test]
+fn the_editors_helper_list_names_every_public_helper() {
+    let mut defined: Vec<&str> = include_str!("../src/nexus.typ")
+        .lines()
+        .filter_map(|line| line.strip_prefix("#let "))
+        .filter(|rest| !rest.starts_with('_'))
+        .filter_map(|rest| rest.split(['(', ' ']).next())
+        .collect();
+    let mut listed: Vec<&str> = nexus_tailor::HELPERS
+        .iter()
+        .map(|helper| helper.0)
+        .collect();
+    defined.sort_unstable();
+    listed.sort_unstable();
+    assert_eq!(listed, defined);
+}

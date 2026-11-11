@@ -21,9 +21,9 @@ pub use check::{
     review_text, unverified_urls,
 };
 pub use template::{
-    CvContent, CvEmployment, CvProject, CvSkills, TEMPLATE_HELP, TEMPLATES, default_source,
-    density_of, pages_of, source_from_profile, template_of, with_density, with_pages,
-    with_template,
+    CvContent, CvEmployment, CvProject, CvSkills, HELPERS, TEMPLATE_HELP, TEMPLATES,
+    default_source, density_of, pages_of, source_from_profile, template_of, with_density,
+    with_pages, with_template,
 };
 pub use worker::run_worker;
 

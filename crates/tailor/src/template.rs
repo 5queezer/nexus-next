@@ -13,6 +13,45 @@ Hard facts are rendered by id, never typed: `#header()`, `#contact()`, `#employm
 Wording helpers: `= Section`, `#skills("Category")[Rust, Go]`, `#project("Name", stack: "Rust", url: "example.org")[What it does.]`.
 Only /main.typ, /nexus.typ and /facts.json exist. A page is 200 to 1200 pt on each side. No images, packages, `hide` or `pdf.attach`. Text stays upright and at its natural spacing: no `rotate`, `skew`, mirroring, stretching, `tracking` that stacks or spreads glyphs, or a `stroke` over 0.1 em. Every letter must reach the reader, judged on the drawn page: nothing painted over it, text a reader can tell from what it really stands on, and only letters the fonts have (Latin, Greek, Cyrillic, Hebrew; no letters in math, digits are fine). A small mark drawn on text isn't refused, but the owner is told of it. Emails and URLs come from `#contact()`; a link's text is free unless it shows a contact value."#;
 
+/// What the source editor offers after a `#`: each name `/nexus.typ` gives a source, what choosing it
+/// writes, with `|` where the caret then stands, and a line on what it draws.
+pub const HELPERS: [(&str, &str, &str); 10] = [
+    (
+        "cv",
+        "show: cv.with(|)",
+        "The page setup: language, template, pages and density",
+    ),
+    ("header", "header()", "Your name and contact line"),
+    ("contact", "contact()", "One line of contact details"),
+    (
+        "employment",
+        "employment(\"|\")[\n  - \n]",
+        "One job by id, with bullets; without a body, one compact line",
+    ),
+    ("education", "education(\"|\")", "One qualification by id"),
+    (
+        "languages",
+        "languages()",
+        "All languages with their levels",
+    ),
+    (
+        "metric",
+        "metric(\"|\")",
+        "A metric's locked wording, by key",
+    ),
+    (
+        "skills",
+        "skills(\"|\")[]",
+        "One line of skills under a category",
+    ),
+    (
+        "project",
+        "project(\"|\", stack: \"\", url: \"\")[]",
+        "A side project with its stack and link",
+    ),
+    ("facts", "facts.", "The facts as data, such as facts.name"),
+];
+
 /// The designs `/nexus.typ` draws. A source that names none gets the first.
 pub const TEMPLATES: [&str; 5] = ["classic", "modern", "banner", "sidebar", "compact"];
 
