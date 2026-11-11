@@ -85,7 +85,10 @@ pub const CONFIRMED_VOICE_TOOLS: [&str; 10] = [
 ];
 
 /// Arguments the server decides, so the model isn't offered them.
-const FORCED_ARGUMENTS: [(&str, &str); 3] = [
+const FORCED_ARGUMENTS: [(&str, &str); 6] = [
+    ("update_application", "dryRun"),
+    ("archive_application", "dryRun"),
+    ("unarchive_application", "dryRun"),
     ("patch_cv", "origin"),
     ("render_cv_pdf", "saveToApplicationId"),
     ("render_cv_pdf", "previewPages"),
@@ -810,6 +813,10 @@ fn force_arguments(
             }
             arguments.insert("previewPages".to_owned(), 0.into());
         }
+        // The card the owner tapped was the preview: a tap must never buy a dry run.
+        "update_application" | "archive_application" | "unarchive_application" => {
+            arguments.remove("dryRun");
+        }
         _ => {}
     }
     // The schema's default is `default`, which needn't be the variant the person is looking at.
@@ -887,6 +894,7 @@ pub(crate) async fn tool(
             );
         }
     };
+    let dry_run = arguments.get("dryRun") == Some(&Value::Bool(true));
     if let Err(error) = force_arguments(name, &variant, &mut arguments) {
         tracing::warn!(
             event = "voice_tool_refused",
@@ -904,14 +912,24 @@ pub(crate) async fn tool(
     )
     .await;
     let is_error = result.is_error == Some(true);
+    let output = output_text(&result);
+    // Enough to tell a write from a no-op afterwards, and no more: `changed` is the result's own
+    // flag, absent when it has none, and `dry_run` says that the call asked for one. No ids and no
+    // arguments.
+    let changed = serde_json::from_str::<Value>(&output)
+        .ok()
+        .and_then(|result| result["changed"].as_bool());
     tracing::info!(
         event = "voice_tool",
         tool = *name,
         is_error,
+        confirmed = request.confirmed,
+        changed,
+        dry_run,
         "voice tool call"
     );
     axum::Json(json!({
-        "output": for_model(&output_text(&result)),
+        "output": for_model(&output),
         "isError": is_error,
     }))
     .into_response()
