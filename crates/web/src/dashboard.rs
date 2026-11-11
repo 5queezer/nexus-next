@@ -227,6 +227,8 @@ async fn follow_ups(State(Dashboard { db, tz, .. }): State<Dashboard>) -> Page {
 #[derive(Deserialize, Default)]
 struct DetailQuery {
     done: Option<String>,
+    /// The timeline filter: `notes`, `interviews`, or everything.
+    show: Option<String>,
 }
 
 async fn application(
@@ -238,13 +240,15 @@ async fn application(
     let id: i64 = id.parse().map_err(|_| PageError(StatusCode::NOT_FOUND))?;
     let mut actions = Actions::new(token);
     actions.flash = query.done.as_deref().and_then(forms::done_notice);
-    Ok(Html(detail_page(&dash, id, actions).await?))
+    let show = query.show.as_deref().unwrap_or_default();
+    Ok(Html(detail_page(&dash, id, actions, show).await?))
 }
 
 pub(crate) async fn detail_page(
     Dashboard { db, tz, .. }: &Dashboard,
     id: i64,
     actions: Actions,
+    show: &str,
 ) -> Result<String, PageError> {
     let mut conn = db.conn().await?;
     let application = applications::get(&mut conn, id)
@@ -267,6 +271,7 @@ pub(crate) async fn detail_page(
         submissions: &submissions,
         clock,
         actions: &actions,
+        show,
     });
     let title = format!("{} #{}", application.company, application.id);
     Ok(views::page(&title, Nav::None, counts, view))
