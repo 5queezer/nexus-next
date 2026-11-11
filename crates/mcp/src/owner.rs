@@ -170,6 +170,11 @@ pub async fn preview(state: Arc<McpState>, variant: &str, revision: Option<i64>)
     outcome(tools::render_as(&ctx(state), &args, false).await)
 }
 
+/// The picture of text the owner has typed and not stored: stamped, checked, and stored nowhere.
+pub async fn draw_unsaved(state: Arc<McpState>, variant: &str, source: &str) -> CallToolResult {
+    outcome(tools::draw_unsaved(&ctx(state), variant, source).await)
+}
+
 /// A revision's PDF for the owner to download: the real one when approved, the stamped one otherwise.
 pub async fn download_pdf(
     state: Arc<McpState>,

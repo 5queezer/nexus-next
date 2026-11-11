@@ -2209,3 +2209,55 @@ async fn a_show_line_written_by_hand_turns_the_template_control_off() {
     );
     assert_eq!(revision_rows(&f.db).await.len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unsaved_text_is_drawn_for_the_preview_and_stored_nowhere() {
+    let f = locked().await;
+    let (_, source) = head_of(&f).await;
+    let modern = source.replace(
+        "cv.with(lang: \"en\")",
+        "cv.with(lang: \"en\", template: \"modern\")",
+    );
+    let uri = format!("{VARIANT}/try");
+    let (status, _, _) = post(&f.app, &uri, &[("source", &modern)]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &modern)]).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let told: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(told["pages"], 1);
+    let picture = |key: String, page: u32| {
+        let uri = format!(
+            "{VARIANT}/try.png?key={key}&version={}&page={page}",
+            told["version"]
+        );
+        send(&f.app, Request::get(uri).body(Body::empty()).unwrap())
+    };
+    let key = told["key"].as_str().unwrap().to_owned();
+    let (status, _, png) = picture(key.clone(), 1).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(png.starts_with(b"\x89PNG"));
+    assert_eq!(picture(key, 2).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(picture("../x".to_owned(), 1).await.0, StatusCode::NOT_FOUND);
+    assert!(revision_rows(&f.db).await.is_empty());
+
+    let broken = format!("{source}\n#nothing()\n");
+    let (status, _, body) = post(&f.app, &uri, &[("csrf", TOKEN), ("source", &broken)]).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("message"), "{body}");
+    assert!(revision_rows(&f.db).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_editor_has_the_template_select_with_its_fallback_button() {
+    let f = locked().await;
+    let (_, _, page) = get(&f.app, EDIT).await;
+    for part in [
+        "id=\"cv-template\"",
+        "id=\"cv-template-save\"",
+        "id=\"cv-preview-unsaved\"",
+        "id=\"cv-template-unreadable\" hidden",
+    ] {
+        assert!(page.contains(part), "{part}\n{page}");
+    }
+}

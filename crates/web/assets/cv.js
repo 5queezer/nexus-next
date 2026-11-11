@@ -21,9 +21,8 @@
     element.hidden = !text;
   }
 
-  // Shows `pages` images of a revision, reusing the ones there so the old stays up until the new
-  // has loaded.
-  function showImages(revision, pages, state) {
+  // Shows `pages` images, reusing the ones there so the old stays up until the new has loaded.
+  function showPages(pages, alt, src) {
     const box = byId("cv-preview-pages");
     while (box.children.length > pages) box.lastElementChild.remove();
     for (let page = 1; page <= pages; page += 1) {
@@ -32,9 +31,17 @@
         image = document.createElement("img");
         box.append(image);
       }
-      image.alt = `Preview of revision ${revision}, page ${page}`;
-      image.src = `${base}/preview.png?revision=${revision}&page=${page}&state=${state}`;
+      image.alt = alt(page);
+      image.src = src(page);
     }
+  }
+
+  function showImages(revision, pages, state) {
+    showPages(
+      pages,
+      (page) => `Preview of revision ${revision}, page ${page}`,
+      (page) => `${base}/preview.png?revision=${revision}&page=${page}&state=${state}`,
+    );
   }
 
   // While a draft is read for approval the picture is the one its form was compiled with, and stays.
@@ -52,6 +59,7 @@
       return;
     }
     if (run !== previewRun) return;
+    byId("cv-preview-unsaved").hidden = true;
     if (ok) {
       setNote(byId("cv-preview-note"), "");
       showImages(body.revision, body.pages, body.state);
@@ -292,6 +300,108 @@
     }
   }
 
+  // The text in the editor, drawn as it stands. A text that can't be drawn says why and leaves the
+  // last picture up. Back at the stored text, the stored revision's picture returns.
+  async function tryPreview() {
+    const editor = byId("cv-source");
+    if (!byId("cv-preview-pages")) return;
+    if (editor.value === editor.defaultValue && !byId("cv-editor-form").dataset.unsaved) {
+      loadPreview(shown);
+      return;
+    }
+    const run = ++previewRun;
+    const form = new URLSearchParams({ csrf: editor.form.elements.csrf.value, source: editor.value });
+    let body;
+    let ok = false;
+    try {
+      const response = await fetch(`${base}/try`, { method: "POST", body: form });
+      ok = response.ok;
+      body = await response.json();
+    } catch {
+      if (run === previewRun) setNote(byId("cv-preview-note"), "The preview could not be loaded.");
+      return;
+    }
+    if (run !== previewRun) return;
+    if (!ok) {
+      const tokens = (body.tokens || []).join(", ");
+      setNote(byId("cv-preview-note"), tokens ? `${body.message} Found: ${tokens}` : body.message);
+      return;
+    }
+    setNote(byId("cv-preview-note"), "");
+    byId("cv-preview-unsaved").hidden = false;
+    showPages(
+      body.pages,
+      (page) => `Preview of the text in the editor, page ${page}`,
+      (page) => `${base}/try.png?key=${body.key}&version=${body.version}&page=${page}`,
+    );
+  }
+
+  const SHOW = "#show: cv";
+
+  // The line that sets up the page, as the server reads it: exactly one, with only `lang` and
+  // `template` as quoted words. Null for any other, which is then left alone.
+  function showLine(source) {
+    let found = null;
+    let at = 0;
+    for (const line of source.split("\n")) {
+      const text = line.trimEnd();
+      if (text.startsWith(SHOW)) {
+        if (found) return null;
+        let args = text.slice(SHOW.length);
+        if (args) {
+          if (!args.startsWith(".with(") || !args.endsWith(")")) return null;
+          args = args.slice(6, -1);
+        }
+        const set = {};
+        for (const arg of args.split(",")) {
+          if (!arg.trim()) continue;
+          const colon = arg.indexOf(":");
+          const key = arg.slice(0, colon).trim();
+          const value = /^"([A-Za-z0-9-]*)"$/.exec(arg.slice(colon + 1).trim());
+          if (colon < 0 || !value || !["lang", "template"].includes(key) || key in set) return null;
+          set[key] = value[1];
+        }
+        found = { start: at, end: at + text.length, set };
+      }
+      at += line.length + 1;
+    }
+    return found;
+  }
+
+  // The template select and the editor's `#show: cv` line say the same thing, whichever was changed.
+  function chooseTemplate() {
+    const editor = byId("cv-source");
+    const select = byId("cv-template");
+    if (!editor || !select) return;
+    let timer = null;
+    byId("cv-template-save").hidden = true;
+    byId("cv-template-hint").hidden = true;
+    const follow = () => {
+      const line = showLine(editor.value);
+      select.disabled = !line;
+      byId("cv-template-unreadable").hidden = !!line;
+      // An unknown name selects nothing.
+      if (line) select.value = line.set.template || select.options[0].value;
+    };
+    select.addEventListener("change", () => {
+      const line = showLine(editor.value);
+      if (!line) return;
+      const args = [];
+      if ("lang" in line.set) args.push(`lang: "${line.set.lang}"`);
+      if (select.value !== select.options[0].value) args.push(`template: "${select.value}"`);
+      const show = args.length ? `${SHOW}.with(${args.join(", ")})` : SHOW;
+      editor.value = editor.value.slice(0, line.start) + show + editor.value.slice(line.end);
+      clearTimeout(timer);
+      tryPreview();
+    });
+    editor.addEventListener("input", () => {
+      follow();
+      clearTimeout(timer);
+      timer = setTimeout(tryPreview, 700);
+    });
+    follow();
+  }
+
   // A view is another page, so leaving the editor with unsaved text asks first.
   function guardTyping() {
     const editor = byId("cv-source");
@@ -316,6 +426,7 @@
   holdApproval();
   markInPicture();
   guardTyping();
+  chooseTemplate();
   loadPreview(shown);
   connect();
 })();

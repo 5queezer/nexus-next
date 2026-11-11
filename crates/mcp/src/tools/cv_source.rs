@@ -1074,6 +1074,42 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
     Ok(result)
 }
 
+/// Text the owner has typed and not stored, drawn as a draft is: every page, stamped, and only if it
+/// passes the check. Nothing is stored. Only `crate::owner` reaches this.
+pub(crate) async fn draw_unsaved(ctx: &Ctx, name: &str, source: &str) -> ToolResult {
+    let (state, known) = {
+        let mut conn = ctx.state.db.conn().await?;
+        let state = cv_facts::get(&mut conn).await?;
+        let base = match resolve(&mut conn, &state.facts, name, None).await? {
+            Ok(base) => base,
+            Err(missing) => return Ok(missing.error()),
+        };
+        let known = known_to_owner(&mut conn, Some(&base.variant), &state.facts).await?;
+        (state, known)
+    };
+    let rendered = match compile(ctx, source, &state.facts, false, MAX_PAGES, true).await {
+        Ok(rendered) => rendered,
+        Err(error) => return Ok(*error),
+    };
+    let report = check(
+        &rendered.text,
+        &state.facts,
+        known.approved.as_deref(),
+        &known.wording,
+    );
+    if !report.violations.is_empty() {
+        return Ok(violation_error(&report.violations));
+    }
+    let summary = json!({"pageCount": rendered.page_count, "factsVersion": state.version});
+    let mut result = json_result(summary, false);
+    for preview in &rendered.previews {
+        result
+            .content
+            .push(ContentBlock::image(ENCODER.encode(preview), "image/png"));
+    }
+    Ok(result)
+}
+
 /// What the owner looks at before approving a variant's head. `Err` is why it can't be looked at.
 pub(crate) async fn review(
     ctx: &Ctx,

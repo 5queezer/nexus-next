@@ -88,6 +88,8 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route("/cv/variants/{variant}/revert", post(revert))
             .route("/cv/variants/{variant}/preview.png", get(preview_png))
             .route("/cv/variants/{variant}/preview.json", get(preview_json))
+            .route("/cv/variants/{variant}/try", post(try_source))
+            .route("/cv/variants/{variant}/try.png", get(try_png))
             .route("/cv/variants/{variant}/cv.pdf", get(pdf))
             .route("/api/cv/{variant}/head", get(head))
             .layer(DefaultBodyLimit::max(SAVE_BODY_LIMIT))
@@ -1291,6 +1293,9 @@ fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use
             <p class="hint preview-caption" id="cv-preview-caption" hidden=approved>
                 "Stamped until you approve it. The stamp is no part of the CV."
             </p>
+            <p class="hint" id="cv-preview-unsaved" role="status" hidden>
+                "This is the text in the editor, which isn't saved yet."
+            </p>
             <p class="banner warn" id="cv-preview-note" role="status" hidden></p>
         </section>
     }
@@ -1461,8 +1466,9 @@ fn editor_view(
     }
 }
 
-/// Another design for the stored source: a draft whose `#show: cv` line alone differs. A line this
-/// can't read is the editor's to change.
+/// Another design for the source. With `cv.js` the choice rewrites the `#show: cv` line in the editor,
+/// shows in the preview, and is saved with the text. Without it the form stores the saved source in
+/// that template as a draft. A line this can't read is the editor's to change.
 fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl IntoView + use<> {
     let current = template_of(text).map(str::to_owned);
     let unreadable = current.is_none();
@@ -1478,14 +1484,13 @@ fn template_view(variant: &str, token: &str, text: &str, expected: i64) -> impl 
                         }).collect::<Vec<_>>()}
                     </select>
                 </label>
-                <button type="submit" class="secondary" disabled=unreadable>"Save draft in this template"</button>
+                <button type="submit" class="secondary" id="cv-template-save" disabled=unreadable>"Save draft in this template"</button>
             </div>
-            <p class="hint">
-                {if unreadable {
-                    "This source sets up its page in its own way, so change the template in its #show: cv line by hand."
-                } else {
-                    "Stores the saved source with only its #show: cv line changed, as a draft for you to approve. Text typed above and not saved is left out."
-                }}
+            <p class="hint" id="cv-template-unreadable" hidden=!unreadable>
+                "This source sets up its page in its own way, so change the template in its #show: cv line by hand."
+            </p>
+            <p class="hint" id="cv-template-hint" hidden=unreadable>
+                "Stores the saved source with only its #show: cv line changed, as a draft for you to approve. Text typed above and not saved is left out."
             </p>
         </form>
     }
@@ -1967,6 +1972,70 @@ async fn preview_json(
             )
                 .into_response()
         }
+    }
+}
+
+/// Draws the text in the editor, stored or not, for the preview beside it. The pictures go to the
+/// cache under the key a stored draft of the same text has, and the answer names it.
+async fn try_source(
+    State(cv): State<Cv>,
+    Path(variant): Path<String>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    Form(form): Form<Typed>,
+) -> Response {
+    if !csrf_ok(form.get("csrf").map(String::as_str), &token) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let source = form
+        .get("source")
+        .map(|text| text.replace("\r\n", "\n"))
+        .unwrap_or_default();
+    let told = told(owner::draw_unsaved(cv.mcp.clone(), &variant, &source).await);
+    if told.is_error {
+        let tokens: Vec<_> = told.value["error"]["violations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|violation| violation["token"].as_str())
+            .collect();
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"message": explain(told.code()), "tokens": tokens})),
+        )
+            .into_response();
+    }
+    let pages = blocks_of(&told.result, |block| {
+        (block["type"] == "image").then(|| block["data"].clone())
+    });
+    let key = sha256_hex(source.as_bytes());
+    let version = told.value["factsVersion"].as_i64().unwrap_or(0);
+    let count = pages.len();
+    let (cache, stored) = (cv.cache.clone(), format!("{key}-draft"));
+    let _ = tokio::task::spawn_blocking(move || cache.put(&stored, version, &pages)).await;
+    Json(json!({"key": key, "version": version, "pages": count})).into_response()
+}
+
+#[derive(Deserialize)]
+struct TryQuery {
+    key: String,
+    version: i64,
+    page: usize,
+}
+
+/// One page of what `try_source` drew, from the cache alone.
+async fn try_png(State(cv): State<Cv>, Query(query): Query<TryQuery>) -> Response {
+    if query.key.len() != 64 || !query.key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let (cache, key) = (cv.cache.clone(), format!("{}-draft", query.key));
+    let pages = tokio::task::spawn_blocking(move || cache.get(&key, query.version)).await;
+    match pages.ok().flatten() {
+        Some(mut pages) if (1..=pages.len()).contains(&query.page) => (
+            [(header::CONTENT_TYPE, "image/png")],
+            Body::from(pages.swap_remove(query.page - 1)),
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
