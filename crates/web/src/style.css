@@ -607,6 +607,10 @@ mark.new { background: var(--new-bg); color: var(--new-ink); }
   /* The page fills the window, and each side scrolls by itself, so the picture stays beside the list
      and the button stays in sight. */
   body:has(#cv-workspace) { display: flex; flex-direction: column; height: 100dvh; }
+  /* With a pointer the page links are plain links at the end of the hint, and take no row. */
+  #cv-read-picture { display: inline; }
+  .page-strip { display: inline-flex; gap: 10px; margin: 0 0 0 8px; vertical-align: baseline; }
+  .page-strip a { min-height: 0; padding: 0; background: none; color: var(--muted); text-decoration: underline; }
   body:has(#cv-workspace) main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
   body:has(#cv-workspace) .top > div, .cv-head { padding-inline: 24px; }
   main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin-inline: 24px; }
