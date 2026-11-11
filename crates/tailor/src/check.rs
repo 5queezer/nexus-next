@@ -1402,12 +1402,15 @@ fn url_key(url: &str) -> String {
         .to_owned()
 }
 
-/// `url` is `base` or a page under it.
+/// `url` is `base` or a page under it. A browser climbs out by `..`, reads `%2e` as a dot and `\` as a
+/// slash, and drops a tab or a line break, so what follows `base` with any of those is under nothing.
 fn is_under(url: &str, base: &str) -> bool {
+    const CLIMBS: [&str; 6] = ["..", "%2e", "\\", "\t", "\n", "\r"];
     !base.is_empty()
-        && url
-            .strip_prefix(base)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        && url.strip_prefix(base).is_some_and(|rest| {
+            rest.is_empty()
+                || (rest.starts_with('/') && !CLIMBS.iter().any(|part| rest.contains(part)))
+        })
 }
 
 fn digits_of(text: &str) -> String {

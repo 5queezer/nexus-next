@@ -5,8 +5,9 @@ use typst::foundations::Smart;
 use typst::introspection::Introspector;
 use typst::layout::{Abs, Frame, FrameItem, Point, Size, Transform};
 use typst::model::{Destination, Document, HeadingElem, Numbering};
+use typst::syntax::Span;
 use typst::text::{Glyph, TextItem};
-use typst::visualize::Paint;
+use typst::visualize::{Curve, CurveItem, FixedStroke, Geometry, LineCap, Paint, Shape};
 use typst_layout::PagedDocument;
 use unicode_normalization::char::is_combining_mark;
 
@@ -52,6 +53,17 @@ const WORD_DESCENT: f64 = 0.25;
 const MAX_PLACED: usize = 12_000;
 /// How far a transform may stray from a uniform scale through rounding alone, as in `rotate(360deg)`.
 const TRANSFORM_TOLERANCE: f64 = 1e-6;
+/// The thinnest stroke, dash or filled sliver a page may draw, in pixels of its picture. A PDF viewer
+/// draws a thinner one a whole pixel of its own wide, and the picture by how little of a pixel it
+/// covers. Measured in black at 72, 96 and 144 dpi: lines 0.001 pt thick are nothing in the picture and
+/// solid in Ghostscript, half grey in poppler; at 0.1 pt the picture's darkest pixel is 18% black,
+/// paler than `#ccc`, and poppler's is black. At half a pixel, 0.25 pt on A4, a line falling across
+/// two pixels still darkens each by 25%, which [`crate::ink`] counts as seen.
+const MIN_STROKE_PIXELS: f64 = 0.5;
+/// The narrowest filled rectangle, likewise. `typst_render` doesn't smooth a rectangle's edges, so a
+/// narrower one draws nothing where it falls between two pixels' centres: 0.4 pt high, measured, it
+/// is on no picture and black in poppler and Ghostscript.
+const MIN_RECT_PIXELS: f64 = 1.0;
 
 #[derive(Clone)]
 struct Run {
@@ -248,6 +260,85 @@ fn run_points(text: &TextItem, pos: Point, ts: Transform) -> Vec<Point> {
     points.into_iter().map(|p| p.transform(ts)).collect()
 }
 
+/// What of `stroke` a viewer draws wider than the picture, if anything. `scale` is how much its
+/// transform enlarges it, and `least` the thinnest it may be on the page, in points. A dash with a
+/// round or square cap is as long as the stroke is thick, however short it is set.
+fn thin_stroke(stroke: &FixedStroke, scale: f64, least: f64) -> Option<String> {
+    let thin = |length: Abs| length.to_pt() * scale < least - TRANSFORM_TOLERANCE;
+    // An odd count of dashes repeats with ink and gap swapped, so each is drawn then.
+    let mut dashes = stroke.dash.iter().flat_map(|dash| {
+        let drawn = dash.array.iter().step_by(2 - dash.array.len() % 2);
+        drawn.filter(|_| stroke.cap == LineCap::Butt)
+    });
+    let (what, thickness) = if thin(stroke.thickness) {
+        ("stroke", stroke.thickness)
+    } else {
+        ("dash", *dashes.find(|dash| thin(**dash))?)
+    };
+    // As its transform leaves it, to four places.
+    let thickness = (thickness.to_pt() * scale * 1e4).round() / 1e4;
+    Some(format!(
+        "a {what} of {thickness} pt is thinner than {least:.2} pt"
+    ))
+}
+
+/// How wide the thinnest closed part of a filled `curve` is, in points: twice its area over the length
+/// of its outline, which is a sliver's width, whichever way it lies. A part of no area still draws
+/// in poppler and Ghostscript. A curved side counts by its control points.
+fn fill_width(curve: &Curve) -> f64 {
+    let mut thinnest = f64::INFINITY;
+    let mut part: Vec<Point> = Vec::new();
+    let mut close = |part: &mut Vec<Point>| {
+        let (mut area, mut length) = (0.0, 0.0);
+        for (at, from) in part.iter().enumerate() {
+            let to = part[(at + 1) % part.len()];
+            area += from.x.to_pt() * to.y.to_pt() - to.x.to_pt() * from.y.to_pt();
+            length += (to - *from).hypot().to_pt();
+        }
+        // A part of no length draws nothing, and is no number here.
+        thinnest = thinnest.min(area.abs() / length);
+        part.clear();
+    };
+    for item in &curve.0 {
+        match item {
+            CurveItem::Move(to) => {
+                close(&mut part);
+                part.push(*to);
+            }
+            CurveItem::Line(to) => part.push(*to),
+            CurveItem::Cubic(first, second, to) => part.extend([*first, *second, *to]),
+            CurveItem::Close => close(&mut part),
+        }
+    }
+    close(&mut part);
+    thinnest
+}
+
+/// What `shape` draws that a viewer shows and the picture doesn't, if anything: see
+/// [`MIN_STROKE_PIXELS`]. `pixel` is the width of a pixel of the picture, in points. A stroke or a
+/// rectangle of no width at all draws in no viewer measured, and stays allowed.
+fn thin_paint(shape: &Shape, scale: f64, pixel: f64) -> Option<String> {
+    let least = MIN_STROKE_PIXELS * pixel;
+    let stroke = shape.stroke.as_ref();
+    let stroke = stroke.filter(|stroke| stroke.thickness != Abs::zero());
+    if let Some(thin) = stroke.and_then(|stroke| thin_stroke(stroke, scale, least)) {
+        return Some(thin);
+    }
+    shape.fill.as_ref()?;
+    let (width, least) = match &shape.geometry {
+        Geometry::Rect(size) => (
+            size.x.to_pt().abs().min(size.y.to_pt().abs()),
+            MIN_RECT_PIXELS * pixel,
+        ),
+        Geometry::Curve(curve) => (fill_width(curve), least),
+        Geometry::Line(_) => return None,
+    };
+    let drawn = width > 0.0 || matches!(shape.geometry, Geometry::Curve(_));
+    let width = width * scale;
+    (drawn && width < least - TRANSFORM_TOLERANCE)
+        .then(|| format!("a fill {width:.3} pt wide is narrower than {least:.2} pt"))
+}
+
 /// A tiling's content is a frame of its own, reached through a paint and not through the page.
 fn tiling_frame(paint: &Paint) -> Option<&Frame> {
     match paint {
@@ -256,10 +347,23 @@ fn tiling_frame(paint: &Paint) -> Option<&Frame> {
     }
 }
 
-pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, RenderError> {
+/// `refuse` makes a compile error at a place in the source, for what no list of words can name.
+pub(crate) fn rendered_text(
+    document: &PagedDocument,
+    refuse: &dyn Fn(Span, String) -> RenderError,
+) -> Result<RenderedText, RenderError> {
     let mut result = RenderedText::default();
     let mut runs = Vec::new();
     let pages = document.pages();
+    // The coarsest picture among the pages: a tiling's frame belongs to none of them.
+    let pixel = pages
+        .iter()
+        .map(|page| 1.0 / crate::ink::render_options(page).pixel_per_pt.get())
+        .fold(0.0, f64::max);
+    let too_thin = |span: Span, thin: String| {
+        let why = "a PDF viewer draws it wider than the picture shows it";
+        refuse(span, format!("{thin}: {why}"))
+    };
     let mut stack: Vec<(&Frame, Transform, usize, Visible)> = pages
         .iter()
         .enumerate()
@@ -316,6 +420,14 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                     if runs.len() == MAX_RUNS {
                         return Err(RenderError::TooManyPages);
                     }
+                    let scale = crate::ink::enlargement(ts);
+                    let stroke = text.stroke.as_ref();
+                    if let Some(thin) = stroke
+                        .and_then(|stroke| thin_stroke(stroke, scale, MIN_STROKE_PIXELS * pixel))
+                    {
+                        let span = text.glyphs.first().map_or(Span::detached(), |g| g.span.0);
+                        return Err(too_thin(span, thin));
+                    }
                     let start = pos.transform(ts);
                     let end = (*pos + Point::with_x(text.width())).transform(ts);
                     let size = text.size.to_pt() * glyph_scale(ts);
@@ -357,7 +469,10 @@ pub(crate) fn rendered_text(document: &PagedDocument) -> Result<RenderedText, Re
                         spans: char_spans(text, *pos, ts),
                     });
                 }
-                FrameItem::Shape(shape, _) => {
+                FrameItem::Shape(shape, span) => {
+                    if let Some(thin) = thin_paint(shape, crate::ink::enlargement(ts), pixel) {
+                        return Err(too_thin(*span, thin));
+                    }
                     tilings.extend(shape.fill.as_ref().and_then(tiling_frame));
                     if let Some(stroke) = &shape.stroke {
                         tilings.extend(tiling_frame(&stroke.paint));

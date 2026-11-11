@@ -83,7 +83,7 @@ pub(crate) fn render_options(page: &Page) -> RenderOptions {
 /// thickness can run along that axis, where a wider one does nothing for it, and a PDF viewer widens it
 /// all the same. A transform that flattens everything draws nothing here or in poppler, and counts as no
 /// enlargement. Ghostscript does draw it, which SPEC lists among the limits.
-fn enlargement(ts: Transform) -> f64 {
+pub(crate) fn enlargement(ts: Transform) -> f64 {
     let (sx, sy, kx, ky) = (ts.sx.get(), ts.sy.get(), ts.kx.get(), ts.ky.get());
     let sum = sx * sx + sy * sy + kx * kx + ky * ky;
     let det = sx * sy - kx * ky;

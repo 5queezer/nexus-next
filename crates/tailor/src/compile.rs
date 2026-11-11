@@ -82,24 +82,30 @@ fn refuse_attachments(world: &CvWorld, document: &PagedDocument) -> Result<(), R
 
 /// A page's sides, in points, as a compile error. A source sets them, and a CV needs neither a sheet
 /// over A3's 1191 nor one too small for a stamp a reader can read. The size that counts is the laid
-/// out one, since `auto` can run long.
+/// out one, since `auto` can run long. A bleed is refused whole: the PDF's sheet grows by it on each
+/// side and a viewer shows all of that, while the pictures, these sides and the stamp stop at the page.
 fn refuse_odd_pages(world: &CvWorld, document: &PagedDocument) -> Result<(), RenderError> {
     for (index, page) in document.pages().iter().enumerate() {
         let (width, height) = (page.frame.width().to_pt(), page.frame.height().to_pt());
-        if ![width, height]
+        let message = if page.bleed.iter().any(|side| *side != Abs::zero()) {
+            format!(
+                "page {} has a bleed: a CV page has none, as its picture shows nothing drawn there",
+                index + 1
+            )
+        } else if ![width, height]
             .iter()
             .all(|side| (MIN_PAGE_SIDE..=MAX_PAGE_SIDE).contains(side))
         {
-            let error = SourceDiagnostic::error(
-                Span::detached(),
-                format!(
-                    "page {} is {width:.0} by {height:.0} pt: a CV page is {MIN_PAGE_SIDE:.0} to \
-                     {MAX_PAGE_SIDE:.0} pt on each side",
-                    index + 1
-                ),
-            );
-            return Err(RenderError::Diagnostics(vec![to_diagnostic(world, &error)]));
-        }
+            format!(
+                "page {} is {width:.0} by {height:.0} pt: a CV page is {MIN_PAGE_SIDE:.0} to \
+                 {MAX_PAGE_SIDE:.0} pt on each side",
+                index + 1
+            )
+        } else {
+            continue;
+        };
+        let error = SourceDiagnostic::error(Span::detached(), message);
+        return Err(RenderError::Diagnostics(vec![to_diagnostic(world, &error)]));
     }
     Ok(())
 }
@@ -390,7 +396,11 @@ pub(crate) fn render(req: &RenderRequest) -> Result<Rendered, RenderError> {
         return Err(RenderError::TooManyPages);
     }
     refuse_odd_pages(&world, &document)?;
-    let mut text = crate::extract::rendered_text(&document)?;
+    let refuse = |span: Span, message: String| {
+        let error = SourceDiagnostic::error(span, message);
+        RenderError::Diagnostics(vec![to_diagnostic(&world, &error)])
+    };
+    let mut text = crate::extract::rendered_text(&document, &refuse)?;
     text.layout = crate::layout::layout(&document, &text, crate::template::pages_of(&req.source));
     // Only a picture is clicked on.
     if req.preview_pages > 0 {

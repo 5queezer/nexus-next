@@ -1127,6 +1127,37 @@ async fn contact_details_only_from_the_facts() {
             Rule::ContactDetails,
             "#link(\"sms:555\")[Text me]",
         ),
+        // A browser resolves each of these to another account.
+        (
+            "a profile climbed out of",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/../other-user/repo\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of in escapes",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/%2E%2e/other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of by a backslash",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/..\\\\other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of around a tab",
+            Rule::ContactDetails,
+            "#link(\"https://github.com/maraexample/.\\t./other-user\")[github.com/maraexample]",
+        ),
+        (
+            "climbed out of in text",
+            Rule::ContactDetails,
+            "See github.com/maraexample/../other-user/repo for code.",
+        ),
+        (
+            "climbed out of in text, in escapes",
+            Rule::ContactDetails,
+            "See github.com/maraexample/%2e%2e/other-user for code.",
+        ),
     ])
     .await;
 }
@@ -1600,6 +1631,51 @@ async fn a_page_no_cv_needs_is_a_compile_error() {
     }
 }
 
+/// A bleed widens the PDF's sheet beyond the page, and a viewer shows all of it: no picture, no stamp
+/// and no page size reaches there. Set before `#show: cv`, it outlives the template's own page setup.
+#[tokio::test]
+async fn a_bleed_is_a_compile_error() {
+    let word = "#for i in range(8) { place(top + left, dx: -80pt + i * 6pt, dy: 100pt, rect(width: 4pt, height: 30pt, fill: black)) }";
+    for (name, source) in [
+        (
+            "shapes in a bleed set before the template",
+            format!(
+                "#import \"/nexus.typ\": *\n#set page(bleed: 100pt)\n#show: cv\n#header()\n{word}\n"
+            ),
+        ),
+        (
+            "shapes in a bleed set after it",
+            format!("{START}#set page(bleed: 100pt)\n{word}\n"),
+        ),
+        (
+            "a bleed past the largest page",
+            "#import \"/nexus.typ\": *\n#set page(bleed: 1500pt)\n#show: cv\n#header()\n"
+                .to_owned(),
+        ),
+        (
+            "on one side",
+            format!("{START}#set page(bleed: (left: 0.01pt))\nWork.\n"),
+        ),
+        (
+            "only the last page",
+            format!("{START}Work.\n#pagebreak()\n#set page(bleed: 3mm)\nMore.\n"),
+        ),
+    ] {
+        match render(&source, &facts_en()).await {
+            Err(RenderError::Diagnostics(errors)) => assert!(
+                errors.iter().any(|e| e.message.contains("has a bleed")),
+                "{name}: {errors:?}"
+            ),
+            other => panic!(
+                "{name}: wanted a compile error, got {:?}",
+                other.map(|r| r.text.lines)
+            ),
+        }
+    }
+    let none = format!("{START}#set page(bleed: 0pt)\nWork.\n");
+    assert!(render(&none, &facts_en()).await.is_ok());
+}
+
 /// What remains is stamped on every page, wherever you look. Judged by pixels against the same page
 /// unstamped, and each quarter must show a real part of the stamp, not a stray corner of it.
 #[tokio::test]
@@ -1933,6 +2009,7 @@ async fn what_is_drawn_decides_not_a_model_of_the_paint() {
 
 /// A PDF viewer widens a hairline to a whole pixel: poppler at 144 dpi leaves nothing of a word under
 /// these, while `typst_render` leaves it plainly readable. So the check draws them as such a viewer does.
+/// Thinner than these, nothing is drawn at all: see `nothing_is_drawn_thinner_than_the_picture_shows`.
 #[tokio::test]
 async fn hairlines_are_judged_as_the_harshest_viewer_draws_them() {
     let over = |dx: f64, dy: f64, shapes: String| {
@@ -1943,35 +2020,17 @@ async fn hairlines_are_judged_as_the_harshest_viewer_draws_them() {
     // so that is SPEC's limit.
     for offset in 0..6 {
         let (dx, dy) = (f64::from(offset) * 0.09, f64::from(offset) * 0.13);
-        let lines = |step: f64, thick: f64| {
-            over(
-                dx,
-                dy,
-                format!(
-                    "#for i in range(60) {{ place(top + left, dx: i * {step}pt - 1pt, dy: -1pt, line(angle: 90deg, length: 10pt, stroke: (paint: white, thickness: {thick}pt))) }}"
-                ),
-            )
-        };
         cases.push((
-            "hairlines 0.25 pt apart, leaving most of each gap",
-            lines(0.25, 0.05),
-        ));
-        cases.push(("hairlines 0.5 pt apart", lines(0.5, 0.05)));
-        cases.push((
-            "thin filled rects",
-            over(dx, dy, "#for i in range(60) { place(top + left, dx: i * 0.5pt - 1pt, dy: -1pt, rect(width: 0.05pt, height: 10pt, fill: white)) }".into()),
-        ));
-        cases.push((
-            "specks",
-            over(dx, dy, "#for x in range(42) { for y in range(22) { place(top + left, dx: x * 0.5pt - 1pt, dy: y * 0.5pt - 1pt, rect(width: 0.05pt, height: 0.05pt, fill: white)) } }".into()),
+            "hairlines 0.5 pt apart",
+            over(dx, dy, "#for i in range(60) { place(top + left, dx: i * 0.5pt - 1pt, dy: -1pt, line(angle: 90deg, length: 10pt, stroke: (paint: white, thickness: 0.25pt))) }".into()),
         ));
         cases.push((
             "a dash finer than a pixel",
-            over(dx, dy, "#place(top + left, dy: 4pt, line(length: 20pt, stroke: (paint: white, thickness: 10pt, dash: (0.1pt, 0.1pt))))".into()),
+            over(dx, dy, "#place(top + left, dy: 4pt, line(length: 20pt, stroke: (paint: white, thickness: 10pt, dash: (0.25pt, 0.25pt))))".into()),
         ));
         cases.push((
             "a thin white stroke on the text",
-            format!("#v({dy}pt)I am#h({dx}pt) #text(stroke: 0.2pt + white)[not] certified."),
+            format!("#v({dy}pt)I am#h({dx}pt) #text(stroke: 0.25pt + white)[not] certified."),
         ));
     }
     let cases: Vec<(&str, Rule, &str)> = cases
@@ -1979,6 +2038,139 @@ async fn hairlines_are_judged_as_the_harshest_viewer_draws_them() {
         .map(|(name, body)| (*name, Rule::HiddenText, body.as_str()))
         .collect();
     assert_flagged(&cases).await;
+}
+
+async fn assert_too_thin(cases: &[(&str, String)]) {
+    for (name, body) in cases {
+        let source = format!("{START}{body}\n");
+        match render(&source, &facts_en()).await {
+            Err(RenderError::Diagnostics(errors)) => {
+                let first = &errors[0];
+                assert!(
+                    first.message.contains("than the picture shows"),
+                    "{name}: {errors:?}"
+                );
+                assert_eq!(first.file.as_deref(), Some("/main.typ"), "{name}");
+            }
+            other => panic!(
+                "{name}: wanted a compile error, got {:?}",
+                other.map(|r| r.text.hidden)
+            ),
+        }
+    }
+}
+
+/// A PDF viewer draws the thinnest line a whole pixel wide, and the picture the owner approves by how
+/// little of a pixel it covers. Measured: letters of lines 0.001 pt thick are on no picture, solid black
+/// in Ghostscript and half grey in poppler. So nothing may draw thinner than the picture shows.
+#[tokio::test]
+async fn nothing_is_drawn_thinner_than_the_picture_shows() {
+    let letters = |thickness: &str| {
+        format!(
+            "#for i in range(80) {{ place(top + left, dx: i * 0.25pt, line(angle: 90deg, length: 20pt, stroke: {thickness} + black)) }}"
+        )
+    };
+    let mesh = "#for i in range(24) { place(top + left, dx: -1pt, dy: i * 0.5pt - 1pt, line(length: 19pt, stroke: 0.001pt + black)) }";
+    let flat = "#for i in range(24) { place(top + left, dx: -1pt, dy: i * 0.5pt - 1pt, polygon(fill: black, (0pt, 0pt), (19pt, 0pt), (0pt, 0pt))) }";
+    assert_too_thin(&[
+        ("letters of lines 0.001 pt thick", letters("0.001pt")),
+        ("of lines 0.01 pt thick", letters("0.01pt")),
+        ("of lines 0.1 pt thick", letters("0.1pt")),
+        ("just under half a pixel", letters("0.24pt")),
+        (
+            "of thin filled rectangles",
+            "#for i in range(80) { place(top + left, dx: i * 0.5pt, rect(width: 0.001pt, height: 20pt, fill: black)) }".into(),
+        ),
+        (
+            "a rectangle that can fall between two pixels",
+            "#rect(width: 100pt, height: 0.4pt, fill: black)".into(),
+        ),
+        (
+            "specks",
+            "#for x in range(42) { for y in range(22) { place(top + left, dx: x * 0.5pt, dy: y * 0.5pt, rect(width: 0.05pt, height: 0.05pt, fill: black)) } }".into(),
+        ),
+        (
+            "a slanted fill of no area",
+            "#polygon(fill: black, (0pt, 0pt), (40pt, 30pt), (40pt, 30pt), (0pt, 0pt))".into(),
+        ),
+        (
+            "a slanted sliver",
+            "#polygon(fill: black, (0pt, 0pt), (40pt, 30pt), (40pt, 30.1pt), (0pt, 0.1pt))".into(),
+        ),
+        (
+            "a sliver beside a wide part",
+            "#curve(fill: black, curve.line((20pt, 0pt)), curve.line((20pt, 20pt)), curve.close(), curve.move((30pt, 0pt)), curve.line((60pt, 30pt)), curve.line((60pt, 30.01pt)), curve.close())".into(),
+        ),
+        (
+            "dashes too short to show",
+            "#line(length: 40pt, stroke: (thickness: 10pt, dash: (0.01pt, 0.5pt)))".into(),
+        ),
+        (
+            "dashes of no length",
+            "#line(length: 40pt, stroke: (thickness: 10pt, dash: (0pt, 0.5pt)))".into(),
+        ),
+        (
+            "a dash an odd count draws",
+            "#line(length: 40pt, stroke: (thickness: 10pt, dash: (2pt, 1pt, 0.1pt)))".into(),
+        ),
+        (
+            "a hairline around letters",
+            "#text(stroke: 0.01pt + red)[Work.]".into(),
+        ),
+        (
+            "a stroke of no width around letters",
+            "#text(stroke: 0pt + red)[Work.]".into(),
+        ),
+        (
+            "in a tiling",
+            "#rect(width: 40pt, height: 20pt, fill: tiling(size: (9pt, 9pt), line(length: 9pt, stroke: 0.01pt)))".into(),
+        ),
+        (
+            "made thin by a scale",
+            "#scale(50%, line(length: 40pt, stroke: 0.4pt))".into(),
+        ),
+        (
+            "thin for a large page's coarser picture",
+            "#set page(width: 1200pt, height: 1200pt)\n#line(length: 40pt, stroke: 0.3pt)".into(),
+        ),
+        (
+            "white text on a mesh no picture has",
+            format!("I am #box[{mesh}#text(fill: white)[not]] certified."),
+        ),
+        (
+            "white text on fills of no area",
+            format!("I am #box[{flat}#text(fill: white)[not]] certified."),
+        ),
+        (
+            "white hairlines over a word",
+            "I am #box[not#for i in range(60) { place(top + left, dx: i * 0.25pt - 1pt, dy: -1pt, line(angle: 90deg, length: 10pt, stroke: 0.05pt + white)) }] certified.".into(),
+        ),
+    ])
+    .await;
+}
+
+/// The rules, bars and frames a CV draws are at the floor or over it, and stay allowed. A stroke or a
+/// rectangle of no width draws nothing in any viewer measured.
+#[tokio::test]
+async fn ordinary_rules_are_thick_enough() {
+    for body in [
+        "#line(length: 100%, stroke: 0.25pt)\n#line(length: 100%, stroke: 0.4pt)\n#line(length: 100%, stroke: 0.5pt)\n#line(length: 100%)",
+        "#table(columns: 2, stroke: 0.4pt, [Rust], [5 years], [Go], [2 years])",
+        "#rect(width: 100%, height: 0.5pt, fill: black)\n#rect(width: 2pt, height: 20pt, fill: navy)",
+        "#text(size: 8pt)[#underline[Under] #strike[struck] #overline[over]] $ a / b + sqrt(x) $",
+        "#text(font: \"Inter\", size: 7pt)[#underline[Under] #strike[struck] #overline[over]]",
+        "#line(length: 100%, stroke: (thickness: 0.3pt, dash: \"dotted\"))\n#line(length: 100%, stroke: (thickness: 1pt, dash: \"densely-dash-dotted\"))",
+        "#line(length: 100%, stroke: (thickness: 1pt, cap: \"round\", dash: (0pt, 3pt)))",
+        "#line(length: 100%, stroke: 0pt)\n#rect(width: 0pt, height: 10pt, fill: black)\n#box(fill: red)[] #highlight[]",
+        "#circle(radius: 1.5pt, fill: black) #ellipse(width: 10pt, height: 1pt, fill: black) #box(fill: luma(90%), radius: 2pt)[Pill]",
+        "#text(stroke: 0.3pt + navy)[Outlined]",
+        "#scale(200%, origin: top + left, line(length: 40pt, stroke: 0.15pt))",
+        "#polygon(fill: black, (0pt, 0pt), (40pt, 30pt), (40pt, 31pt), (0pt, 1pt))",
+    ] {
+        let source = format!("{START}{body}\n");
+        let rendered = render(&source, &facts_en()).await;
+        assert!(rendered.is_ok(), "{body}: {:?}", rendered.err());
+    }
 }
 
 /// What can't be checked in its budget is refused, and says so truly, not as a page limit.
@@ -2193,10 +2385,10 @@ async fn honest_designs_stay_allowed_however_they_are_drawn() {
         "#block(fill: gradient.linear(rgb(\"#1f3a5f\"), white), inset: 10pt, width: 100%)[#h(1fr)#text(size: 20pt)[Mara]]",
         "#table(columns: 3, inset: 1pt, stroke: 0.5pt, [Rust], [5], [Expert], [Go], [2], [gypsy quay])",
         "#table(columns: 2, inset: 3pt, stroke: 2pt + navy, [Rust], [5 years], [Go], [2 years])",
-        "#table(columns: 3, inset: 1pt, stroke: 0.1pt, [Rust gypsy], [5 years], [Expert quay])",
+        "#table(columns: 3, inset: 1pt, stroke: 0.25pt, [Rust gypsy], [5 years], [Expert quay])",
         "#table(columns: 3, fill: luma(90%), stroke: 0.25pt + white, inset: 1pt, [Rust gypsy], [5], [quay])",
-        "#underline(stroke: 0.1pt)[Hairline gypsy] and #strike(stroke: 0.1pt)[hairline 2019]",
-        "Line above\n#line(length: 100%, stroke: 0.1pt)\nLine below\n#v(-0.5em)\n#line(length: 100%, stroke: 0.05pt)\nAnd under",
+        "#underline(stroke: 0.25pt)[Hairline gypsy] and #strike(stroke: 0.25pt)[hairline 2019]",
+        "Line above\n#line(length: 100%, stroke: 0.3pt)\nLine below\n#v(-0.5em)\n#line(length: 100%, stroke: 0.25pt)\nAnd under",
         "Skill #box(width: 1fr, repeat[.]) Expert\n#line(length: 100%, stroke: (dash: \"dotted\", thickness: 0.3pt))\nNext",
         "#box(fill: luma(90%))[Tight gypsy] #box(fill: rgb(\"#dbeafe\"), radius: 2pt)[Pill quay] #box(width: 40pt, height: 6pt, fill: navy) after",
         "#set par(leading: 0em)\nTight gypq lines of text.\\\nOn top of gypq each other.\\\nThird of gypq them.",
@@ -2665,7 +2857,7 @@ async fn judged(line: &str) -> (Vec<String>, Vec<String>) {
 /// A line that draws nothing, on any page or in any viewer, and that the widened drawing draws closed up.
 fn nowhere(dx: f64, dy: f64, length: f64, thickness: f64, paint: &str) -> String {
     format!(
-        "place(top + left, dx: {dx}pt, dy: {dy}pt, line(length: {length}pt, stroke: (paint: {paint}, thickness: {thickness}pt, dash: (array: (0.01pt, 1000pt), phase: 1pt))))"
+        "place(top + left, dx: {dx}pt, dy: {dy}pt, line(length: {length}pt, stroke: (paint: {paint}, thickness: {thickness}pt, dash: (array: (0.25pt, 1000pt), phase: 1pt))))"
     )
 }
 
@@ -2715,12 +2907,6 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
     let e_box = (12.0, -2.0, 528.0, 649.0);
     let eight = (46.0, -10.0, 419.0, 610.0);
     let dollar = (29.0, -98.0, 417.0, 695.0);
-    let mesh: Vec<String> = (0..24)
-        .map(|i| format!("#place(top + left, dx: -1pt, dy: {}pt, line(length: 19pt, stroke: 0.001pt + black))", f64::from(i) * 0.5 - 1.0))
-        .collect();
-    let polygons: Vec<String> = (0..24)
-        .map(|i| format!("#place(top + left, dx: -1pt, dy: {}pt, polygon(fill: black, (0pt, 0pt), (19pt, 0pt), (0pt, 0pt)))", f64::from(i) * 0.5 - 1.0))
-        .collect();
     let cases: Vec<(&str, String)> = vec![
         (
             "white on a dash",
@@ -2734,20 +2920,6 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
             format!(
                 "I am #box(fill: navy, outset: 1pt)[#{}#text(fill: navy)[not]] certified.",
                 band("white")
-            ),
-        ),
-        (
-            "white on a mesh",
-            format!(
-                "I am #box[{}#text(fill: white)[not]] certified.",
-                mesh.join("\n")
-            ),
-        ),
-        (
-            "white on zero-area polygons",
-            format!(
-                "I am #box[{}#text(fill: white)[not]] certified.",
-                polygons.join("\n")
             ),
         ),
         (
@@ -2819,27 +2991,6 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
             ),
         ),
     ];
-    // Only the widening makes these hairlines a patch, and only it has a ground for that patch to stand out
-    // on: read against the real page, the dot is erased.
-    let hairlines: Vec<String> = (0..5)
-        .map(|i| {
-            format!(
-                "place(top + left, dx: -1.85pt, dy: {}pt, line(length: 1.4pt, stroke: 0.02pt + white))",
-                f64::from(i) * 0.3 - 1.2
-            )
-        })
-        .collect();
-    let ground = nowhere(-1.0, -0.5, 4.4, 5.0, "rgb(120, 120, 120)");
-    let cases: Vec<(&str, String)> = cases
-        .into_iter()
-        .chain([(
-            "hairlines over a dot, on a ground of no page",
-            format!(
-                "Grew revenue 4#box(width: 0pt, height: 0pt, {{ {ground} }})#text(size: 11pt, kerning: false)[.]#box(width: 0pt, height: 0pt, {{ {} }})9 times.",
-                hairlines.join("\n")
-            ),
-        )])
-        .collect();
     for (name, line) in cases {
         let (hidden, _) = judged(&line).await;
         assert!(!hidden.is_empty(), "{name} passed: {line}");
@@ -2856,7 +3007,8 @@ async fn a_glyph_must_arrive_in_the_page_as_really_drawn() {
 }
 
 /// The fifth gate review's finding 1: a line's thickness can run along the axis a stretch doesn't enlarge,
-/// so it stays under a pixel and fades here, and a PDF viewer draws it a whole pixel wide.
+/// so it stays under a pixel and fades here, and a PDF viewer draws it a whole pixel wide. Such a line is
+/// as thin as it was, and a compile error.
 #[tokio::test]
 async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
     let across = |count: i32, length: f64| -> String {
@@ -2913,10 +3065,7 @@ async fn hairlines_under_a_stretch_are_widened_along_the_narrower_axis() {
             ),
         ),
     ];
-    for (name, line) in cases {
-        let (hidden, _) = judged(&line).await;
-        assert!(!hidden.is_empty(), "{name} passed: {line}");
-    }
+    assert_too_thin(&cases).await;
     // A stretched rule of honest thickness stays allowed.
     let (hidden, _) = judged("Work.#v(3pt)#scale(x: 150%, origin: top + left, reflow: false, line(length: 100pt, stroke: 0.5pt))").await;
     assert_eq!(hidden, Vec::<String>::new());
