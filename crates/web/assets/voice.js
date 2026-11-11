@@ -1,6 +1,7 @@
 // The voice session: OpenAI Realtime over WebRTC, from this page. The server mints the secret and
 // runs every tool call behind its allowlist; this file only relays. Text from the model is shown
 // with textContent and nowhere as markup, because a job description can steer what it says.
+// For the same reason a write waits for a tap on a card built here from the call's arguments.
 (() => {
   const root = document.getElementById("voice");
   if (!root || !root.dataset.csrf) return;
@@ -41,6 +42,7 @@
     thinking: ["Thinking", "You can interrupt at any time."],
     speaking: ["Speaking", "Interrupt to stop the reply."],
     working: ["Working", "Checking your request in Nexus."],
+    confirm: ["Your decision", "Allow or decline the change shown in the conversation."],
     paused: ["Microphone paused", "Return to this window to continue."],
     error: ["Needs attention", "Check the message below and try again."],
     ended: ["Conversation ended", "Your conversation stays here until you start a new one."],
@@ -65,6 +67,45 @@
     "patch_cv",
     "revert_cv",
   ]);
+  // These wait for a tap on their card, and the server refuses them without it: everything that
+  // changes a link, a contact, a status, an archive flag, a follow-up or a document, or reverts a CV.
+  // A note and a CV patch run at once and show their card as done: a note only adds, and a patch is
+  // a draft the owner approves on the CV's page.
+  const CONFIRMED_TOOLS = new Set([
+    "create_application",
+    "update_application",
+    "archive_application",
+    "unarchive_application",
+    "record_application_event",
+    "create_contact",
+    "update_contact",
+    "update_document_links",
+    "update_document_metadata",
+    "revert_cv",
+  ]);
+  const shown = (value) => (typeof value === "string" ? value : JSON.stringify(value));
+  const CARD_TITLES = {
+    create_application: (a) => `Create an application: ${shown(a.role)} at ${shown(a.company)}`,
+    update_application: (a) => `Change application #${shown(a.id)}`,
+    archive_application: (a) => `Archive application #${shown(a.id)}`,
+    unarchive_application: (a) => `Restore application #${shown(a.id)} from the archive`,
+    append_application_note: (a) => `Add a note to application #${shown(a.applicationId)}`,
+    record_application_event: (a) => `Record “${shown(a.type)}” in the history of application #${shown(a.applicationId)}`,
+    create_contact: (a) => `Add a contact to application #${shown(a.applicationId)}`,
+    update_contact: (a) => `Change contact #${shown(a.contactId)} of application #${shown(a.applicationId)}`,
+    update_document_links: (a) => `Link document #${shown(a.id)} to exactly these applications: ${shown(a.applicationIds)}`,
+    update_document_metadata: (a) => `Change the details of document #${shown(a.id)}`,
+    patch_cv: (a) => `Edit the CV draft: ${a.edits?.length === 1 ? "1 edit" : `${shown(a.edits?.length)} edits`}`,
+    revert_cv: (a) => `Revert the CV to revision ${shown(a.toRevision)}`,
+  };
+  // In a card's title already, or plumbing that changes nothing.
+  const NOT_LISTED = new Set([
+    "id", "applicationId", "applicationIds", "contactId", "toRevision",
+    "expectedUpdatedAt", "expectedRevision", "idempotencyKey",
+  ]);
+  const DECLINED = JSON.stringify({
+    error: { code: "voice_owner_declined", message: "The owner declined this change on the screen. Nothing was changed." },
+  });
   // Shorter than this holds too little sound for OpenAI to accept, and asks for nothing.
   const MIN_HOLD_MS = 300;
 
@@ -94,14 +135,14 @@
     if (!live || session !== live) return;
     const phase = !live.ready ? "connecting" : live.error ? "error"
       : (live.holding || live.inputSpeaking) && micOn ? "listening" : live.audioPlaying ? "speaking"
-      : live.toolRunning ? "working" : live.responding || live.awaiting ? "thinking"
+      : live.confirm ? "confirm" : live.toolRunning ? "working" : live.responding || live.awaiting ? "thinking"
       : document.hidden ? "paused" : live.handsFree && micOn ? "listening" : "ready";
     setPhase(phase);
     if (phase === "listening" && live.handsFree) say("Speak naturally. Turn off hands-free to mute.");
     holdButton.disabled = !live.ready || !!live.handsFree;
     holdLabel.textContent = live.holding ? "Send voice" : "Tap to talk";
     holdButton.setAttribute("aria-pressed", String(!!live.holding));
-    if (interruptButton) interruptButton.disabled = !(live.responding || live.audioPlaying || live.awaiting || live.toolRunning);
+    if (interruptButton) interruptButton.disabled = !(live.responding || live.audioPlaying || live.awaiting || live.toolRunning || live.confirm);
   }
 
   function showLive(active) {
@@ -127,9 +168,10 @@
     clearTimeout(ending.graceTimer);
     if (ending.toolAbort) ending.toolAbort.abort();
     if (ending.connectAbort) ending.connectAbort.abort();
-    if (ending.toolState) {
-      ending.toolState.textContent = "Result unknown — check the record";
-      ending.toolState.dataset.state = "unknown";
+    if (ending.confirm) ending.confirm(false);
+    for (const tag of ending.toolState || []) {
+      tag.textContent = "Result unknown — check the record";
+      tag.dataset.state = "unknown";
     }
     if (ending.channel) ending.channel.close();
     if (ending.peer) ending.peer.close();
@@ -170,6 +212,7 @@
     if (live.responseId) live.cancelledResponses.add(live.responseId);
     if (live.responding || live.awaiting) send(live, { type: "response.cancel" });
     if (live.audioPlaying) send(live, { type: "output_audio_buffer.clear" });
+    if (live.confirm) live.confirm(false);
     live.responding = false;
     live.awaiting = false;
     live.audioPlaying = false;
@@ -183,7 +226,7 @@
   function press() {
     const live = session;
     if (!live || !live.ready || live.handsFree || live.holding || document.hidden) return;
-    if (live.responding || live.audioPlaying || live.awaiting || live.toolRunning) interrupt(live);
+    if (live.responding || live.audioPlaying || live.awaiting || live.toolRunning || live.confirm) interrupt(live);
     live.error = false;
     live.holding = true;
     live.pressedAt = performance.now();
@@ -270,6 +313,64 @@
     return state;
   }
 
+  // A write's card in the conversation, in the page's own words: the tool's name and its arguments
+  // in full, never the model's account of them, because a job posting can steer what the model says
+  // but not what it has to pass. Returns the card and the tag its outcome goes in.
+  function addCard(name, args) {
+    const row = document.createElement("li");
+    row.className = "action";
+    const title = document.createElement("strong");
+    title.textContent = CARD_TITLES[name](args);
+    row.append(title);
+    const variant = name.endsWith("_cv") && !args.variant && root.dataset.variant;
+    const listed = Object.entries(variant ? { variant, ...args } : args).flatMap(([key, value]) => {
+      if (NOT_LISTED.has(key)) return [];
+      if (name !== "patch_cv" || key !== "edits" || !Array.isArray(value)) return [[key, shown(value)]];
+      return value.flatMap((edit) => [["replace", shown(edit?.oldText)], ["with", shown(edit?.newText)]]);
+    });
+    for (const [key, value] of listed) {
+      const line = document.createElement("span");
+      line.className = "action-detail";
+      line.textContent = `${key}: ${value}`;
+      row.append(line);
+    }
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    row.append(tag);
+    transcript.append(row);
+    if (byId("voice-transcript-empty")) byId("voice-transcript-empty").hidden = true;
+    transcript.scrollTop = transcript.scrollHeight;
+    return [row, tag];
+  }
+
+  // Resolves true on Allow. "Don't", an interrupt and the session's end resolve false. Focus stays
+  // where it is: a card that took it would turn Space, held to talk, into an Allow.
+  function ask(live, row) {
+    return new Promise((resolve) => {
+      const buttons = document.createElement("span");
+      buttons.className = "action-buttons";
+      const settle = (allowed) => {
+        if (live.confirm !== settle) return;
+        live.confirm = null;
+        buttons.remove();
+        resolve(allowed);
+      };
+      for (const [text, allowed] of [["Allow", true], ["Don’t", false]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = allowed ? "" : "quiet";
+        button.textContent = text;
+        button.addEventListener("click", () => settle(allowed));
+        buttons.append(button);
+      }
+      row.append(buttons);
+      transcript.scrollTop = transcript.scrollHeight;
+      live.confirm = settle;
+      if (announcement) announcement.textContent = `Allow or decline: ${row.firstElementChild.textContent}`;
+      syncState(live);
+    });
+  }
+
   // What to tell the person if this answer from the server means their session is over.
   function endedBy(status, code) {
     if (status === 401) {
@@ -282,12 +383,9 @@
   }
 
   // The tool's answer as the model should read it, and what the list says about it.
-  async function runTool(live, call) {
+  async function runTool(live, call, args, confirmed) {
     if (session !== live) return { output: "{}", label: "stopped" };
-    let args;
-    try {
-      args = JSON.parse(call.arguments || "{}");
-    } catch {
+    if (!args) {
       const error = { error: { code: "voice_invalid_arguments" } };
       return { output: JSON.stringify(error), label: "Could not understand the action", state: "failed" };
     }
@@ -298,7 +396,7 @@
       response = await fetch("/api/voice/tool", {
         method: "POST",
         headers: apiHeaders({ "X-Nexus-Voice-Session": live.id }),
-        body: JSON.stringify({ name: call.name, arguments: args }),
+        body: JSON.stringify({ name: call.name, arguments: args, confirmed }),
         signal: controller.signal,
       });
     } catch {
@@ -364,16 +462,33 @@
       live.handledCalls.add(call.call_id);
       answered = true;
       touch(live);
-      const state = addTool(call.name);
-      live.toolRunning = true;
-      live.toolState = state;
-      syncState(live);
-      const answer = await runTool(live, call);
-      live.toolRunning = false;
-      live.toolState = null;
+      let args = null;
+      try { args = JSON.parse(call.arguments || "{}"); } catch {}
+      if (typeof args !== "object" || Array.isArray(args)) args = null;
+      const tags = [addTool(call.name)];
+      const row = args && WRITE_TOOLS.has(call.name) ? addCard(call.name, args) : null;
+      if (row) tags.push(row[1]);
+      const mark = (label, state) => {
+        for (const tag of tags) {
+          tag.textContent = label;
+          tag.dataset.state = state;
+        }
+      };
+      const confirmed = !!row && CONFIRMED_TOOLS.has(call.name);
+      let answer = { output: DECLINED, label: "Declined", state: "failed" };
+      if (confirmed) mark("Waiting for your tap", "running");
+      if (!confirmed || (await ask(live, row[0]))) {
+        mark("In progress", "running");
+        live.toolRunning = true;
+        live.toolState = tags;
+        syncState(live);
+        answer = await runTool(live, call, args, confirmed);
+        live.toolRunning = false;
+        live.toolState = null;
+        if (session !== live) return;
+      }
+      mark(answer.label, answer.state || "failed");
       if (session !== live) return;
-      state.textContent = answer.label;
-      state.dataset.state = answer.state || "failed";
       if (answer.updated) announceUpdate(call.name);
       send(live, {
         type: "conversation.item.create",

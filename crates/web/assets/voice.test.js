@@ -173,10 +173,11 @@ function response(status, calls) {
   };
 }
 
+// A write that needs no tap, so these tests are about the relay alone.
 const call = (id) => ({
-  arguments: '{"id":"1","notes":"changed"}',
+  arguments: '{"applicationId":"1","note":"changed"}',
   call_id: id,
-  name: "update_application",
+  name: "append_application_note",
   type: "function_call",
 });
 
@@ -206,7 +207,7 @@ test("Stop prevents mutations queued behind an active call from starting", async
   await h.elements["voice-stop"].emit("click");
   await flush();
   await flush();
-  assert.deepEqual(h.toolCalls.map((request) => request.arguments.id), ["1"]);
+  assert.deepEqual(h.toolCalls.map((request) => request.arguments.applicationId), ["1"]);
 });
 
 const event = (h, type, extra = {}) => h.channel.emit("message", { data: JSON.stringify({ type, ...extra }) });
@@ -426,4 +427,137 @@ test("a key OpenAI refuses leads to the key's page instead of asking to try agai
   const status = h.elements["voice-status"];
   assert.equal(status.textContent, error.message);
   assert.equal(status.children.at(-1).href, "/openai-key");
+});
+
+const write = (id, name, args) => ({ arguments: JSON.stringify(args), call_id: id, name, type: "function_call" });
+const cards = (h) => h.elements["voice-transcript"].children.filter((row) => row.className === "action");
+const texts = (card) => card.children.map((child) => child.textContent);
+const tap = async (card, text) => {
+  const buttons = card.children.find((child) => child.className === "action-buttons");
+  await buttons.children.find((button) => button.textContent === text).emit("click");
+  await flush(); await flush();
+};
+const outputs = (h) => h.channel.sent
+  .filter((sent) => sent.type === "conversation.item.create")
+  .map((sent) => JSON.parse(sent.item.output));
+
+test("a write waits for Allow, and its card is built from the arguments with the link in full", async () => {
+  const h = harness();
+  await connect(h);
+  const url = "https://jobs.example.test/apply?next=https%3A%2F%2Fevil.example%2Flogin&ref=" + "a".repeat(200);
+  await h.channel.emit("message", response("completed", [
+    write("link", "update_application", { id: "14", nextAction: "Sign in to confirm", jobUrl: url, expectedUpdatedAt: "t" }),
+  ]));
+  await flush(); await flush();
+  assert.equal(h.toolCalls.length, 0);
+  assert.equal(h.channel.sent.some((sent) => sent.type === "conversation.item.create"), false);
+  assert.equal(h.elements.voice.dataset.phase, "confirm");
+  const [card] = cards(h);
+  assert.deepEqual(texts(card).slice(0, 3), [
+    "Change application #14", "nextAction: Sign in to confirm", `jobUrl: ${url}`,
+  ]);
+  assert.equal(texts(card).some((text) => text.includes("expectedUpdatedAt")), false);
+  assert.equal(h.elements["voice-announcement"].textContent, "Allow or decline: Change application #14");
+
+  await tap(card, "Allow");
+  assert.deepEqual(h.toolCalls.map((request) => [request.name, request.confirmed]), [["update_application", true]]);
+  assert.deepEqual(outputs(h), [{ updated: true }]);
+  assert.equal(card.children.find((child) => child.className === "tag").textContent, "Saved");
+  assert.equal(h.channel.sent.filter((sent) => sent.type === "response.create").length, 1);
+});
+
+test("Don't answers the model that the owner declined, and nothing is fetched", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    write("mail", "update_contact", { contactId: "7", applicationId: "14", email: "attacker@evil.example" }),
+  ]));
+  await flush(); await flush();
+  const [card] = cards(h);
+  assert.deepEqual(texts(card).slice(0, 2), ["Change contact #7 of application #14", "email: attacker@evil.example"]);
+  await tap(card, "Don’t");
+  assert.equal(h.toolCalls.length, 0);
+  assert.equal(outputs(h)[0].error.code, "voice_owner_declined");
+  assert.equal(card.children.find((child) => child.className === "tag").textContent, "Declined");
+  assert.equal(h.channel.sent.filter((sent) => sent.type === "response.create").length, 1);
+  assert.equal(h.elements.voice.dataset.phase, "thinking");
+});
+
+test("a read runs at once without a card, and a note or CV patch runs at once with one", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    write("read", "get_application", { id: "14" }),
+    write("patch", "patch_cv", { expectedRevision: 3, summary: "Shorter", edits: [{ oldText: "old words", newText: "new words" }] }),
+  ]));
+  await flush(); await flush(); await flush();
+  assert.deepEqual(h.toolCalls.map((request) => [request.name, request.confirmed]), [
+    ["get_application", false], ["patch_cv", false],
+  ]);
+  const [card, more] = cards(h);
+  assert.equal(more, undefined);
+  assert.deepEqual(texts(card), ["Edit the CV draft: 1 edit", "summary: Shorter", "replace: old words", "with: new words", "Saved"]);
+});
+
+test("two writes in one response get their cards in order, each with its own answer", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    write("archive", "archive_application", { id: "14" }),
+    write("revert", "revert_cv", { toRevision: 3, expectedRevision: 5, variant: "default" }),
+  ]));
+  await flush(); await flush();
+  assert.deepEqual(cards(h).map((card) => card.children[0].textContent), ["Archive application #14"]);
+  await tap(cards(h)[0], "Don’t");
+  assert.equal(h.toolCalls.length, 0);
+  assert.deepEqual(cards(h).map((card) => card.children[0].textContent), [
+    "Archive application #14", "Revert the CV to revision 3",
+  ]);
+  assert.equal(texts(cards(h)[1])[1], "variant: default");
+  // The first card's buttons are spent: tapping them again decides nothing for the second.
+  await tap(cards(h)[0], "Allow");
+  assert.equal(h.toolCalls.length, 0);
+  await tap(cards(h)[1], "Allow");
+  assert.deepEqual(h.toolCalls.map((request) => request.name), ["revert_cv"]);
+  assert.deepEqual(outputs(h).map((output) => output.error?.code), ["voice_owner_declined", undefined]);
+  assert.equal(h.channel.sent.filter((sent) => sent.type === "response.create").length, 1);
+});
+
+test("ending the session declines a waiting card, and so does an interrupt", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [write("first", "archive_application", { id: "14" })]));
+  await flush(); await flush();
+  await h.elements["voice-interrupt"].emit("click");
+  await flush(); await flush();
+  const tag = (card) => card.children.find((child) => child.className === "tag").textContent;
+  assert.equal(tag(cards(h)[0]), "Declined");
+  assert.equal(outputs(h)[0].error.code, "voice_owner_declined");
+  assert.equal(h.channel.sent.filter((sent) => sent.type === "response.create").length, 0);
+
+  await h.elements["voice-hold"].emit("click");
+  h.advance(500);
+  await h.elements["voice-hold"].emit("click");
+  await event(h, "response.created", { response: { id: "next" } });
+  await event(h, "response.done", { response: {
+    id: "next", status: "completed", output: [write("second", "archive_application", { id: "15" })],
+  } });
+  await flush(); await flush();
+  await h.elements["voice-stop"].emit("click");
+  await flush(); await flush();
+  assert.equal(tag(cards(h)[1]), "Declined");
+  await tap(cards(h)[1], "Allow");
+  assert.equal(h.toolCalls.length, 0);
+});
+
+test("arguments that are no object never reach a card or the server", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", response("completed", [
+    { arguments: "null", call_id: "null", name: "archive_application", type: "function_call" },
+  ]));
+  await flush(); await flush();
+  assert.equal(cards(h).length, 0);
+  assert.equal(h.toolCalls.length, 0);
+  assert.equal(outputs(h)[0].error.code, "voice_invalid_arguments");
 });

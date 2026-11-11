@@ -322,7 +322,7 @@ Use a key from an OpenAI project made for this, with a budget limit set on the p
 | Document metadata and application links returned by the document tools; results of internal updates | |
 | When a session starts: Nexus's instructions to the model, the tool definitions and the selected CV variant or application ID, if any | |
 
-The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass through Nexus. A tool result is cut at 32 KiB, with a marker the model can read.
+The browser talks to OpenAI directly over WebRTC, so this traffic doesn't pass through Nexus. What comes back is the model's, and a job posting or a recruiter's mail can steer it. So a change to an application, a contact, a document or a CV revert waits for your tap on a card that shows exactly what would be written. Read it before allowing, links and addresses above all. Notes and CV draft edits run without the tap. A tool result is cut at 32 KiB, with a marker the model can read.
 
 **Cost.** OpenAI bills Realtime by audio and text tokens of the model in use, and a long conversation costs more per turn, because earlier turns are sent again. Check its current pricing page, as this file doesn't quote prices that change. What Nexus does to bound it:
 
