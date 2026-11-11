@@ -64,6 +64,7 @@ class FakeChannel extends FakeElement {
 function harness(options = {}) {
   let now = 1;
   const toolResponse = options.toolResponse;
+  const lookup = options.lookup;
   const sessionResponse = options.sessionResponse;
   const ids = [
     "voice",
@@ -105,6 +106,7 @@ function harness(options = {}) {
   const track = { enabled: false, stopped: false, stop() { this.stopped = true; this.enabled = false; } };
   const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
   const toolCalls = [];
+  const lookups = [];
   const fetch = async (url, options = {}) => {
     if (url === "/api/voice/session") {
       if (sessionResponse) return sessionResponse;
@@ -121,7 +123,16 @@ function harness(options = {}) {
     }
     if (url === "https://calls.test") return { ok: true, text: async () => "answer" };
     if (url === "/api/voice/tool") {
-      toolCalls.push(JSON.parse(options.body));
+      const request = JSON.parse(options.body);
+      // The page's own read for a card's title, kept apart from the calls the model made.
+      if (request.name === "get_application") {
+        lookups.push(request);
+        return lookup || { status: 200, json: async () => ({ isError: false, output: JSON.stringify({
+          id: request.arguments.id, company: "Example Robotics", role: "AI Agent Engineer (Python)",
+          contacts: [{ id: "7", name: "Person B" }],
+        }) }) };
+      }
+      toolCalls.push(request);
       if (toolResponse) return toolResponse;
       return { json: async () => ({ isError: false, output: '{"updated":true}' }) };
     }
@@ -156,7 +167,7 @@ function harness(options = {}) {
     setTimeout: () => 1,
     window,
   });
-  return { channel, elements, toolCalls, document, documentListeners, track, advance: (ms) => { now += ms; } };
+  return { channel, elements, toolCalls, lookups, document, documentListeners, track, advance: (ms) => { now += ms; } };
 }
 
 async function connect(h) {
@@ -446,18 +457,21 @@ test("a write waits for Allow, and its card is built from the arguments with the
   await connect(h);
   const url = "https://jobs.example.test/apply?next=https%3A%2F%2Fevil.example%2Flogin&ref=" + "a".repeat(200);
   await h.channel.emit("message", response("completed", [
-    write("link", "update_application", { id: "14", nextAction: "Sign in to confirm", jobUrl: url, expectedUpdatedAt: "t" }),
+    write("link", "update_application", { id: "14", company: "Trusted Bank", nextAction: "Sign in to confirm", jobUrl: url, expectedUpdatedAt: "t" }),
   ]));
   await flush(); await flush();
   assert.equal(h.toolCalls.length, 0);
   assert.equal(h.channel.sent.some((sent) => sent.type === "conversation.item.create"), false);
   assert.equal(h.elements.voice.dataset.phase, "confirm");
   const [card] = cards(h);
-  assert.deepEqual(texts(card).slice(0, 3), [
-    "Change application #14", "nextAction: Sign in to confirm", `jobUrl: ${url}`,
+  // The name is the server's, whatever company the arguments claim.
+  assert.deepEqual(texts(card).slice(0, 4), [
+    "Change application #14: Example Robotics, AI Agent Engineer (Python)",
+    "company: Trusted Bank", "nextAction: Sign in to confirm", `jobUrl: ${url}`,
   ]);
+  assert.deepEqual(h.lookups, [{ name: "get_application", arguments: { id: "14" }, confirmed: false }]);
   assert.equal(texts(card).some((text) => text.includes("expectedUpdatedAt")), false);
-  assert.equal(h.elements["voice-announcement"].textContent, "Allow or decline: Change application #14");
+  assert.equal(h.elements["voice-announcement"].textContent, "Allow or decline: Change application #14: Example Robotics, AI Agent Engineer (Python)");
 
   await tap(card, "Allow");
   assert.deepEqual(h.toolCalls.map((request) => [request.name, request.confirmed]), [["update_application", true]]);
@@ -470,11 +484,14 @@ test("Don't answers the model that the owner declined, and nothing is fetched", 
   const h = harness();
   await connect(h);
   await h.channel.emit("message", response("completed", [
-    write("mail", "update_contact", { contactId: "7", applicationId: "14", email: "attacker@evil.example" }),
+    write("mail", "update_contact", { contactId: "7", applicationId: "14", name: "Your Bank", email: "attacker@evil.example" }),
   ]));
   await flush(); await flush();
   const [card] = cards(h);
-  assert.deepEqual(texts(card).slice(0, 2), ["Change contact #7 of application #14", "email: attacker@evil.example"]);
+  assert.deepEqual(texts(card).slice(0, 3), [
+    "Change contact #7 (Person B) in application #14: Example Robotics, AI Agent Engineer (Python)",
+    "name: Your Bank", "email: attacker@evil.example",
+  ]);
   await tap(card, "Don’t");
   assert.equal(h.toolCalls.length, 0);
   assert.equal(outputs(h)[0].error.code, "voice_owner_declined");
@@ -487,17 +504,40 @@ test("a read runs at once without a card, and a note or CV patch runs at once wi
   const h = harness();
   await connect(h);
   await h.channel.emit("message", response("completed", [
-    write("read", "get_application", { id: "14" }),
+    write("read", "list_applications", {}),
     write("patch", "patch_cv", { expectedRevision: 3, summary: "Shorter", edits: [{ oldText: "old words", newText: "new words" }] }),
   ]));
   await flush(); await flush(); await flush();
   assert.deepEqual(h.toolCalls.map((request) => [request.name, request.confirmed]), [
-    ["get_application", false], ["patch_cv", false],
+    ["list_applications", false], ["patch_cv", false],
   ]);
+  assert.equal(h.lookups.length, 0);
   const [card, more] = cards(h);
   assert.equal(more, undefined);
   assert.deepEqual(texts(card), ["Edit the CV draft: 1 edit", "summary: Shorter", "replace: old words", "with: new words", "Saved"]);
 });
+
+const ARCHIVE_14 = "Archive application #14: Example Robotics, AI Agent Engineer (Python)";
+
+for (const [name, lookup] of [
+  ["is not found", { status: 200, json: async () => ({ isError: true, output: "Application not found" }) }],
+  ["fails", { ok: false, status: 502, json: async () => { throw new Error("HTML"); } }],
+  ["answers for another record", { status: 200, json: async () => ({ isError: false, output: '{"id":"15","company":"Other","role":"Other"}' }) }],
+]) {
+  test(`a card says so when its application ${name}, and still waits`, async () => {
+    const h = harness({ lookup });
+    await connect(h);
+    await h.channel.emit("message", response("completed", [
+      write("mail", "update_contact", { contactId: "7", applicationId: "14", email: "a@b.example" }),
+    ]));
+    await flush(); await flush(); await flush();
+    const [card] = cards(h);
+    assert.equal(card.children[0].textContent, "Change contact #7 in application #14, which could not be read");
+    assert.equal(h.toolCalls.length, 0);
+    await tap(card, "Allow");
+    assert.deepEqual(h.toolCalls.map((request) => [request.name, request.confirmed]), [["update_contact", true]]);
+  });
+}
 
 test("two writes in one response get their cards in order, each with its own answer", async () => {
   const h = harness();
@@ -507,12 +547,14 @@ test("two writes in one response get their cards in order, each with its own ans
     write("revert", "revert_cv", { toRevision: 3, expectedRevision: 5, variant: "default" }),
   ]));
   await flush(); await flush();
-  assert.deepEqual(cards(h).map((card) => card.children[0].textContent), ["Archive application #14"]);
+  assert.deepEqual(cards(h).map((card) => card.children[0].textContent), [ARCHIVE_14]);
+  assert.equal(h.lookups.length, 1);
   await tap(cards(h)[0], "Don’t");
   assert.equal(h.toolCalls.length, 0);
   assert.deepEqual(cards(h).map((card) => card.children[0].textContent), [
-    "Archive application #14", "Revert the CV to revision 3",
+    ARCHIVE_14, "Revert the CV to revision 3",
   ]);
+  assert.equal(h.lookups.length, 1);
   assert.equal(texts(cards(h)[1])[1], "variant: default");
   // The first card's buttons are spent: tapping them again decides nothing for the second.
   await tap(cards(h)[0], "Allow");

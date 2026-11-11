@@ -84,15 +84,33 @@
     "revert_cv",
   ]);
   const shown = (value) => (typeof value === "string" ? value : JSON.stringify(value));
+  // A record as its card names it. `record` is what the server's own `get_application` answered, so
+  // the name is never one the model passed: `null` when it could not be read, and absent for the
+  // tools that run without a tap, which look nothing up.
+  const application = (id, record) => `application #${shown(id)}${
+    record === undefined ? "" : record ? `: ${shown(record.company)}, ${shown(record.role)}` : ", which could not be read"}`;
+  const contact = (id, record) => {
+    const found = record?.contacts?.find?.((entry) => entry?.id === id);
+    return `contact #${shown(id)}${found ? ` (${shown(found.name)})` : record ? " (not found there)" : ""}`;
+  };
+  // Where each tool that waits for a tap names its application.
+  const APPLICATION_ARGUMENT = {
+    update_application: "id",
+    archive_application: "id",
+    unarchive_application: "id",
+    record_application_event: "applicationId",
+    create_contact: "applicationId",
+    update_contact: "applicationId",
+  };
   const CARD_TITLES = {
     create_application: (a) => `Create an application: ${shown(a.role)} at ${shown(a.company)}`,
-    update_application: (a) => `Change application #${shown(a.id)}`,
-    archive_application: (a) => `Archive application #${shown(a.id)}`,
-    unarchive_application: (a) => `Restore application #${shown(a.id)} from the archive`,
+    update_application: (a, r) => `Change ${application(a.id, r)}`,
+    archive_application: (a, r) => `Archive ${application(a.id, r)}`,
+    unarchive_application: (a, r) => `Restore from the archive: ${application(a.id, r)}`,
     append_application_note: (a) => `Add a note to application #${shown(a.applicationId)}`,
-    record_application_event: (a) => `Record “${shown(a.type)}” in the history of application #${shown(a.applicationId)}`,
-    create_contact: (a) => `Add a contact to application #${shown(a.applicationId)}`,
-    update_contact: (a) => `Change contact #${shown(a.contactId)} of application #${shown(a.applicationId)}`,
+    record_application_event: (a, r) => `Record “${shown(a.type)}” in the history of ${application(a.applicationId, r)}`,
+    create_contact: (a, r) => `Add a contact to ${application(a.applicationId, r)}`,
+    update_contact: (a, r) => `Change ${contact(a.contactId, r)} in ${application(a.applicationId, r)}`,
     update_document_links: (a) => `Link document #${shown(a.id)} to exactly these applications: ${shown(a.applicationIds)}`,
     update_document_metadata: (a) => `Change the details of document #${shown(a.id)}`,
     patch_cv: (a) => `Edit the CV draft: ${a.edits?.length === 1 ? "1 edit" : `${shown(a.edits?.length)} edits`}`,
@@ -316,11 +334,11 @@
   // A write's card in the conversation, in the page's own words: the tool's name and its arguments
   // in full, never the model's account of them, because a job posting can steer what the model says
   // but not what it has to pass. Returns the card and the tag its outcome goes in.
-  function addCard(name, args) {
+  function addCard(name, args, record) {
     const row = document.createElement("li");
     row.className = "action";
     const title = document.createElement("strong");
-    title.textContent = CARD_TITLES[name](args);
+    title.textContent = CARD_TITLES[name](args, record);
     row.append(title);
     const variant = name.endsWith("_cv") && !args.variant && root.dataset.variant;
     const listed = Object.entries(variant ? { variant, ...args } : args).flatMap(([key, value]) => {
@@ -465,8 +483,22 @@
       let args = null;
       try { args = JSON.parse(call.arguments || "{}"); } catch {}
       if (typeof args !== "object" || Array.isArray(args)) args = null;
+      const confirmed = !!args && CONFIRMED_TOOLS.has(call.name);
+      // The application a card is about, read here so that its title can name it.
+      let record;
+      const key = confirmed && APPLICATION_ARGUMENT[call.name];
+      if (key) {
+        const id = args[key];
+        const read = await runTool(live, { name: "get_application" }, { id }, false);
+        if (session !== live || generation !== live.generation) return;
+        record = null;
+        if (read.state === "done") {
+          try { record = JSON.parse(read.output); } catch {}
+          if (record?.id !== id || typeof record.company !== "string") record = null;
+        }
+      }
       const tags = [addTool(call.name)];
-      const row = args && WRITE_TOOLS.has(call.name) ? addCard(call.name, args) : null;
+      const row = args && WRITE_TOOLS.has(call.name) ? addCard(call.name, args, record) : null;
       if (row) tags.push(row[1]);
       const mark = (label, state) => {
         for (const tag of tags) {
@@ -474,7 +506,6 @@
           tag.dataset.state = state;
         }
       };
-      const confirmed = !!row && CONFIRMED_TOOLS.has(call.name);
       let answer = { output: DECLINED, label: "Declined", state: "failed" };
       if (confirmed) mark("Waiting for your tap", "running");
       if (!confirmed || (await ask(live, row[0]))) {
