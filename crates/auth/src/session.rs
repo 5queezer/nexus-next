@@ -18,7 +18,8 @@ use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use nexus_core::auth::FormToken;
-use tokio::sync::SemaphorePermit;
+use nexus_core::repo::oauth;
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::admin::{
     MIN_PASSPHRASE_CHARS, PassphraseError, set_owner_passphrase, verify_passphrase,
@@ -254,12 +255,12 @@ pub(crate) async fn login_page(
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
 /// a change can follow before anyone else's attempt is checked. `Err` carries the wait if the
 /// backoff refused the attempt, and `None` if the passphrase was wrong.
-async fn attempt<'a>(
-    state: &'a AuthState,
+async fn attempt(
+    state: &AuthState,
     client: &str,
     known_device: bool,
     passphrase: String,
-) -> Result<SemaphorePermit<'a>, Option<u64>> {
+) -> Result<OwnedSemaphorePermit, Option<u64>> {
     let source = if known_device { DEVICE_KEY } else { client };
     let keys: &[&str] = if known_device {
         &[source]
@@ -277,7 +278,8 @@ async fn attempt<'a>(
         return Err(Some(retry));
     }
 
-    let slot = state.0.hash_slot.acquire().await.map_err(|_| None)?;
+    let slot = state.0.hash_slot.clone().acquire_owned().await;
+    let slot = slot.map_err(|_| None)?;
     let hash = state.0.passphrase_hash.lock().unwrap().clone();
     let verified = tokio::task::spawn_blocking(move || verify_passphrase(&hash, &passphrase))
         .await
@@ -511,7 +513,7 @@ pub(crate) async fn change_passphrase(
 
     let known_device = cookie_value(&headers, DEVICE_COOKIE)
         .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
-    let _slot = match attempt(&state, &client, known_device, field("current")).await {
+    let slot = match attempt(&state, &client, known_device, field("current")).await {
         Ok(slot) => slot,
         Err(Some(retry)) => return locked_out(respond, retry),
         Err(None) => {
@@ -521,8 +523,35 @@ pub(crate) async fn change_passphrase(
             );
         }
     };
-    let hash = match set_owner_passphrase(&state.0.db, path, &new).await {
-        Ok(hash) => hash,
+    // In a task of its own, so that a client who leaves, or the deadline of the pool, can't stop
+    // the change between the file and the memory of this process.
+    let change = {
+        let (state, path) = (state.clone(), path.clone());
+        tokio::spawn(async move {
+            let _slot = slot;
+            let hash = set_owner_passphrase(&state.0.db, &path, &new).await?;
+            *state.0.passphrase_hash.lock().unwrap() = hash;
+            state.0.sessions.lock().unwrap().clear();
+            state.0.logouts.send_modify(|count| *count += 1);
+            tracing::warn!(
+                event = "passphrase_changed",
+                source = %client,
+                "owner passphrase changed in the browser: all sessions ended"
+            );
+            // A session that was still open could approve a client after the first revocation.
+            let again = async {
+                let mut tx = state.0.db.begin_write().await?;
+                oauth::revoke_all(&mut tx).await?;
+                tx.commit().await.map_err(nexus_core::error::Error::from)
+            };
+            if let Err(error) = again.await {
+                tracing::error!(event = "passphrase_change_failed", %error, "could not revoke again after ending the sessions");
+            }
+            Ok(())
+        })
+    };
+    match change.await.unwrap_or(Err(PassphraseError::Task)) {
+        Ok(()) => {}
         Err(
             e
             @ (PassphraseError::TooShort | PassphraseError::Repetitive | PassphraseError::TooLong),
@@ -540,14 +569,6 @@ pub(crate) async fn change_passphrase(
             );
         }
     };
-    *state.0.passphrase_hash.lock().unwrap() = hash;
-    state.0.sessions.lock().unwrap().clear();
-    state.0.logouts.send_modify(|count| *count += 1);
-    tracing::warn!(
-        event = "passphrase_changed",
-        source = %client,
-        "owner passphrase changed in the browser: all sessions ended"
-    );
     with_cookie(
         html_page(
             StatusCode::OK,

@@ -2,7 +2,10 @@
 
 mod common;
 
+use std::future::poll_fn;
 use std::sync::Arc;
+use std::task::Poll;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::header::{AUTHORIZATION, COOKIE, RETRY_AFTER, SET_COOKIE};
@@ -2061,6 +2064,49 @@ async fn the_owner_changes_the_passphrase_in_the_browser() {
     let old = fresh.attempt_login(&h, PASSPHRASE, DEFAULT_IP).await;
     assert_eq!(old.status, StatusCode::UNAUTHORIZED);
     let new = fresh.attempt_login(&h, NEW_PASSPHRASE, DEFAULT_IP).await;
+    assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
+}
+
+/// The server's deadline or a lost connection drops the request while the change runs.
+#[tokio::test]
+async fn a_passphrase_change_finishes_after_the_client_has_left() {
+    let h = Harness::new().await;
+    let api_token = nexus_auth::issue_api_token(&h.db, "agent").await.unwrap();
+    let mut browser = Browser::default();
+    browser.login(&h).await;
+    let mut other = Browser::default();
+    other.login(&h).await;
+
+    {
+        let mut change = Box::pin(change_passphrase(
+            &mut browser,
+            &h,
+            PASSPHRASE,
+            NEW_PASSPHRASE,
+            NEW_PASSPHRASE,
+        ));
+        // One step of the request per look, so it can't finish between the revocation and the drop.
+        while h.whoami(&api_token).await.status == StatusCode::OK {
+            let step = poll_fn(|cx| Poll::Ready(change.as_mut().poll(cx))).await;
+            if step.is_ready() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    let mut ended = false;
+    for _ in 0..1000 {
+        ended = other.send(&h, get_req("/dashboard")).await.status == StatusCode::SEE_OTHER;
+        if ended {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(ended, "the sessions end with the credentials");
+    let new = Browser::default()
+        .attempt_login(&h, NEW_PASSPHRASE, DEFAULT_IP)
+        .await;
     assert_eq!(new.status, StatusCode::SEE_OTHER, "{}", new.body);
 }
 

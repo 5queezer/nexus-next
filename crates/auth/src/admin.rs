@@ -206,8 +206,12 @@ pub fn write_private(path: &Path, contents: &str) -> std::io::Result<()> {
         let _ = fs::remove_file(&temp);
         return written;
     }
-    if let Some(parent) = path.parent() {
-        File::open(parent)?.sync_all()?;
+    // The file is in place, so this is no failure: a caller told so would take the old contents
+    // for the stored ones.
+    if let Some(parent) = path.parent()
+        && let Err(error) = File::open(parent).and_then(|dir| dir.sync_all())
+    {
+        tracing::warn!(%error, "wrote {} but could not sync its directory", path.display());
     }
     Ok(())
 }
@@ -227,6 +231,23 @@ pub(crate) fn verify_passphrase(hash: &str, passphrase: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_directory_that_cannot_be_synced_does_not_fail_a_finished_write() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let unreadable = dir.path().join("unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        // Files can be made and renamed in it, but it can't be opened to sync it.
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o300)).unwrap();
+        let path = unreadable.join("hash");
+        let written = write_private(&path, "contents");
+        let stored = fs::read_to_string(&path);
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+        written.unwrap();
+        assert_eq!(stored.unwrap(), "contents\n");
+    }
 
     #[test]
     fn repetitive_passphrases_are_short_cycles() {

@@ -50,7 +50,7 @@ pub(crate) struct Inner {
     pub(crate) authorize_limit: FixedWindow,
     pub(crate) bearer_failure_limit: FixedWindow,
     /// Each argon2 verification takes about 19 MiB; on the board they run one at a time.
-    pub(crate) hash_slot: Semaphore,
+    pub(crate) hash_slot: Arc<Semaphore>,
     last_prune: Mutex<Option<Instant>>,
 }
 
@@ -95,7 +95,7 @@ impl AuthState {
             // One authorization takes a few requests, and only the owner's browser makes them.
             authorize_limit: FixedWindow::new(60, Duration::from_secs(60)),
             bearer_failure_limit: FixedWindow::new(30, Duration::from_secs(60)),
-            hash_slot: Semaphore::new(1),
+            hash_slot: Arc::new(Semaphore::new(1)),
             last_prune: Mutex::default(),
         })))
     }
