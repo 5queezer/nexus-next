@@ -345,6 +345,8 @@ button:disabled { opacity: 0.6; cursor: progress; }
   --del-ink: #7f1d1d;
   --mark-bg: #fdeeb5;
   --mark-ink: #4a3500;
+  --new-bg: #e1ebfa;
+  --new-ink: #1d3f7a;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -354,16 +356,17 @@ button:disabled { opacity: 0.6; cursor: progress; }
     --del-ink: #ffc2b8;
     --mark-bg: #4a3a0c;
     --mark-ink: #ffe9a8;
+    --new-bg: #1d2f4d;
+    --new-ink: #a9c6f2;
   }
 }
 mark { background: var(--mark-bg); color: var(--mark-ink); padding: 0 3px; border-radius: 3px; overflow-wrap: anywhere; }
 h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 16px 0 4px; }
-.cv-grid { display: grid; gap: 0 24px; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; }
-.cv-side, #cv-editor { min-width: 0; }
-.preview-pages { display: grid; gap: 8px; }
+.preview-pages { display: grid; gap: 12px; justify-items: center; }
 .preview-pages img {
   display: block;
   width: 100%;
+  max-width: 50rem;
   height: auto;
   aspect-ratio: 210 / 297;
   background: #fff;
@@ -372,8 +375,6 @@ h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 16px 0 4px;
   border-radius: 4px;
   font-size: 13px;
 }
-.preview-actions { margin-top: 12px; }
-#cv-editor .act { padding-top: 0; }
 form.act textarea.code, textarea.code {
   font-family: var(--mono);
   font-size: 13px;
@@ -478,8 +479,6 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 .voice-workspace[data-session-state="live"] #voice-talk-hint { margin-block: 8px; }
 .voice-workspace[data-session-state="live"] #voice-stop { margin-top: 8px; }
 .voice-workspace[data-session-state="live"] .voice-privacy { margin-top: 12px; }
-.cv-side .voice-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-.cv-side .voice-stage { padding-inline: 18px; }
 @media (max-width: 720px) {
   .voice-layout { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .voice-stage { padding: 18px 20px; }
@@ -495,15 +494,9 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 
 .tag.draft { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
 .tag.approved { background: var(--add-bg); color: var(--add-ink); font-weight: 600; }
-.approval { padding: 12px 16px 16px; }
-.approval h3 { margin: 14px 0 6px; font-size: 14px; }
-.review-items { list-style: none; margin: 0; padding: 0; font-size: 14px; overflow-wrap: anywhere; }
-.review-items li { padding: 8px 0; border-bottom: 1px solid var(--line); }
-.review-items li:last-child { border-bottom: 0; }
-.review-items b { font-weight: 500; }
-.review-items .serious b { color: var(--warn); font-weight: 600; }
-.approve-form { margin-top: 14px; }
 .approve-form button { min-height: 44px; min-width: 44px; width: 100%; font-weight: 600; }
+.approve-form .hint { margin-top: 6px; }
+#cv-approve:disabled { cursor: not-allowed; }
 .rendered { margin: 0; padding: 8px 10px; background: var(--bg); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
 .rendered span { display: block; white-space: pre-wrap; min-height: 1.2em; padding: 1px 4px; }
 .rendered .da { background: var(--add-bg); color: var(--add-ink); }
@@ -516,13 +509,26 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
 .lock-list li:last-child { border-bottom: 0; }
 .lock-list del { color: var(--del-ink); background: var(--del-bg); }
 .lock-list ins { color: var(--add-ink); background: var(--add-bg); text-decoration: none; }
-.preview-caption { margin: 6px 0 0; }
-/* Each page whole, fitting the card, then over 1 px to a point, where a CV's body text can be read on a
-   phone. Only the second scrolls sideways, so that nothing of the first starts off screen. */
-.picture-pages { display: grid; gap: 10px; margin: 8px 0 0; min-width: 0; }
-.picture-read { overflow-x: auto; }
-.picture-page { display: block; width: max(100%, 38rem); max-width: 50rem; }
-.picture-whole, .picture-page img {
+.preview-caption { margin: 8px 0 0; text-align: center; }
+
+/* The variant page: full width, the picture beside one panel, which the view picks. */
+body:has(#cv-workspace) .top > div, body:has(#cv-workspace) .foot { max-width: none; }
+main:has(#cv-workspace) { max-width: none; margin: 0; padding: 0; }
+main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin: 12px 16px; }
+.cv-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.cv-head .hero { margin: 0; }
+.cv-head .preview-actions { margin-left: auto; }
+.cv-modes { gap: 2px; padding: 3px; border-radius: 8px; background: var(--chip); }
+.cv-modes a { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 14px; color: var(--ink); white-space: nowrap; }
+.cv-modes a[aria-current="page"] { background: var(--ink); color: var(--bg); font-weight: 600; }
+.cv-panes { min-width: 0; }
+.cv-picture, .cv-panel { min-width: 0; }
+.cv-picture { padding: 16px; }
+.cv-panel { background: var(--surface); border-top: 1px solid var(--line); }
+.cv-panel h2 { margin: 0 0 8px; }
+.picture-pages { display: grid; gap: 12px; justify-items: center; margin: 8px 0 0; min-width: 0; }
+.picture-page { display: block; width: 100%; max-width: 50rem; }
+.picture-page img {
   display: block;
   width: 100%;
   height: auto;
@@ -532,18 +538,102 @@ button.hold.holding { outline: 3px solid var(--accent); outline-offset: 4px; }
   border: 1px solid var(--line);
   border-radius: 4px;
 }
-.picture-whole { max-width: 26rem; margin: 0 auto; }
-.approval details { margin-top: 12px; }
-.approval .diff { max-height: 24rem; overflow: auto; }
+.page-strip { gap: 6px; margin: 8px 0 0; }
+.page-strip a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; background: var(--chip); color: var(--ink); font-size: 13px; }
 
-@media (min-width: 40rem) {
-  .approve-form button { width: auto; }
+.approval { padding: 16px 16px 8px; }
+.approval h3 { margin: 16px 0 4px; font-size: 14px; color: var(--ink); }
+.legend { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.legend .swatch { display: inline-block; width: 11px; height: 11px; margin-right: 6px; border-radius: 50%; background: var(--mark-bg); border: 2px solid var(--mark-ink); }
+.legend .serious { color: var(--warn); font-weight: 600; }
+.legend .serious .swatch { background: var(--warn-bg); border-color: var(--warn); }
+.legend .new .swatch { background: var(--new-bg); border-color: var(--new-ink); }
+.review-items { list-style: none; margin: 0; padding: 0; font-size: 14px; overflow-wrap: anywhere; }
+.review-items li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.review-items li:last-child { border-bottom: 0; }
+.review-items .context mark { padding: 0; background: none; color: var(--ink); font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chips mark { padding: 2px 8px; border-radius: 5px; font-size: 13px; }
+mark.serious { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
+mark.new { background: var(--new-bg); color: var(--new-ink); }
+.approval-foot { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; padding: 12px 16px 16px; background: var(--surface); border-top: 1px solid var(--line); }
+.approval-foot > * { min-width: 0; grid-column: 1 / -1; }
+.approval-foot > details:not([open]) { grid-column: auto; }
+.approval-foot details > summary { padding: 0; line-height: 44px; }
+.approval-foot .diff { max-height: 24rem; overflow: auto; }
+.hint.warn { color: var(--warn); }
+
+#cv-editor { display: flex; flex-direction: column; padding: 12px 16px 0; }
+#cv-editor .problems { max-height: 12rem; overflow: auto; }
+#cv-editor-form { flex: 1 1 auto; display: flex; flex-direction: column; gap: 10px; padding: 0 0 12px; }
+#cv-editor-form .cv-source { flex: 1 1 auto; display: flex; flex-direction: column; }
+#cv-source { flex: 1 1 auto; min-height: 60vh; }
+.cv-save-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
+.cv-save-row label { flex: 1 1 14rem; }
+
+/* The assistant under the editor: the same controls as on its own page, without the large mark. */
+#cv-workspace #voice { padding: 10px 16px 14px; background: var(--bg); border-top: 1px solid var(--line); }
+#cv-workspace .voice-heading { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+#cv-workspace .voice-layout { gap: 12px 16px; }
+#cv-workspace .voice-stage { padding: 10px 12px; border-radius: var(--radius); text-align: left; }
+#cv-workspace .voice-state-mark { display: none; }
+#cv-workspace .voice-stage h3 { margin: 6px 0 2px; font-size: 15px; letter-spacing: normal; }
+#cv-workspace #voice-status { min-height: 0; max-width: none; margin: 0 0 10px; font-size: 13px; }
+#cv-workspace .voice-privacy { max-width: none; margin: 8px 0 0; }
+#cv-workspace .voice-history h3 { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+#cv-workspace .voice-conversation { min-height: 0; }
+#cv-workspace .voice-empty { padding: 0; }
+#cv-workspace .voice-empty p { margin: 0 0 6px; font-size: 14px; letter-spacing: normal; }
+#cv-workspace .voice-empty ul { display: flex; flex-wrap: wrap; gap: 6px; }
+#cv-workspace .voice-empty li { padding: 3px 10px; border: 0; border-radius: 6px; background: var(--chip); font-size: 13px; }
+#cv-workspace .transcript { max-height: 12rem; }
+#cv-workspace .voice-activity { margin-top: 8px; padding-top: 0; }
+#cv-workspace .voice-activity > summary { padding: 0; line-height: 44px; font-size: 13px; }
+
+#cv-revisions { padding: 12px 16px 16px; }
+#cv-revisions .diff { max-height: 24rem; overflow: auto; }
+
+@media (min-width: 60rem) {
+  /* The page fills the window, and each side scrolls by itself, so the picture stays beside the list
+     and the button stays in sight. */
+  body:has(#cv-workspace) { display: flex; flex-direction: column; height: 100dvh; }
+  body:has(#cv-workspace) main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  body:has(#cv-workspace) .foot { padding: 6px 24px; }
+  body:has(#cv-workspace) .top > div, .cv-head { padding-inline: 24px; }
+  main:has(#cv-workspace) > .banner, #cv-workspace > .banner { margin-inline: 24px; }
+  #cv-workspace { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .cv-panes { flex: 1 1 auto; min-height: 28rem; display: grid; grid-template-columns: minmax(0, 1fr) minmax(24rem, 32rem); }
+  #cv-workspace[data-view="edit"] .cv-panes, #cv-workspace[data-view="history"] .cv-panes { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+  .cv-picture { overflow: auto; padding: 16px 24px 24px; }
+  .cv-panel { display: flex; flex-direction: column; overflow: auto; border-top: 0; border-left: 1px solid var(--line); }
+  .cv-modes .to-picture { display: none; }
+  .cv-modes[data-view="picture"] .to-review { background: var(--ink); color: var(--bg); font-weight: 600; }
+  #cv-approval { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .approval { flex: 1 1 0; min-height: 0; overflow: auto; padding-inline: 20px; }
+  .approval-foot { flex: none; max-height: 60%; overflow: auto; padding-inline: 20px; }
+  .approve-form button { width: auto; padding-inline: 20px; }
+  #cv-editor { flex: 1 1 0; min-height: 22rem; padding-inline: 20px; }
+  #cv-source { height: 0; min-height: 12rem; resize: none; }
+  #cv-workspace #voice, #cv-revisions { padding-inline: 20px; }
+}
+@media (min-width: 721px) {
+  #cv-workspace .voice-layout { grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr); }
 }
 
-@media (max-width: 60rem) {
-  .cv-grid { grid-template-columns: minmax(0, 1fr); }
-  .preview-pages img { max-width: 28rem; }
-  /* A draft's pages are in the approval panel, above. This one stays in the page, where cv.js keeps it
-     up to date, and comes back with an approval, when the panel has none. */
-  body:has(#cv-approval .approve-form) #cv-preview-pages { display: none; }
+@media (max-width: 59.99rem) {
+  /* One thing at a time: the picture has its own tab, and the others leave it out. */
+  .cv-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); flex: 1 1 100%; }
+  .cv-modes a { justify-content: center; padding: 0 4px; }
+  .cv-head .preview-actions { flex: 1 1 100%; }
+  #cv-workspace:not([data-view="picture"]) .cv-picture { display: none; }
+  #cv-workspace[data-view="picture"] .cv-panel { display: none; }
+  /* Over 1 px to a point, where a CV's body text can be read on a phone, so a page swipes sideways. */
+  .picture-pages, .preview-pages { justify-items: start; overflow-x: auto; }
+  .picture-page, .preview-pages img { width: max(100%, 38rem); }
+  /* Only the button stays in sight, over the list. What is said about it comes before it, and the
+     text and source after. */
+  .approval-foot { display: contents; }
+  .approval-foot > * { margin: 8px 16px; }
+  .approval-foot > .approve-form { position: sticky; bottom: 0; margin: 0; padding: 10px 16px 12px; background: var(--surface); border-top: 1px solid var(--line); }
+  #cv-approval { padding-bottom: 8px; }
 }

@@ -175,6 +175,9 @@ fn hidden(page: &str, name: &str) -> String {
 }
 
 const VARIANT: &str = "/cv/variants/default";
+/// The same page in the view that holds the editor, and in the one that holds the revisions.
+const EDIT: &str = "/cv/variants/default?view=edit";
+const HISTORY: &str = "/cv/variants/default?view=history";
 
 /// The draft or approved badge at the top of a variant page.
 fn badge(page: &str) -> &str {
@@ -185,7 +188,7 @@ fn badge(page: &str) -> &str {
 }
 
 async fn head_of(f: &Fixture) -> (i64, String) {
-    let (status, _, page) = get(&f.app, VARIANT).await;
+    let (status, _, page) = get(&f.app, EDIT).await;
     assert_eq!(status, StatusCode::OK);
     (
         hidden(&page, "expected").parse().unwrap(),
@@ -253,9 +256,12 @@ async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
     let (_, _, page) = get(&f.app, "/cv/variants/default?done=saved").await;
     assert!(page.contains("Saved as a draft"), "{page}");
     assert_eq!(badge(&page), "Draft, not approved");
-    assert_eq!(editor_text(&page), changed, "the editor holds the head");
-    assert_eq!(hidden(&page, "expected"), "1");
     assert!(page.contains("class=\"da\""), "added lines are marked");
+    assert_eq!(
+        head_of(&f).await,
+        (1, changed.clone()),
+        "the editor holds the head"
+    );
 
     // Only the one line moves in the second revision's diff.
     let next = changed.replace("Built the routing engine.", "Built the routing core.");
@@ -263,8 +269,7 @@ async fn a_save_stores_only_what_changed_as_a_revision_from_the_dashboard() {
         save(&f, 1, &next.replace('\n', "\r\n")).await.0,
         StatusCode::SEE_OTHER
     );
-    let (_, _, page) = get(&f.app, VARIANT).await;
-    // The revision list: a draft's review above it shows the whole CV.
+    let (_, _, page) = get(&f.app, HISTORY).await;
     let listed = page.split("id=\"cv-revisions\"").nth(1).unwrap();
     let diff_of_head = listed.split("Revision 1").next().unwrap();
     assert_eq!(
@@ -383,17 +388,17 @@ async fn an_agents_edit_waits_for_the_owner_who_reads_it_and_approves_it() {
 
     let (status, headers, _) = tap_approve(&f, &page).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        headers["location"],
-        "/cv/variants/default?done=approved#cv-approval"
-    );
+    let landed = "/cv/variants/default?view=review&done=approved#cv-approval";
+    assert_eq!(headers["location"], landed);
     let by: String = sqlx::query_scalar("SELECT approved_by FROM cv_approvals")
         .fetch_one(f.db.pool())
         .await
         .unwrap();
     assert_eq!(by, "dashboard");
-    let (_, _, page) = get(&f.app, "/cv/variants/default?done=approved").await;
+    let (_, _, page) = get(&f.app, landed).await;
     assert_eq!(badge(&page), "Approved");
+    assert!(page.contains("id=\"cv-approval\""), "{page}");
+    assert!(page.contains("You approved this text"), "{page}");
     assert!(!page.contains("Approve revision"), "{page}");
     assert!(page.contains(">Download PDF<"), "{page}");
     assert!(!page.contains("class=\"count\""), "nothing waits: {page}");
@@ -641,7 +646,7 @@ async fn text_with_markup_stays_text_and_a_leading_newline_survives_the_editor()
     let (_, source) = head_of(&f).await;
     let tricky = format!("\n\n{source}\n// </textarea><script>alert(1)</script> & \"quotes\"\n");
     assert_eq!(save(&f, 0, &tricky).await.0, StatusCode::SEE_OTHER);
-    let (_, _, page) = get(&f.app, VARIANT).await;
+    let (_, _, page) = get(&f.app, EDIT).await;
     assert!(!page.contains("<script>alert(1)"), "escaped everywhere");
     assert_eq!(editor_text(&page), tricky);
 }
@@ -677,7 +682,7 @@ async fn revert_adds_a_revision_with_the_old_text_and_refuses_a_stale_head() {
     assert_eq!(save(&f, 0, &first).await.0, StatusCode::SEE_OTHER);
     assert_eq!(save(&f, 1, &second).await.0, StatusCode::SEE_OTHER);
 
-    let (_, _, page) = get(&f.app, VARIANT).await;
+    let (_, _, page) = get(&f.app, HISTORY).await;
     assert!(page.contains("Revert to 1"), "{page}");
     assert!(!page.contains("Revert to 2"), "not to the head itself");
 
@@ -689,6 +694,10 @@ async fn revert_adds_a_revision_with_the_old_text_and_refuses_a_stale_head() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{page}");
+    assert!(
+        page.contains("data-view=\"history\""),
+        "back where the revisions are: {page}"
+    );
     assert_eq!(revision_rows(&f.db).await.len(), 2);
 
     let (status, headers, _) = post(
@@ -1508,7 +1517,7 @@ async fn a_form_sent_after_a_conflict_stores_a_draft_on_any_base() {
         "Holds a Doctorate from Stanford.",
     )
     .await;
-    let (_, _, page) = get(&f.app, VARIANT).await;
+    let (_, _, page) = get(&f.app, EDIT).await;
     assert!(page.contains(">Save draft<"), "{page}");
     let mut fields = editor_fields(&page);
     let typed = editor_text(&page).replace("Backend engineer", "Backend developer");
@@ -1646,23 +1655,29 @@ async fn the_approval_screen_shows_the_picture_before_the_button() {
     let (_, _, page) = get(&f.app, VARIANT).await;
     assert!(!page.contains("What a reader sees"), "{page}");
     assert!(page.contains("What the text says"), "{page}");
-    let panel = &page[page.find("id=\"cv-approval\"").unwrap()..];
-    let picture = panel
+    // In the page's own order, which is what a screen reader and a page without scripts follow: the
+    // picture, what to check, then the button.
+    let picture = page
         .find("preview.png?revision=2&amp;page=1")
-        .unwrap_or_else(|| {
-            panic!("no picture in the panel: {panel}");
-        });
-    let button = panel.find("class=\"approve-form\"").unwrap();
-    let read = panel.find("Read the picture").unwrap();
-    assert!(read < picture && picture < button, "{panel}");
-    // The whole page first, then the same page at a size to read, with its tap.
-    let whole = panel.find("class=\"picture-whole\"").unwrap();
-    let to_read = panel.find("class=\"picture-read\"").unwrap();
-    assert!(whole < to_read && to_read < button, "{panel}");
+        .unwrap_or_else(|| panic!("no picture: {page}"));
+    let read = page.find("Read the picture").unwrap();
+    let items = page.find("id=\"cv-review-items\"").unwrap();
+    let button = page.find("class=\"approve-form\"").unwrap();
     assert!(
-        panel[to_read..button].contains("href=") && panel[to_read..button].contains("preview.png"),
-        "a tap opens the page at full size: {panel}"
+        read < picture && picture < items && items < button,
+        "{page}"
     );
+    assert!(
+        page[..picture]
+            .rfind("<a ")
+            .is_some_and(|tap| page[tap..picture].contains("href=")),
+        "a tap opens the page at full size: {page}"
+    );
+    // Once, at a size to read: not small and large, and not again as a preview.
+    assert_eq!(page.matches("<img").count(), 1, "{page}");
+    assert!(!page.contains("id=\"cv-preview-pages\""), "{page}");
+    let panel = &page[page.find("id=\"cv-approval\"").unwrap()..];
+    let button = panel.find("class=\"approve-form\"").unwrap();
     // The text and the source are collapsed, below the button: they no longer push it down.
     let text = panel.find("id=\"cv-text-details\"").unwrap();
     let source = panel.find("id=\"cv-source-details\"").unwrap();
@@ -1696,7 +1711,10 @@ async fn a_long_list_of_items_does_not_push_the_button_down() {
     );
     let button = panel.find("class=\"approve-form\"").unwrap();
     assert!(open < closed && closed < button, "{panel}");
-    assert_eq!(panel[open..closed].matches("<li").count(), 30, "{panel}");
+    // Whole lines stand open, up to the first that brings the words to 30.
+    let words = panel[open..closed].matches("aria-describedby").count();
+    assert!((30..40).contains(&words), "{words}: {panel}");
+    assert!(panel[open..closed].matches("<li").count() < 30, "{panel}");
     assert!(
         !panel[closed..button].contains("<details id=\"cv-more-items\" open"),
         "{panel}"
@@ -1761,7 +1779,10 @@ async fn the_page_says_truly_what_a_draft_is_read_against() {
     assert!(!page.contains("Nothing is approved yet"), "{page}");
     assert!(page.contains("no approved text to compare with"), "{page}");
     assert!(page.contains("id=\"cv-whole-cv\""), "{page}");
-    assert!(page.contains("The facts have changed"), "{page}");
+    assert!(
+        page.contains("The facts changed since you last approved"),
+        "{page}"
+    );
 }
 
 async fn tap(f: &Fixture, url: &str) {
@@ -1950,4 +1971,138 @@ async fn a_revision_too_heavy_to_draw_says_so_and_cant_be_approved() {
     assert!(!page.contains("Nothing was stored"), "{page}");
     assert!(page.contains("Nothing was approved"), "{page}");
     assert_eq!(approvals(&f.db).await, approvals_before);
+}
+
+/// Which view a page opens in, read off the workspace.
+fn view_of(page: &str) -> &str {
+    let after = page.split("data-view=\"").last().expect("the view");
+    after.split('"').next().unwrap()
+}
+
+/// A draft opens on what there is to approve, anything else on the editor, and a link picks.
+#[tokio::test]
+async fn the_view_follows_the_head_unless_a_link_names_one() {
+    let f = locked().await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(view_of(&page), "edit", "nothing stored: {page}");
+    assert!(page.contains("id=\"cv-source\""), "{page}");
+    assert!(!page.contains("id=\"cv-approval\""), "{page}");
+
+    approved_start(&f).await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(view_of(&page), "edit", "approved: {page}");
+    // Asked for, the review of approved text says so, with the picture beside it.
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=review")).await;
+    assert_eq!(view_of(&page), "review");
+    assert!(page.contains("You approved this text"), "{page}");
+    assert!(page.contains("id=\"cv-preview-pages\""), "{page}");
+    assert!(!page.contains("id=\"cv-source\""), "{page}");
+
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the routing core.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    assert_eq!(view_of(&page), "review", "a draft: {page}");
+    assert!(page.contains("class=\"approve-form\""), "{page}");
+    assert!(!page.contains("id=\"cv-source\""), "{page}");
+    assert!(!page.contains("id=\"cv-revisions\""), "{page}");
+    assert!(
+        page.contains("href=\"/cv/variants/default?view=edit\""),
+        "{page}"
+    );
+
+    let (_, _, page) = get(&f.app, EDIT).await;
+    assert_eq!(view_of(&page), "edit");
+    assert!(!page.contains("class=\"approve-form\""), "{page}");
+    let (_, _, page) = get(&f.app, HISTORY).await;
+    assert_eq!(view_of(&page), "history");
+    assert!(page.contains("id=\"cv-revisions\""), "{page}");
+    assert!(!page.contains("id=\"cv-source\""), "{page}");
+    // A phone's picture tab reads the same draft, and the form is in the page all the same.
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=picture")).await;
+    assert_eq!(view_of(&page), "picture");
+    assert!(page.contains("class=\"approve-form\""), "{page}");
+    // A link from before the views, and a view nobody has, land somewhere sensible.
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?page=1")).await;
+    assert_eq!(view_of(&page), "history");
+    let (_, _, page) = get(&f.app, &format!("{VARIANT}?view=nonsense")).await;
+    assert_eq!(view_of(&page), "review");
+
+    // A refused save comes back in the editor, with the text, whatever the head is.
+    let (_, source) = head_of(&f).await;
+    let typed = format!("{source}\n#nonsense(");
+    let (status, _, page) = save(&f, 2, &typed).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(view_of(&page), "edit");
+    assert_eq!(editor_text(&page), typed);
+}
+
+/// Every view draws the CV once: a draft's own picture where it is read for approval, and the
+/// preview elsewhere.
+#[tokio::test]
+async fn each_view_draws_the_picture_once() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the routing core.",
+    )
+    .await;
+    for view in ["picture", "review", "edit", "history"] {
+        let (_, _, page) = get(&f.app, &format!("{VARIANT}?view={view}")).await;
+        assert_eq!(page.matches("<img").count(), 1, "{view}: {page}");
+        let reading = matches!(view, "picture" | "review");
+        assert_eq!(page.contains("id=\"cv-picture-pages\""), reading, "{view}");
+        assert_eq!(page.contains("id=\"cv-preview-pages\""), !reading, "{view}");
+    }
+}
+
+/// What a rule asks is said once, with its count. The words stand by the line they are on.
+#[tokio::test]
+async fn a_rule_is_said_once_and_its_words_stand_by_their_line() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built 77 Zanzibar services in 2019 and 12 in 2020.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, VARIANT).await;
+    let numbers = "A number or date. Is it right, and in the right place?";
+    assert_eq!(page.matches(numbers).count(), 1, "{page}");
+    assert_eq!(page.matches("A new word. Is it true?").count(), 1, "{page}");
+    let legend = page.split("id=\"cv-legend\"").nth(1).unwrap();
+    let legend = legend.split("</ul>").next().unwrap();
+    assert!(legend.contains("id=\"cv-rule-numbers\""), "{legend}");
+    assert!(
+        legend.contains(&format!("{numbers}<small> \u{b7} 4</small>")),
+        "{legend}"
+    );
+
+    // One line, read once, with all its words, each pointing at its rule.
+    let list = page.split("id=\"cv-review-items\"").nth(1).unwrap();
+    let list = list.split("</ul>").next().unwrap();
+    assert_eq!(list.matches("<li").count(), 1, "{list}");
+    assert_eq!(list.matches("class=\"context\"").count(), 1, "{list}");
+    assert_eq!(
+        list.matches("aria-describedby=\"cv-rule-numbers\"").count(),
+        4,
+        "{list}"
+    );
+    assert!(
+        list.contains("aria-describedby=\"cv-rule-newWords\" class=\"new\">Zanzibar</mark>"),
+        "{list}"
+    );
+    assert!(
+        page.contains("Review<small>\u{b7} 1</small>"),
+        "the tab counts lines: {page}"
+    );
 }

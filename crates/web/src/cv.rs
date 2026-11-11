@@ -400,6 +400,34 @@ fn facts_state_text(state: &FactsState) -> String {
 struct VariantQuery {
     done: Option<String>,
     page: Option<i64>,
+    view: Option<String>,
+}
+
+/// What the panel beside the picture holds. `Picture` is a phone's tab: wider screens show the picture
+/// next to the review, so there it is `Review`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Picture,
+    Review,
+    Edit,
+    History,
+}
+
+impl Mode {
+    const ALL: [Self; 4] = [Self::Picture, Self::Review, Self::Edit, Self::History];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Picture => "picture",
+            Self::Review => "review",
+            Self::Edit => "edit",
+            Self::History => "history",
+        }
+    }
+
+    fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == key)
+    }
 }
 
 /// What a page shows besides stored data: the outcome of the form just sent.
@@ -422,6 +450,8 @@ struct Outcome {
     /// The form's text came through a conflict, or from a form that doesn't say where it came from, so
     /// its base says nothing of that text. It stores a draft from here on, and says so.
     not_from_base: bool,
+    /// The mode asked for, or the one a refused form came from. None picks by the head's state.
+    view: Option<Mode>,
 }
 
 fn csp(config: Option<&VoiceConfig>) -> String {
@@ -544,8 +574,15 @@ async fn variant_page(
     Query(query): Query<VariantQuery>,
     Extension(FormToken(token)): Extension<FormToken>,
 ) -> Result<Response, PageError> {
+    // A link to a page of revisions from before the modes still lands on them.
+    let view = query
+        .view
+        .as_deref()
+        .and_then(Mode::parse)
+        .or(query.page.map(|_| Mode::History));
     let outcome = Outcome {
         done: query.done,
+        view,
         ..Outcome::default()
     };
     render_variant(&cv, &variant, query.page.unwrap_or(1), &token, outcome).await
@@ -560,11 +597,11 @@ fn done_notice(done: &str, approved: bool, origin: Option<&str>) -> Option<Flash
             "Saved and approved: you changed text you had approved, so the change is yours."
         }
         ("saved", false, Some("dashboard")) => {
-            "Saved as a draft. Read it under Approval, and approve it there."
+            "Saved as a draft. Read it under Review, and approve it there."
         }
         ("reverted", true, Some("revert")) => "Reverted: the old text is now a new revision.",
         ("reverted", false, Some("revert")) => {
-            "Reverted: the old text is now a new revision. It isn't approved, so read it under Approval and approve it to use it."
+            "Reverted: the old text is now a new revision. It isn't approved, so read it under Review and approve it to use it."
         }
         ("approved", true, _) => "Approved. The PDF of this revision now has no stamp.",
         _ => return None,
@@ -641,20 +678,85 @@ async fn render_variant(
     // A save approves only on an approved base, and only if its text came from there, so the button can
     // say which this one does.
     let saves_approved = approved && expected == head && !outcome.not_from_base;
+    // A refused save comes back to its text. Otherwise a draft opens on what there is to approve.
+    let mode = if outcome.typed_source.is_some() {
+        Mode::Edit
+    } else {
+        outcome.view.unwrap_or(if head > 0 && !approved {
+            Mode::Review
+        } else {
+            Mode::Edit
+        })
+    };
+    let reviewing = matches!(mode, Mode::Picture | Mode::Review);
+    let to_check = review
+        .as_ref()
+        .ok()
+        .filter(|review| !review.approved && !review.items.is_empty())
+        .map(|review| grouped(&review.items).len());
+    let base = variant_url(variant);
+    let tab = |to: Mode, label: &'static str, count: Option<usize>| {
+        view! {
+            <a
+                href=format!("{base}?view={}", to.key())
+                class=format!("to-{}", to.key())
+                aria-current=(to == mode).then_some("page")
+            >
+                {label}
+                {count.map(|count| view! { <small>{format!("\u{b7} {count}")}</small> })}
+            </a>
+        }
+    };
+    let revision_count = revisions["total"]
+        .as_i64()
+        .and_then(|total| usize::try_from(total).ok());
+    // The picture stands once: the one the approval was compiled with while there is one to read,
+    // and the live preview everywhere else.
+    let picture = match &review {
+        Ok(review) if reviewing && !review.approved && !review.previews.is_empty() => {
+            picture_view(variant, review).into_any()
+        }
+        _ => preview_view(variant, head, approved).into_any(),
+    };
+    let panel = match mode {
+        Mode::Picture | Mode::Review => approval_view(variant, token, &review).into_any(),
+        Mode::Edit => view! {
+            {editor_view(variant, token, &text, expected, saves_approved, &outcome)}
+            {voice_view(variant, voice_config, token)}
+        }
+        .into_any(),
+        Mode::History => {
+            revisions_view(variant, token, head, page, &revisions, &items, cv.tz).into_any()
+        }
+    };
     let body = view! {
-        <p><a class="crumb" href="/cv">"\u{2190} CV"</a></p>
-        <div class="hero">
-            <h1>{variant.to_owned()}</h1>
-            <span class="id" id="cv-revision">
-                {if head == 0 { "nothing stored yet".to_owned() } else { format!("revision {head}") }}
-            </span>
-            {state_badge(approved)}
-        </div>
+        <header class="cv-head">
+            <a class="crumb" href="/cv">"\u{2190} CV"</a>
+            <div class="hero">
+                <h1>{variant.to_owned()}</h1>
+                <span class="id" id="cv-revision">
+                    {if head == 0 { "nothing stored yet".to_owned() } else { format!("revision {head}") }}
+                </span>
+                {state_badge(approved)}
+            </div>
+            <nav class="cv-modes" id="cv-modes" aria-label="Views of this CV" data-view=mode.key()>
+                {tab(Mode::Picture, "Picture", None)}
+                {tab(Mode::Review, "Review", to_check)}
+                {tab(Mode::Edit, "Edit", None)}
+                {tab(Mode::History, "History", revision_count.filter(|count| *count > 0))}
+            </nav>
+            <div class="buttons preview-actions" id="cv-preview-actions">
+                <a class="button secondary" href=format!("{base}/cv.pdf?revision={head}") id="cv-pdf">
+                    {if approved { "Download PDF" } else { "Download draft PDF, stamped" }}
+                </a>
+            </div>
+        </header>
         <div
             id="cv-workspace"
             data-variant=variant.to_owned()
             data-revision=head.to_string()
             data-state=if approved { "approved" } else { "draft" }
+            data-view=mode.key()
         >
             {(!locked).then(|| view! {
                 <p class="banner warn" role="status">
@@ -664,15 +766,10 @@ async fn render_variant(
             })}
             {outcome.typed_source.is_none().then(|| flash_view(outcome.flash.as_ref().or(done.as_ref())))}
             <p class="banner" id="cv-live-note" role="status" hidden></p>
-            {approval_view(variant, token, &review)}
-            <div class="cv-grid">
-                <div class="cv-side">
-                    {preview_view(variant, head, approved)}
-                    {voice_view(variant, voice_config, token)}
-                </div>
-                {editor_view(variant, token, &text, expected, saves_approved, &outcome)}
+            <div class="cv-panes">
+                <div class="cv-picture" id="cv-picture-pane">{picture}</div>
+                <div class="cv-panel">{panel}</div>
             </div>
-            {revisions_view(variant, token, head, page, &revisions, &items, cv.tz)}
         </div>
     };
     let scripts: &[&str] = if voice_config.is_some() {
@@ -791,20 +888,77 @@ fn rule_of(item: &ReviewItem) -> String {
         .unwrap_or_default()
 }
 
-/// Most serious first, as the check orders them, a rule's items together.
-fn review_item_view(item: &ReviewItem) -> impl IntoView + use<> {
-    let serious = matches!(
-        item.rule,
-        Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel
-    );
-    let context = item.context.clone();
+/// Which of three colours a rule's words take: what the check finds most serious, a word nobody has
+/// seen, and the rest.
+fn rule_kind(rule: Rule) -> &'static str {
+    match rule {
+        Rule::MissingFact | Rule::EntityBinding | Rule::LanguageLevel => "serious",
+        Rule::NewWords => "new",
+        _ => "marked",
+    }
+}
+
+/// The items by the line they stand on, lines and items in the check's order, so that a line is
+/// read once.
+fn grouped(items: &[ReviewItem]) -> Vec<Vec<&ReviewItem>> {
+    let mut groups: Vec<Vec<&ReviewItem>> = Vec::new();
+    for item in items {
+        let same = |group: &&mut Vec<&ReviewItem>| {
+            group[0].line == item.line && group[0].context == item.context
+        };
+        match groups.iter_mut().find(same) {
+            Some(group) => group.push(item),
+            None => groups.push(vec![item]),
+        }
+    }
+    groups
+}
+
+/// Each rule said once, with how many words it marks, in the order the check lists them.
+fn legend_view(items: &[ReviewItem]) -> impl IntoView + use<> {
+    let mut rules: Vec<(Rule, String, usize)> = Vec::new();
+    for item in items {
+        match rules.iter_mut().find(|(rule, ..)| *rule == item.rule) {
+            Some((.., count)) => *count += 1,
+            None => rules.push((item.rule, rule_of(item), 1)),
+        }
+    }
+    let rows: Vec<_> = rules
+        .into_iter()
+        .map(|(rule, key, count)| {
+            view! {
+                <li id=format!("cv-rule-{key}") class=rule_kind(rule)>
+                    <span class="swatch" aria-hidden="true"></span>
+                    {rule_text(&key)}
+                    <small>{format!(" \u{b7} {count}")}</small>
+                </li>
+            }
+        })
+        .collect();
+    view! { <ul class="legend" id="cv-legend">{rows}</ul> }
+}
+
+/// One line with what to check on it. Each word names its rule by colour and by the legend's entry.
+fn review_group_view(group: &[&ReviewItem]) -> impl IntoView + use<> {
+    let context = group[0].context.clone();
+    let tokens: Vec<&str> = group.iter().map(|item| item.token.as_str()).collect();
+    let chips: Vec<_> = group
+        .iter()
+        .map(|item| {
+            view! {
+                <mark class=rule_kind(item.rule) aria-describedby=format!("cv-rule-{}", rule_of(item))>
+                    {item.token.clone()}
+                </mark>
+                " "
+            }
+        })
+        .collect();
     view! {
-        <li class=serious.then_some("serious")>
-            <mark>{item.token.clone()}</mark>" "
-            <b>{rule_text(&rule_of(item))}</b>
+        <li>
             {(!context.is_empty()).then(|| view! {
-                <small class="context">{highlighted(&context, &[item.token.as_str()])}</small>
+                <small class="context">{highlighted(&context, &tokens)}</small>
             })}
+            <span class="chips">{chips}</span>
         </li>
     }
 }
@@ -812,20 +966,25 @@ fn review_item_view(item: &ReviewItem) -> impl IntoView + use<> {
 /// The most serious come first, and stay open. A long first approval lists hundreds, and the rest must
 /// not push the button down: a measured 10 pages put it 16,000 px under the last picture.
 fn review_items_view(items: &[ReviewItem]) -> impl IntoView + use<> {
-    let listed = items.iter().take(MAX_LISTED_ITEMS);
-    let open: Vec<_> = listed
-        .clone()
-        .take(MAX_OPEN_ITEMS)
-        .map(review_item_view)
-        .collect();
-    let closed: Vec<_> = listed.skip(MAX_OPEN_ITEMS).map(review_item_view).collect();
-    let closed_count = closed.len();
-    let more = items.len().saturating_sub(MAX_LISTED_ITEMS);
+    let listed = &items[..items.len().min(MAX_LISTED_ITEMS)];
+    let mut open = Vec::new();
+    let mut closed = Vec::new();
+    let mut opened = 0;
+    for group in grouped(listed) {
+        if opened < MAX_OPEN_ITEMS {
+            opened += group.len();
+            open.push(review_group_view(&group));
+        } else {
+            closed.push(review_group_view(&group));
+        }
+    }
+    let rest = items.len() - opened;
+    let more = items.len() - listed.len();
     view! {
         <ul class="review-items" id="cv-review-items">{open}</ul>
-        {(closed_count > 0).then(|| view! {
+        {(rest > 0).then(|| view! {
             <details id="cv-more-items">
-                <summary>{format!("The other {} to check", closed_count + more)}</summary>
+                <summary>{format!("The other {rest} to check")}</summary>
                 <ul class="review-items">{closed}</ul>
                 {(more > 0).then(|| view! {
                     <p class="hint">{format!("And {more} more, marked in the text where they stand.")}</p>
@@ -852,14 +1011,22 @@ fn approval_view(
                 .cloned()
                 .unwrap_or_default();
             view! {
-                <p class="banner warn" role="status">{why_unreadable(refused.code())}" It can't be approved like this."</p>
-                {(!violations.is_empty()).then(|| violations_view(&violations))}
-                {(!diagnostics.is_empty()).then(|| diagnostics_view(&diagnostics))}
+                <div class="approval">
+                    <h2>"Approval"</h2>
+                    <p class="banner warn" role="status">{why_unreadable(refused.code())}" It can't be approved like this."</p>
+                    {(!violations.is_empty()).then(|| violations_view(&violations))}
+                    {(!diagnostics.is_empty()).then(|| diagnostics_view(&diagnostics))}
+                </div>
             }
             .into_any()
         }
         Ok(review) if review.approved => view! {
-            <p>"You approved this text. The PDF of this revision has no stamp, and an agent can store it for an application."</p>
+            <div class="approval">
+                <h2>"Approval"</h2>
+                <p><span class="tag approved">"Approved"</span></p>
+                <p>"You approved this text. The PDF of this revision has no stamp, and an agent can store it for an application."</p>
+                <p class="hint">"Nothing is waiting here. A change you save under Edit, or one an agent stores, comes back to this view."</p>
+            </div>
         }
         .into_any(),
         Ok(review) => {
@@ -873,7 +1040,7 @@ fn approval_view(
                 Some(at) => format!("Compared with revision {at}, which holds text you approved in another variant and haven't replaced there."),
             };
             let action = if review.revision == 0 {
-                view! { <p class="hint">"This is the starting text, not stored yet. Saving it below stores it as a draft, for you to read and approve here."</p> }.into_any()
+                view! { <p class="hint">"This is the starting text, not stored yet. Saving it under Edit stores it as a draft, for you to read and approve here."</p> }.into_any()
             } else if !review.locked {
                 view! {
                     <p class="hint">"You can approve once the facts are locked. " <a href="/cv/facts">"Check and lock them"</a></p>
@@ -881,12 +1048,13 @@ fn approval_view(
                 .into_any()
             } else {
                 view! {
-                    <form method="post" action=format!("{}/approve#cv-approval", variant_url(variant)) class="approve-form">
+                    <form method="post" action=format!("{}/approve", variant_url(variant)) class="approve-form">
                         <input type="hidden" name="csrf" value=token.to_owned() />
                         <input type="hidden" name="revision" value=review.revision.to_string() />
                         <input type="hidden" name="sourceSha256" value=review.source_sha256.clone() />
                         <input type="hidden" name="factsSha256" value=review.facts_sha256.clone() />
-                        <button type="submit">{format!("Approve revision {}", review.revision)}</button>
+                        <button type="submit" id="cv-approve">{format!("Approve revision {}", review.revision)}</button>
+                        <p class="hint" id="cv-approve-hint" hidden>"Scroll to the end of the list. Then you can approve."</p>
                     </form>
                 }
                 .into_any()
@@ -904,53 +1072,73 @@ fn approval_view(
             let beyond_the_text = review.baseline.is_some()
                 && !looks_only
                 && source_goes_beyond_words(&review.source_diff, &words);
+            let marked = review.items.len();
+            let lines = grouped(&review.items).len();
+            // The short form of [`Review::whole_cv_because`], which a terminal prints in full.
+            let whole_cv = review.baseline.is_none().then_some(if review.approved_here {
+                "The facts changed since you last approved text here, so this is the whole CV. Every number and date is marked. Read the picture."
+            } else {
+                "Nothing approved stands for this variant yet, so this is the whole CV. Every number and date is marked. Read the picture."
+            });
             view! {
-                <p>"This revision isn't approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
-                {picture_view(variant, review)}
-                {(!review.items.is_empty()).then(|| view! {
-                    <h3>"Check these in the text"</h3>
-                    {review_items_view(&review.items)}
-                })}
-                {review.whole_cv_because().map(|why| view! {
-                    <p class="banner warn" id="cv-whole-cv" role="status">{why}</p>
-                })}
-                {review.baseline_is_replaced.then(|| view! {
-                    <p class="banner warn" id="cv-replaced-elsewhere" role="status">{Review::REPLACED_ELSEWHERE}</p>
-                })}
-                {(!review.marked.is_empty()).then(|| view! {
-                    <p class="banner warn" id="cv-drawn-marks" role="status">
-                        {Review::DRAWN_MARKS}" Near: "{marked_words(&review.marked)}"."
-                    </p>
-                })}
-                {looks_only.then(|| view! {
-                    <p class="banner warn" id="cv-looks-only" role="status">
-                        "The wording is unchanged, but the source isn't. What changed is how it looks: compare the picture, and read the source changes below the button."
-                    </p>
-                })}
-                {beyond_the_text.then(|| view! {
-                    <p class="banner warn" id="cv-beyond-text" role="status">
-                        "The source changed in places the wording doesn't show. Look at the picture, and read the source changes below the button."
-                    </p>
-                })}
-                {action}
-                <details id="cv-text-details">
-                    <summary>"What the text says"</summary>
-                    <p class="hint">{against}</p>
-                    {(!looks_only).then(|| rendered_diff_view(review))}
-                </details>
-                <details id="cv-source-details">
-                    <summary>"Source changes"</summary>
-                    {diff_view(&review.source_diff)}
-                </details>
+                <div class="approval">
+                    <h2>"Approval"</h2>
+                    <p>"This revision isn't approved. Nothing leaves here as a final CV until you approve exactly this text."</p>
+                    {(!review.items.is_empty()).then(|| view! {
+                        <h3>"Check these against the picture"</h3>
+                        <p class="hint" id="cv-check-count">
+                            {format!("{marked} marked {} on {lines} {}.", plural(marked, "word"), plural(lines, "line"))}
+                        </p>
+                        {legend_view(&review.items)}
+                        {review_items_view(&review.items)}
+                    })}
+                    <span id="cv-checks-end"></span>
+                </div>
+                <div class="approval-foot">
+                    {whole_cv.map(|why| view! {
+                        <p class="hint warn" id="cv-whole-cv" role="status">{why}</p>
+                    })}
+                    {review.baseline_is_replaced.then(|| view! {
+                        <p class="hint warn" id="cv-replaced-elsewhere" role="status">{Review::REPLACED_ELSEWHERE}</p>
+                    })}
+                    {(!review.marked.is_empty()).then(|| view! {
+                        <p class="hint warn" id="cv-drawn-marks" role="status">
+                            {Review::DRAWN_MARKS}" Near: "{marked_words(&review.marked)}"."
+                        </p>
+                    })}
+                    {looks_only.then(|| view! {
+                        <p class="hint warn" id="cv-looks-only" role="status">
+                            "The wording is unchanged, but the source isn't. What changed is how it looks: compare the picture, and read the source changes below the button."
+                        </p>
+                    })}
+                    {beyond_the_text.then(|| view! {
+                        <p class="hint warn" id="cv-beyond-text" role="status">
+                            "The source changed in places the wording doesn't show. Look at the picture, and read the source changes below the button."
+                        </p>
+                    })}
+                    {action}
+                    <details id="cv-text-details">
+                        <summary>"What the text says"</summary>
+                        <p class="hint">{against}</p>
+                        {(!looks_only).then(|| rendered_diff_view(review))}
+                    </details>
+                    <details id="cv-source-details">
+                        <summary>"Source changes"</summary>
+                        {diff_view(&review.source_diff)}
+                    </details>
+                </div>
             }
             .into_any()
         }
     };
-    view! {
-        <section id="cv-approval">
-            <h2>"Approval"</h2>
-            <div class="card approval">{inner}</div>
-        </section>
+    view! { <section id="cv-approval">{inner}</section> }
+}
+
+fn plural(count: usize, word: &'static str) -> String {
+    if count == 1 {
+        word.to_owned()
+    } else {
+        format!("{word}s")
     }
 }
 
@@ -988,51 +1176,46 @@ fn source_goes_beyond_words(source_diff: &str, words: &[DiffLine]) -> bool {
         .any(|line| !changed.iter().any(|said| said.contains(&line)))
 }
 
-/// What the owner approves, as a reader gets it, above the button: text can read as something the
-/// page doesn't show. Each page whole and small, so that nothing starts off screen, then wide enough to
-/// read on a phone, and a tap opens a page at full size.
+/// What the owner approves, as a reader gets it, ahead of the button: text can read as something the
+/// page doesn't show. Each page once, at a size to read, and a tap opens a page at full size.
 fn picture_view(variant: &str, review: &Review) -> impl IntoView + use<> {
     let base = variant_url(variant);
     let revision = review.revision;
-    let pages: Vec<_> = (1..=review.previews.len())
+    let count = review.previews.len();
+    let pages: Vec<_> = (1..=count)
         .map(|page| {
             let url = format!("{base}/preview.png?revision={revision}&page={page}&state=draft");
-            let url = url.as_str();
             view! {
-                <img
-                    class="picture-whole"
-                    src=url.to_owned()
-                    alt=format!("Revision {revision}, page {page}, the whole page, stamped. If you can't see it, don't approve this: reload.")
-                />
-                <div class="picture-read">
-                    <a class="picture-page" href=url.to_owned() target="_blank" rel="noopener">
-                        <img
-                            src=url.to_owned()
-                            alt=format!("Revision {revision}, page {page}, at a size to read, stamped. If you can't see it, don't approve this: reload.")
-                        />
-                    </a>
-                </div>
+                <a class="picture-page" id=format!("cv-page-{page}") href=url.clone() target="_blank" rel="noopener">
+                    <img
+                        src=url.clone()
+                        alt=format!("Revision {revision}, page {page}, at a size to read, stamped. If you can't see it, don't approve this: reload.")
+                    />
+                </a>
             }
         })
         .collect();
+    let strip: Vec<_> = (1..=count)
+        .map(|page| view! { <a href=format!("#cv-page-{page}")>{format!("Page {page}")}</a> })
+        .collect();
     view! {
-        <h3>"The picture"</h3>
-        <p id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text. Each page comes whole, then at a size to read, which swipes sideways on a narrow screen. Tap it to open the page at full size. The stamp is no part of the CV."</p>
-        <div class="picture-pages" id="cv-picture-pages">{pages}</div>
+        <section id="cv-picture">
+            <h2 class="k">"The picture"</h2>
+            <p class="hint" id="cv-read-picture"><b>"Read the picture: "</b>"it is what a reader sees, and it can differ from the text. Tap a page to open it at full size. The stamp is no part of the CV."</p>
+            {(count > 1).then(|| view! {
+                <nav class="page-strip" id="cv-page-strip" aria-label="Pages of the picture">{strip}</nav>
+            })}
+            <div class="picture-pages" id="cv-picture-pages">{pages}</div>
+        </section>
     }
 }
 
 fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use<> {
     let base = variant_url(variant);
     let state = if approved { "approved" } else { "draft" };
-    let label = if approved {
-        "Download PDF"
-    } else {
-        "Download draft PDF, stamped"
-    };
     view! {
         <section id="cv-preview">
-            <h2>"Preview"</h2>
+            <h2 class="k">"Preview"</h2>
             <div class="preview-pages" id="cv-preview-pages">
                 <img
                     src=format!("{base}/preview.png?revision={head}&page=1&state={state}")
@@ -1043,15 +1226,12 @@ fn preview_view(variant: &str, head: i64, approved: bool) -> impl IntoView + use
                 "Stamped until you approve it. The stamp is no part of the CV."
             </p>
             <p class="banner warn" id="cv-preview-note" role="status" hidden></p>
-            <div class="buttons preview-actions" id="cv-preview-actions">
-                <a class="button secondary" href=format!("{base}/cv.pdf?revision={head}") id="cv-pdf">{label}</a>
-            </div>
         </section>
     }
 }
 
 fn voice_view(variant: &str, config: Option<&VoiceConfig>, token: &str) -> impl IntoView + use<> {
-    voice_panel("Voice", variant, None, config, token)
+    voice_panel("Assistant", variant, None, config, token)
 }
 
 fn voice_panel(
@@ -1073,6 +1253,12 @@ fn voice_panel(
         .into_any();
     };
     let minutes = config.lifetime.as_secs().div_ceil(60);
+    // Under the editor the activity stays folded away. The assistant's own page has room for it.
+    let docked = heading != "Voice assistant";
+    let activity = view! {
+        <p id="voice-tools-empty" class="hint">"Actions and their results appear here."</p>
+        <ul class="tool-list" id="voice-tools" aria-live="polite" aria-relevant="additions"></ul>
+    };
     view! {
         <section
             id="voice"
@@ -1133,11 +1319,23 @@ fn voice_panel(
                         <p id="voice-announcement" class="voice-sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
                         <ol class="transcript" id="voice-transcript" role="log" aria-label="Conversation transcript" aria-live="off" aria-relevant="additions"></ol>
                     </section>
-                    <section class="voice-activity" aria-labelledby="voice-activity-title">
-                        <h3 id="voice-activity-title">"Activity"</h3>
-                        <p id="voice-tools-empty" class="hint">"Actions and their results appear here."</p>
-                        <ul class="tool-list" id="voice-tools" aria-live="polite" aria-relevant="additions"></ul>
-                    </section>
+                    {if docked {
+                        view! {
+                            <details class="voice-activity">
+                                <summary id="voice-activity-title">"Activity"</summary>
+                                {activity}
+                            </details>
+                        }
+                        .into_any()
+                    } else {
+                        view! {
+                            <section class="voice-activity" aria-labelledby="voice-activity-title">
+                                <h3 id="voice-activity-title">"Activity"</h3>
+                                {activity}
+                            </section>
+                        }
+                        .into_any()
+                    }}
                 </div>
             </div>
         </section>
@@ -1145,7 +1343,7 @@ fn voice_panel(
     .into_any()
 }
 
-/// The form's fragment brings a refused save back to its problems, past the preview on a phone.
+/// The form's fragment brings a refused save back to its problems.
 fn editor_view(
     variant: &str,
     token: &str,
@@ -1161,13 +1359,13 @@ fn editor_view(
             {(!outcome.violations.is_empty()).then(|| violations_view(&outcome.violations))}
             {(!outcome.diagnostics.is_empty()).then(|| diagnostics_view(&outcome.diagnostics))}
             // No browser may give a reloaded page the text typed before it, under the new page's base.
-            <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-editor-form" autocomplete="off">
+            <form method="post" action=format!("{}/save#cv-editor", variant_url(variant)) class="act" id="cv-editor-form" autocomplete="off" data-unsaved=outcome.typed_source.is_some().then_some("1")>
                 <input type="hidden" name="csrf" value=token.to_owned() />
                 <input type="hidden" name="expected" id="cv-expected" value=expected.to_string() />
                 {(!outcome.not_from_base).then(|| view! {
                     <input type="hidden" name="fromBase" id="cv-from-base" value="1" />
                 })}
-                <label>"Typst source"
+                <label class="cv-source">"Typst source"
                     <textarea
                         name="source"
                         class="code"
@@ -1177,18 +1375,20 @@ fn editor_view(
                         autocapitalize="off"
                     >{views::textarea_text(text)}</textarea>
                 </label>
-                <label>"What changed"
-                    <input
-                        type="text"
-                        name="summary"
-                        maxlength="500"
-                        value=outcome.typed_summary.clone().unwrap_or_default()
-                        placeholder="Edited by hand"
-                    />
-                </label>
-                <button type="submit" id="cv-save">
-                    {if saves_approved { "Save and approve as a new revision" } else { "Save draft" }}
-                </button>
+                <div class="cv-save-row">
+                    <label>"What changed"
+                        <input
+                            type="text"
+                            name="summary"
+                            maxlength="500"
+                            value=outcome.typed_summary.clone().unwrap_or_default()
+                            placeholder="Edited by hand"
+                        />
+                    </label>
+                    <button type="submit" id="cv-save">
+                        {if saves_approved { "Save and approve as a new revision" } else { "Save draft" }}
+                    </button>
+                </div>
             </form>
         </section>
     }
@@ -1270,18 +1470,18 @@ fn revisions_view(
         .collect();
     let total = listing["total"].as_i64().unwrap_or(0);
     let newer = (page > 1).then(|| {
-        view! { <a class="button quiet" href=format!("{base}?page={}#cv-revisions", page - 1)>"Newer"</a> }
+        view! { <a class="button quiet" href=format!("{base}?view=history&page={}#cv-revisions", page - 1)>"Newer"</a> }
     });
     let older = (page * REVISIONS_PER_PAGE < total).then(|| {
-        view! { <a class="button quiet" href=format!("{base}?page={}#cv-revisions", page + 1)>"Older"</a> }
+        view! { <a class="button quiet" href=format!("{base}?view=history&page={}#cv-revisions", page + 1)>"Older"</a> }
     });
     view! {
         <section id="cv-revisions">
             <h2>"Revisions"</h2>
             {if rows.is_empty() {
-                view! { <div class="card"><p class="empty">"Nothing stored yet. Saving makes the first revision."</p></div> }.into_any()
+                view! { <p class="empty">"Nothing stored yet. Saving makes the first revision."</p> }.into_any()
             } else {
-                view! { <div class="card"><ol class="revisions">{rows}</ol></div> }.into_any()
+                view! { <ol class="revisions">{rows}</ol> }.into_any()
             }}
             <div class="buttons pager">{newer}{older}</div>
         </section>
@@ -1315,7 +1515,7 @@ fn refused(told: &Told, mut outcome: Outcome) -> (StatusCode, Outcome) {
         outcome.flash = Some(Flash {
             ok: false,
             text: format!(
-                "Revision {current} landed while you were working, so nothing was stored. Your text is still below. Check the new revision under Revisions: saving again stores your text as a draft, for you to read and approve, and history keeps both."
+                "Revision {current} landed while you were working, so nothing was stored. Your text is still below. Check the new revision under History: saving again stores your text as a draft, for you to read and approve, and history keeps both."
             ),
         });
         return (StatusCode::CONFLICT, outcome);
@@ -1438,7 +1638,7 @@ async fn approve(
     );
     if !told.is_error {
         return Ok(Redirect::to(&format!(
-            "{}?done=approved#cv-approval",
+            "{}?view=review&done=approved#cv-approval",
             variant_url(&variant)
         ))
         .into_response());
@@ -1448,6 +1648,7 @@ async fn approve(
     }
     let (status, mut outcome) = refused(&told, Outcome::default());
     outcome.started = Some(started);
+    outcome.view = Some(Mode::Review);
     if told.code() == "cv_approval_stale" {
         outcome.flash = Some(Flash {
             ok: false,
@@ -1503,6 +1704,7 @@ async fn revert(
     }
     let (status, mut outcome) = refused(&told, Outcome::default());
     outcome.started = Some(started);
+    outcome.view = Some(Mode::History);
     Ok(with_status(
         status,
         render_variant(&cv, &variant, 1, &token, outcome).await?,
