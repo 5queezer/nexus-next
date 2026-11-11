@@ -242,63 +242,163 @@
   }
 
   // A word in the list shows where it stands in the picture while the pointer or the focus is on it.
-  // A finger has neither, so a tap shows it and a second tap takes it away.
+  // A finger has neither, so a tap shows it and a second tap takes it away. A rule in the legend shows
+  // all its words at once, and a click keeps them shown until another click or Escape.
   function markInPicture() {
     const pane = byId("cv-picture-pane");
     const still = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const chips = [...document.querySelectorAll("#cv-approval mark[data-rule], #cv-approval mark[data-boxes]")];
     let marks = [];
     let marked = null;
     let tapped = null;
+    let pinned = null;
     const clear = () => {
       for (const mark of marks) mark.remove();
+      for (const chip of chips) chip.classList.remove("dim");
       marks = [];
       marked = null;
     };
-    const show = (chip) => {
-      if (marked === chip) return;
-      clear();
-      marked = chip;
-      for (const place of chip.dataset.boxes.split(";")) {
+    // Only a pane's own side scrolls: on a narrow screen it has none, and the page stays put.
+    const bring = (side, element) => {
+      const at = element.getBoundingClientRect();
+      const seen = side.getBoundingClientRect();
+      const margin = 24;
+      const up = Math.min(0, at.top - margin - seen.top);
+      const down = Math.max(0, at.bottom + margin - seen.bottom);
+      if (up || down) side.scrollBy({ top: up || down, behavior: still.matches ? "auto" : "smooth" });
+    };
+    const draw = (from) => {
+      for (const place of (from.dataset.boxes || "").split(";").filter(Boolean)) {
         const [page, box] = place.split(":");
         const picture = byId(`cv-page-${page}`);
         if (!picture) continue;
         const [left, top, width, height] = box.split(",").map((share) => `${share * 100}%`);
         const mark = document.createElement("span");
-        mark.className = `picture-mark ${chip.className}`;
+        mark.className = `picture-mark ${from.className}`;
         Object.assign(mark.style, { left, top, width, height });
         picture.append(mark);
         marks.push(mark);
       }
-      if (!marks.length) return;
-      // Only the picture's own side scrolls: on a narrow screen it has none, and the page stays put.
-      const at = marks[0].getBoundingClientRect();
-      const seen = pane.getBoundingClientRect();
-      const margin = 24;
-      const up = Math.min(0, at.top - margin - seen.top);
-      const down = Math.max(0, at.bottom + margin - seen.bottom);
-      if (up || down) pane.scrollBy({ top: up || down, behavior: still.matches ? "auto" : "smooth" });
     };
-    for (const chip of document.querySelectorAll("#cv-approval mark[data-boxes]")) {
+    const show = (chip) => {
+      if (marked === chip) return;
+      clear();
+      marked = chip;
+      draw(chip);
+      if (marks.length) bring(pane, marks[0]);
+    };
+    const showRule = (row) => {
+      if (marked === row) return;
+      clear();
+      marked = row;
+      for (const chip of chips) {
+        if (chip.dataset.rule === row.dataset.rule) draw(chip);
+        else chip.classList.add("dim");
+      }
+    };
+    // What shows when nothing is pointed at: the pinned rule's words, or nothing.
+    const rest = () => {
+      if (pinned) showRule(pinned);
+      else clear();
+    };
+    const pin = (row) => {
+      for (const other of document.querySelectorAll("#cv-legend li")) {
+        other.setAttribute("aria-pressed", String(other === row));
+      }
+      pinned = row;
+      rest();
+    };
+    for (const chip of chips.filter((chip) => chip.dataset.boxes)) {
       chip.tabIndex = 0;
       chip.addEventListener("pointerenter", (event) => {
         if (event.pointerType === "mouse") show(chip);
       });
       chip.addEventListener("pointerleave", (event) => {
-        if (event.pointerType === "mouse") clear();
+        if (event.pointerType === "mouse") rest();
       });
       chip.addEventListener("focus", () => show(chip));
-      chip.addEventListener("blur", clear);
+      chip.addEventListener("blur", rest);
       // The tap's focus comes before its click, so what the tap found is kept from before both.
       chip.addEventListener("pointerdown", (event) => {
         tapped = event.pointerType === "mouse" ? null : marked === chip;
       });
       chip.addEventListener("click", () => {
         if (tapped === null) return;
-        if (tapped) clear();
+        if (tapped) rest();
         else show(chip);
         tapped = null;
       });
     }
+    const rows = document.querySelectorAll("#cv-legend li[data-rule]");
+    if (!rows.length) return;
+    byId("cv-legend-hint").hidden = false;
+    for (const row of rows) {
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+      row.setAttribute("aria-pressed", "false");
+      row.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") showRule(row);
+      });
+      row.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "mouse") rest();
+      });
+      row.addEventListener("focus", () => showRule(row));
+      row.addEventListener("blur", rest);
+      const press = () => {
+        if (pinned === row) {
+          pin(null);
+          return;
+        }
+        pin(row);
+        const own = chips.filter((chip) => chip.dataset.rule === row.dataset.rule);
+        const first = own[0];
+        if (!first) return;
+        // Some of a rule's words can be among the ones folded away.
+        for (const chip of own) {
+          const folded = chip.closest("details");
+          if (folded) folded.open = true;
+        }
+        const side = first.closest(".cv-panel");
+        if (side) bring(side, first);
+        if (marks.length) bring(pane, marks[0]);
+      };
+      row.addEventListener("click", press);
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        press();
+      });
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && pinned) pin(null);
+    });
+    document.addEventListener("click", (event) => {
+      if (pinned && !event.target.closest("#cv-legend li, #cv-approval mark, .picture-mark")) pin(null);
+    });
+  }
+
+  // A link from a word in the review names it in `find`: the editor opens with the word selected, or
+  // says that the text doesn't hold it. Whole words only, in any case.
+  function findInSource() {
+    const editor = byId("cv-source");
+    const word = new URLSearchParams(location.search).get("find");
+    if (!editor || !word) return;
+    const text = editor.value.toLowerCase();
+    const letter = /[\p{L}\p{N}]/u;
+    let at = -1;
+    do {
+      at = text.indexOf(word.toLowerCase(), at + 1);
+    } while (at >= 0 && (letter.test(text[at - 1] || "") || letter.test(text[at + word.length] || "")));
+    if (at < 0) {
+      byId("cv-find-miss").hidden = false;
+      return;
+    }
+    editor.focus();
+    editor.setSelectionRange(at, at + word.length);
+    // A textarea doesn't scroll to its selection by itself: the word's line goes to the middle.
+    const line = parseFloat(getComputedStyle(editor).lineHeight) || 1.4 * parseFloat(getComputedStyle(editor).fontSize);
+    const above = editor.value.slice(0, at).split("\n").length - 1;
+    editor.scrollTop = Math.max(0, above * line - editor.clientHeight / 2);
   }
 
   // The text in the editor, drawn as it stands. A text that can't be drawn says why and leaves the
@@ -469,6 +569,7 @@
   markInPicture();
   guardTyping();
   chooseTemplate();
+  findInSource();
   loadPreview(shown);
   connect();
 })();

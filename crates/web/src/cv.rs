@@ -944,7 +944,7 @@ fn legend_view(items: &[ReviewItem]) -> impl IntoView + use<> {
         .into_iter()
         .map(|(rule, key, count)| {
             view! {
-                <li id=format!("cv-rule-{key}") class=rule_kind(rule)>
+                <li id=format!("cv-rule-{key}") class=rule_kind(rule) data-rule=key.clone()>
                     <span class="swatch" aria-hidden="true"></span>
                     {rule_text(&key)}
                     <small>{format!(" \u{b7} {count}")}</small>
@@ -952,7 +952,13 @@ fn legend_view(items: &[ReviewItem]) -> impl IntoView + use<> {
             }
         })
         .collect();
-    view! { <ul class="legend" id="cv-legend">{rows}</ul> }
+    // Only `cv.js` makes the rows act, so only it shows how.
+    view! {
+        <ul class="legend" id="cv-legend">{rows}</ul>
+        <p class="hint" id="cv-legend-hint" hidden>
+            "Point at a rule to see its words in the picture. Click to keep them marked."
+        </p>
+    }
 }
 
 /// Where an item's token stands in the picture, for `cv.js` to mark while the pointer is on its word:
@@ -1002,6 +1008,29 @@ fn token_boxes(review: &Review, item: &ReviewItem) -> Option<String> {
     Some(found.join(";"))
 }
 
+/// `text` as the value of a query parameter.
+fn query_value(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// The way from a word in a list to where the source says it: the editor, which `cv.js` then takes to
+/// the word, or says that the facts hold it.
+fn to_source_view(variant: &str, word: &str) -> impl IntoView + use<> {
+    let href = format!(
+        "{}?view=edit&find={}",
+        variant_url(variant),
+        query_value(word)
+    );
+    view! { <a class="to-source" href=href>"Edit"</a> }
+}
+
 /// One line with what to check on it. Each word names its rule by colour and by the legend's entry.
 fn review_group_view(review: &Review, group: &[&ReviewItem]) -> impl IntoView + use<> {
     let context = group[0].context.clone();
@@ -1013,6 +1042,7 @@ fn review_group_view(review: &Review, group: &[&ReviewItem]) -> impl IntoView + 
                 <mark
                     class=rule_kind(item.rule)
                     aria-describedby=format!("cv-rule-{}", rule_of(item))
+                    data-rule=rule_of(item)
                     data-boxes=token_boxes(review, item)
                 >
                     {item.token.clone()}
@@ -1026,7 +1056,7 @@ fn review_group_view(review: &Review, group: &[&ReviewItem]) -> impl IntoView + 
             {(!context.is_empty()).then(|| view! {
                 <small class="context">{highlighted(&context, &tokens)}</small>
             })}
-            <span class="chips">{chips}</span>
+            <span class="chips">{chips}{to_source_view(&review.variant, tokens[0])}</span>
         </li>
     }
 }
@@ -1094,7 +1124,10 @@ fn layout_view(review: &Review) -> impl IntoView + use<> {
             view! {
                 <li>
                     <small class="context">{note.message.clone()}</small>
-                    <span class="chips"><mark class="layout" data-boxes=boxes>{note.line.clone()}</mark></span>
+                    <span class="chips">
+                        <mark class="layout" data-boxes=boxes>{note.line.clone()}</mark>
+                        {(!note.line.is_empty()).then(|| to_source_view(&review.variant, &note.line))}
+                    </span>
                 </li>
             }
         })
@@ -1509,6 +1542,11 @@ fn editor_view(
                     </button>
                 </div>
             </form>
+            <p class="hint" id="cv-find-miss" role="status" hidden>
+                "This isn't written in this text. It comes from your "
+                <a href="/cv/facts">"facts"</a>
+                " or from the template."
+            </p>
             {template_view(variant, token, text, expected)}
         </section>
     }

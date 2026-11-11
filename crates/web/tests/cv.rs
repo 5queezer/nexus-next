@@ -2384,3 +2384,52 @@ async fn a_fit_gives_back_the_text_at_the_density_closest_to_its_pages() {
     );
     assert!(revision_rows(&f.db).await.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_and_its_words_name_each_other_and_each_line_leads_to_the_source() {
+    let f = locked().await;
+    approved_start(&f).await;
+    agent_patch(
+        &f,
+        1,
+        "Built the routing service.",
+        "Built the routing service for 12 depots.",
+    )
+    .await;
+    let (_, _, page) = get(&f.app, "/cv/variants/default?view=review").await;
+    let legend = page.split("id=\"cv-legend\"").nth(1).unwrap();
+    let row = legend.split("<li").nth(1).unwrap();
+    let rule = row
+        .split("data-rule=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    assert!(row.contains(&format!("id=\"cv-rule-{rule}\"")), "{row}");
+    assert!(page.contains("id=\"cv-legend-hint\" hidden"), "{page}");
+    let chips = page.split("id=\"cv-review-items\"").nth(1).unwrap();
+    assert!(chips.contains(&format!("data-rule=\"{rule}\"")), "{chips}");
+    let link = chips
+        .split("class=\"to-source\"")
+        .next()
+        .unwrap()
+        .rsplit("<a ")
+        .next()
+        .unwrap();
+    assert!(
+        link.contains("href=\"/cv/variants/default?view=edit&amp;find="),
+        "{link}"
+    );
+
+    // The layout note's word goes the same way, and the editor has the line for a word it lacks.
+    let layout = page.split("id=\"cv-layout\"").nth(1).unwrap_or_default();
+    assert_eq!(
+        layout.matches("class=\"to-source\"").count(),
+        layout.matches("class=\"layout\"").count()
+    );
+    let (status, _, page) = get(&f.app, "/cv/variants/default?view=edit&find=12%20depots").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("id=\"cv-find-miss\""), "{page}");
+    assert!(page.contains("href=\"/cv/facts\""), "{page}");
+}
