@@ -17,6 +17,7 @@ Files here:
 |---|---|
 | `/healthz` | Open |
 | `/calendar.ics` | The secret token in its URL. Not served without a token file |
+| `/api/uploads/{token}` | The one-time token in its URL, from `create_document_upload` |
 | `/`, `/queue`, `/applications/*`, `/cv`, `/cv/*`, `/api/*` | The owner, logged in at `/login` |
 | `/.well-known/oauth-*`, `/api/mcp/{register,authorize,token}` | OAuth 2.1 for MCP clients |
 | `/api/mcp`, `/mcp` | MCP tools: an OAuth access token or the API token |
@@ -285,12 +286,15 @@ Each kind of caller has its own pool of request slots, so anonymous traffic can'
 | public | login, OAuth, calendar | 8 | 2 s | 10 s |
 | owner | dashboard, JSON API | 8 | 10 s | 60 s |
 | mcp | `/api/mcp`, `/mcp` | 8 | 10 s | 60 s; 300 s for a large body |
+| upload | `/api/uploads/{token}` | 2 | 10 s | 600 s |
 
 Token refreshes and logins share the public pool, so a flood there can delay them even though it can't touch the other two. They get a 503 rather than hanging, and clients with a valid access token carry on working.
 
 Moving a whole document is expensive: the transport holds several copies, about 85 MB for one 10 MiB document, measured with the musl build. So on the MCP route, a body over 1 MiB or of unknown length, and any `download_document_content` or `render_cv_pdf` call, needs one of **2** large slots, held until the response has been written, waiting up to 30 s for it. A batch asking for more than 2 downloads gets a 413. In a large or chunked body, where they aren't counted before a slot is taken, the MCP route itself refuses them with a JSON-RPC error, as it does any batch of more than 20 messages. These slots keep one token holder from exhausting `MemoryMax`. A client that stops reading a download holds its slot until its connection ends, which blocks other large calls but nothing else.
 
 A large upload has 300 s, so 14 MB needs about 373 kbit/s, and must not stall for more than 30 s at a time. Anything slower gets a 408. **The ingress may be stricter:** check that it allows an upload this long.
+
+An upload link (`create_document_upload`) takes one `PUT` or `POST` of up to 50 MiB, streamed to a temp file in the blob directory, never held in memory. The token in its path is the credential, so the route sits outside login and MCP auth, in its own pool. 50 MiB in 600 s needs about 700 kbit/s, and the body must not stall for more than 30 s at a time. A body over 50 MiB gets a 413, and its temp file is removed. The log shows the route as `/api/uploads/{token}`, never the token. **The ingress must allow a 50 MiB request body** that takes up to 600 s. Cloudflare allows 100 MB on its Free and Pro plans.
 
 Connections: at most 256 at once, and past that a new one is closed at once. Headers must arrive within 10 s and fit in 64 KiB. An idle keep-alive connection is closed after 10 s too, which a reverse proxy handles by opening another.
 

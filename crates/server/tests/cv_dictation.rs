@@ -115,7 +115,7 @@ async fn a_messy_dictation_session_edits_wording_and_stays_a_draft_for_the_owner
     };
 
     let listed = agent.rpc("tools/list", json!({})).await;
-    assert_eq!(listed["tools"].as_array().unwrap().len(), 40);
+    assert_eq!(listed["tools"].as_array().unwrap().len(), 41);
 
     // Before the session: the profile arrives over MCP, the owner confirms it on the board.
     agent

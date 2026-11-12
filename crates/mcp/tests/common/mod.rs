@@ -11,7 +11,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use nexus_core::Db;
 use nexus_core::auth::{AuthContext, AuthType, SCOPE_SUBMISSIONS, SCOPE_TOOLS};
-use nexus_mcp::{McpState, Renderer, router};
+use nexus_mcp::{McpState, Renderer, router, uploads_router};
 use serde_json::{Value, json};
 
 pub const OWNER_ID: &str = "owner-synthetic";
@@ -94,20 +94,23 @@ impl Server {
     pub async fn start_with(renderer: Renderer) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).await.unwrap();
-        let state = McpState::new(
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut state = McpState::new(
             db.clone(),
             OWNER_ID.to_owned(),
             OWNER_EMAIL.to_owned(),
             renderer,
         );
+        state.public_base_url = format!("http://{addr}");
         let mcp = router(state.clone());
+        let uploads = uploads_router(state.clone());
         let state = Arc::new(state);
         let app = Router::new()
             .nest("/api/mcp", mcp.clone())
             .nest("/mcp", mcp)
-            .layer(middleware::from_fn(test_auth));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+            .layer(middleware::from_fn(test_auth))
+            .merge(uploads);
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         Self {
             addr,

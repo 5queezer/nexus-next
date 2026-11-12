@@ -83,6 +83,15 @@ pub const MCP: Limits = Limits {
     queue_wait: Duration::from_secs(10),
     deadline: HANDLER_TIMEOUT,
 };
+/// Upload links, which hold a single-use ticket in place of credentials. The handler streams the
+/// body to disk and counts it against `MAX_LINK_UPLOAD_BYTES` itself: 50 MiB in 600 s is
+/// 699 kbit/s.
+pub const UPLOAD: Limits = Limits {
+    pool: "upload",
+    in_flight: 2,
+    queue_wait: Duration::from_secs(10),
+    deadline: Duration::from_secs(600),
+};
 /// A body over this, or of unknown length, counts as large on the MCP route. Under it, the normal
 /// 60 s deadline still allows 140 kbit/s.
 pub const LARGE_BODY_BYTES: u64 = 1024 * 1024;
@@ -152,6 +161,17 @@ pub fn harden_mcp(routes: Router) -> Router {
     .layer(from_fn(move |request: Request, next: Next| {
         admit_large(large.clone(), request, next)
     }))
+}
+
+/// The slots, deadline and body idle timeout of `UPLOAD`. No body limit: the handler has its own,
+/// and holds no more than a chunk of the body at a time.
+pub fn harden_uploads(routes: Router) -> Router {
+    let slots = Arc::new(Semaphore::new(UPLOAD.in_flight));
+    routes
+        .layer(RequestBodyTimeoutLayer::new(BODY_IDLE_TIMEOUT))
+        .layer(from_fn(move |request: Request, next: Next| {
+            admit(UPLOAD, slots.clone(), request, next)
+        }))
 }
 
 fn is_large(request: &Request) -> bool {
@@ -315,9 +335,11 @@ async fn local_only(State(bind): State<IpAddr>, request: Request, next: Next) ->
     }
 }
 
-/// Every route, wrapped in limits and request logging. The calendar has its own secret URL token.
+/// Every route, wrapped in limits and request logging. The calendar and upload links have their own
+/// secret URL tokens.
 /// `/healthz` sits outside the limits so it still answers when the server is saturated. Auth runs
-/// before a slot is taken, so a caller without credentials can only ever occupy the public pool.
+/// before a slot is taken, so a caller without credentials can only ever occupy the public pool, and
+/// an upload slot for as long as refusing a wrong token takes.
 pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
     let mut public = nexus_web::static_router();
     if let Some(token) = &config.calendar_token {
@@ -328,7 +350,12 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         .clone()
         .zip(config.owner_email.clone())
         .context("the owner is not resolved")?;
-    let state = McpState::new(db.clone(), owner_id, owner_email, config.renderer.clone());
+    let mut state = McpState::new(db.clone(), owner_id, owner_email, config.renderer.clone());
+    state.public_base_url = match &config.access {
+        Access::Owner(auth) => auth.public_base_url.clone(),
+        Access::InsecureLocalOnly => format!("http://{}", config.bind),
+    };
+    let uploads = harden_uploads(nexus_mcp::uploads_router(state.clone()));
     let mcp = nexus_mcp::router(state.clone());
     let mcp = harden_mcp(
         Router::new()
@@ -376,6 +403,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
             let https = access.public_base_url.starts_with("https://");
             let routes = harden(public.merge(nexus_auth::router(auth.clone())), PUBLIC)
                 .merge(humans.layer(from_fn_with_state(auth.clone(), require_owner_session)))
+                .merge(uploads)
                 .merge(
                     unpooled(auth.logouts())
                         .layer(from_fn_with_state(auth.clone(), require_owner_session)),
@@ -394,6 +422,7 @@ pub fn build_app(db: &Db, config: &ServeConfig) -> anyhow::Result<Router> {
         _ => harden(public, PUBLIC)
             .merge(humans)
             .merge(unpooled(watch::Sender::new(0)))
+            .merge(uploads)
             .merge(
                 mcp.layer(Extension(AuthContext {
                     auth_type: AuthType::ApiToken,
