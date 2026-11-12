@@ -19,10 +19,14 @@ use crate::js::{nid, parse_date, slice16};
 
 const MAX_UPLOAD_BYTES: usize = 10 * 1024 * 1024;
 /// All documents together. Nothing else bounds what a token holder can put on the disk.
-const MAX_STORED_BYTES: i64 = 1024 * 1024 * 1024;
+pub(super) const MAX_STORED_BYTES: i64 = 1024 * 1024 * 1024;
 const MAX_BASE64_BYTES: usize = MAX_UPLOAD_BYTES.div_ceil(3) * 4 + 4;
 const NOT_FOUND: &str = "Document not found or access denied";
-const APP_NOT_FOUND: &str = "Application not found or access denied";
+pub(super) const APP_NOT_FOUND: &str = "Application not found or access denied";
+pub(super) const STORAGE_FULL: &str =
+    "Document storage is full (max 1 GB in total). Delete documents to make room.";
+pub(super) const SIGNATURE_MISMATCH: &str = "File bytes do not match the declared MIME type";
+pub(super) const UPLOAD_FAILED: &str = "Failed to upload document";
 
 fn requires_scope(document: &Document, requested_state: Option<&str>) -> bool {
     document.is_submission_document() || matches!(requested_state, Some("submitted" | "historical"))
@@ -121,7 +125,7 @@ fn decode(content: &str) -> Result<Vec<u8>, &'static str> {
 }
 
 /// Port of `matchesMimeSignature`.
-fn matches_signature(bytes: &[u8], mime_type: &str) -> bool {
+pub(super) fn matches_signature(bytes: &[u8], mime_type: &str) -> bool {
     match mime_type {
         "application/pdf" => bytes.starts_with(b"%PDF-"),
         "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
@@ -131,7 +135,7 @@ fn matches_signature(bytes: &[u8], mime_type: &str) -> bool {
     }
 }
 
-async fn run_blocking<T: Send + 'static>(
+pub(super) async fn run_blocking<T: Send + 'static>(
     task: impl FnOnce() -> nexus_core::Result<T> + Send + 'static,
 ) -> nexus_core::Result<T> {
     tokio::task::spawn_blocking(task)
@@ -155,22 +159,97 @@ pub(super) async fn remove_blob_if_unreferenced(db: &Db, sha256: String) -> nexu
     run_blocking(move || blobs.delete(&sha256)).await
 }
 
-pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
+/// The applications `applicationIds` names, or `None` if one of them isn't found.
+pub(super) async fn linked_applications(
+    ctx: &Ctx,
+    args: &Args,
+) -> Result<Option<Vec<i64>>, Thrown> {
     let ids: Vec<&str> = args
         .get("applicationIds")
         .and_then(Value::as_array)
         .map(|ids| ids.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
     let mut application_ids = Vec::with_capacity(ids.len());
-    {
-        let mut conn = ctx.state.db.conn().await?;
-        for id in ids {
-            match find_application(&mut conn, id).await {
-                Ok(Some(application)) => application_ids.push(application.id),
-                _ => return Ok(text_error(APP_NOT_FOUND)),
-            }
+    let mut conn = ctx.state.db.conn().await?;
+    for id in ids {
+        match find_application(&mut conn, id).await {
+            Ok(Some(application)) => application_ids.push(application.id),
+            _ => return Ok(None),
         }
     }
+    Ok(Some(application_ids))
+}
+
+/// What an upload names before its bytes arrive.
+pub(super) struct Declared {
+    pub filename: String,
+    pub mime_type: String,
+    pub application_ids: Vec<i64>,
+}
+
+/// Stores an upload's file with `put`, which returns its address, and commits its document. `put`
+/// runs again under the write lock if a delete of the same bytes has removed the file meanwhile.
+/// `None` if either fails.
+pub(super) async fn store<P, F>(
+    db: &Db,
+    declared: Declared,
+    size: i64,
+    content_hash: String,
+    put: P,
+) -> Option<Document>
+where
+    P: Fn() -> F,
+    F: Future<Output = nexus_core::Result<String>>,
+{
+    let extension = match declared.mime_type.as_str() {
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/webp" => ".webp",
+        _ => ".pdf",
+    };
+    let new = NewDocument {
+        filename: format!("{}{extension}", uuid::Uuid::new_v4()),
+        original_name: slice16(&declared.filename, 255),
+        size,
+        mime_type: declared.mime_type,
+        application_ids: declared.application_ids,
+        document_type: Some("other".to_owned()),
+        state: Some("current".to_owned()),
+        version: Some(1),
+        content_hash: Some(content_hash),
+        source: Some("upload".to_owned()),
+        generated_at: None,
+        submitted_at: None,
+        blob_sha256: String::new(),
+    };
+    let sha256 = put().await.ok()?;
+    let new = NewDocument {
+        blob_sha256: sha256.clone(),
+        ..new
+    };
+    let created = async {
+        let mut tx = db.begin_write().await?;
+        // A delete of the same bytes may have removed the file since the put above.
+        if !db.blobs().exists(&sha256)? {
+            put().await?;
+        }
+        let document = repo::create(&mut tx, &new).await?;
+        tx.commit().await?;
+        nexus_core::Result::Ok(document)
+    };
+    match created.await {
+        Ok(document) => Some(document),
+        Err(_) => {
+            let _ = remove_blob_if_unreferenced(db, sha256).await;
+            None
+        }
+    }
+}
+
+pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
+    let Some(application_ids) = linked_applications(ctx, args).await? else {
+        return Ok(text_error(APP_NOT_FOUND));
+    };
     let bytes = match decode(req_str(args, "contentBase64")) {
         Ok(bytes) => bytes,
         Err(message) => return Ok(text_error(message)),
@@ -180,60 +259,26 @@ pub async fn upload(ctx: &Ctx, args: &Args) -> ToolResult {
     }
     let stored = repo::total_size(&mut *ctx.state.db.conn().await?).await?;
     if stored + bytes.len() as i64 > MAX_STORED_BYTES {
-        return Ok(text_error(
-            "Document storage is full (max 1 GB in total). Delete documents to make room.",
-        ));
+        return Ok(text_error(STORAGE_FULL));
     }
     let mime_type = req_str(args, "mimeType");
     if !matches_signature(&bytes, mime_type) {
-        return Ok(text_error("File bytes do not match the declared MIME type"));
+        return Ok(text_error(SIGNATURE_MISMATCH));
     }
-    let extension = match mime_type {
-        "image/jpeg" => ".jpg",
-        "image/png" => ".png",
-        "image/webp" => ".webp",
-        _ => ".pdf",
-    };
-    let new = NewDocument {
-        filename: format!("{}{extension}", uuid::Uuid::new_v4()),
-        original_name: slice16(req_str(args, "filename"), 255),
-        size: bytes.len() as i64,
+    let declared = Declared {
+        filename: req_str(args, "filename").to_owned(),
         mime_type: mime_type.to_owned(),
         application_ids,
-        document_type: Some("other".to_owned()),
-        state: Some("current".to_owned()),
-        version: Some(1),
-        content_hash: Some(sha256_hex(&bytes)),
-        source: Some("upload".to_owned()),
-        generated_at: None,
-        submitted_at: None,
-        blob_sha256: String::new(),
     };
+    let (size, content_hash) = (bytes.len() as i64, sha256_hex(&bytes));
     let bytes = Arc::new(bytes);
-    let Ok(sha256) = put_blob(&ctx.state.db, bytes.clone()).await else {
-        return Ok(text_error("Failed to upload document"));
-    };
-    let new = NewDocument {
-        blob_sha256: sha256.clone(),
-        ..new
-    };
-    let created = async {
-        let mut tx = ctx.state.db.begin_write().await?;
-        // A delete of the same bytes may have removed the file since the put above.
-        if !ctx.state.db.blobs().exists(&sha256)? {
-            put_blob(&ctx.state.db, bytes.clone()).await?;
-        }
-        let document = repo::create(&mut tx, &new).await?;
-        tx.commit().await?;
-        nexus_core::Result::Ok(document)
-    };
-    Ok(match created.await {
-        Ok(document) => json_result(ctx.doc_json(&document), false),
-        Err(_) => {
-            let _ = remove_blob_if_unreferenced(&ctx.state.db, sha256).await;
-            text_error("Failed to upload document")
-        }
-    })
+    let put = || put_blob(&ctx.state.db, bytes.clone());
+    Ok(
+        match store(&ctx.state.db, declared, size, content_hash, put).await {
+            Some(document) => json_result(ctx.doc_json(&document), false),
+            None => text_error(UPLOAD_FAILED),
+        },
+    )
 }
 
 pub async fn download(ctx: &Ctx, args: &Args) -> ToolResult {

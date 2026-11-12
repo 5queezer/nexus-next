@@ -80,7 +80,7 @@ async fn a_real_mcp_client_connects_lists_and_calls() {
     );
 
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 40);
+    assert_eq!(tools.len(), 41);
     assert_eq!(tools[0].name, "list_applications");
     assert_eq!(tools[35].name, "get_cv_source");
 

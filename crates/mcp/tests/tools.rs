@@ -2024,6 +2024,116 @@ async fn documents_upload_list_get_download_update_delete() {
     );
 }
 
+/// Every file in the blob directory, temp files included.
+fn blob_dir_entries(server: &Server) -> usize {
+    std::fs::read_dir(server.dir.path().join("blobs")).map_or(0, |entries| entries.count())
+}
+
+#[tokio::test]
+async fn an_upload_link_takes_a_large_document_once() {
+    use base64::Engine;
+
+    let server = Server::start().await;
+    let id = server.application("Acme").await;
+    let mint = |ids: Value| {
+        server.call(
+            "create_document_upload",
+            json!({"filename": "big.pdf", "mimeType": "application/pdf", "applicationIds": ids}),
+        )
+    };
+    let link = mint(json!([id])).await.ok();
+    let url = link["uploadUrl"].as_str().unwrap().to_owned();
+    assert!(url.starts_with(&format!("http://{}/api/uploads/", server.addr)));
+    assert_eq!(link["method"], "PUT");
+    assert_eq!(link["maxBytes"], 50 * 1024 * 1024);
+    assert_eq!(link["example"], format!("curl -fsS -T <file> '{url}'"));
+    assert_eq!(link["expiresAt"].as_str().unwrap().len(), 24);
+
+    let mut bytes = b"%PDF-1.7 synthetic".to_vec();
+    bytes.resize(11 * 1024 * 1024, b'x');
+    let http = reqwest::Client::new();
+    let response = http.put(&url).body(bytes.clone()).send().await.unwrap();
+    assert_eq!(response.status(), 201);
+    let document: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+    assert_eq!(document["originalName"], "big.pdf");
+    assert_eq!(document["size"], bytes.len());
+    assert_eq!(document["source"], "upload");
+    assert_eq!(document["documentType"], "other");
+    assert_eq!(document["userId"], OWNER_ID);
+    assert_eq!(
+        document["applications"],
+        json!([{"id": id, "company": "Acme", "role": "Engineer"}])
+    );
+    assert_eq!(
+        server.db.blobs().list().unwrap(),
+        [document["contentHash"].as_str().unwrap()]
+    );
+    assert_eq!(blob_dir_entries(&server), 1, "no temp file is left");
+
+    let listed = server
+        .call(
+            "list_documents",
+            json!({"applicationId": id, "fields": ["originalName"]}),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        listed,
+        json!([{"id": document["id"], "originalName": "big.pdf"}])
+    );
+    let downloaded = server
+        .call("download_document_content", json!({"id": document["id"]}))
+        .await
+        .ok();
+    let content = base64::engine::general_purpose::STANDARD
+        .decode(downloaded["contentBase64"].as_str().unwrap())
+        .unwrap();
+    assert!(content == bytes, "the same bytes come back");
+
+    let again = http.put(&url).body("%PDF-1.7").send().await.unwrap();
+    assert_eq!(again.status(), 404, "a link works once");
+
+    let url = mint(json!([])).await.ok()["uploadUrl"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wrong = http
+        .post(&url)
+        .body("hello, not a PDF")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 415);
+    assert_eq!(
+        wrong.text().await.unwrap(),
+        "File bytes do not match the declared MIME type"
+    );
+    assert_eq!(
+        blob_dir_entries(&server),
+        1,
+        "nothing stored or left behind"
+    );
+
+    let url = mint(json!([])).await.ok()["uploadUrl"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let posted = http.post(&url).body("%PDF-1.7 small").send().await.unwrap();
+    assert_eq!(posted.status(), 201, "POST works as PUT does");
+
+    let unknown = http
+        .put(format!("http://{}/api/uploads/no-such-token", server.addr))
+        .body("%PDF-1.7")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+    assert_eq!(
+        mint(json!(["424242"])).await.err_text(),
+        "Application not found or access denied"
+    );
+}
+
 #[tokio::test]
 async fn a_document_without_its_file_reads_but_does_not_download() {
     let server = Server::start().await;

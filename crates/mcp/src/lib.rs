@@ -25,6 +25,7 @@ pub use http::{LARGE_RESULT_TOOLS, MAX_LARGE_RESULTS, router};
 pub use nexus_tailor::Renderer;
 pub use owner::Review;
 pub use rmcp::model::CallToolResult;
+pub use tools::{MAX_LINK_UPLOAD_BYTES, uploads_router};
 
 /// Runs one tool for a caller inside this process: the same validation, handlers and error codes
 /// as the HTTP route. `source` is who is calling (`mcp` on the route, `dashboard` for a person's click) and is stored on every event the call writes.
@@ -108,6 +109,11 @@ pub struct McpState {
     pub owner_id: String,
     pub owner_email: String,
     pub renderer: Renderer,
+    /// The origin clients reach this server at, which upload links start with. Empty by default,
+    /// which gives a link that is only a path.
+    pub public_base_url: String,
+    /// Open upload links, shared by every clone of this state.
+    upload_tickets: Arc<tools::Tickets>,
     /// One compile at a time. Taken only around the compile itself, never across other work.
     render_slot: Arc<Semaphore>,
     /// An agent's compile and the calls allowed to wait for it. Each holds a slot of the MCP pool
@@ -128,6 +134,8 @@ impl McpState {
             owner_id,
             owner_email,
             renderer,
+            public_base_url: String::new(),
+            upload_tickets: Arc::default(),
             render_slot: Arc::new(Semaphore::new(1)),
             render_calls: Arc::new(Semaphore::new(tools::MAX_RENDER_CALLS)),
             agent_turn: Arc::new(Semaphore::new(1)),
@@ -222,7 +230,8 @@ mod tests {
                 "patch_cv",
                 "render_cv_pdf",
                 "list_cv_revisions",
-                "revert_cv"
+                "revert_cv",
+                "create_document_upload"
             ]
         );
     }

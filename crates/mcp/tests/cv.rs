@@ -1883,7 +1883,7 @@ async fn no_tool_can_write_locked_facts_or_lock_or_unlock() {
         )
         .await;
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 40);
+    assert_eq!(tools.len(), 41);
     let attack = json!({
         "name": "Evil", "lockedAt": null, "locked_at": null, "locked": false, "unlock": true,
         "allowedTokens": ["999"], "allowed_tokens": ["999"], "vocabulary": ["Senior"],

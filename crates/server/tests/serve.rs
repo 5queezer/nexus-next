@@ -175,6 +175,88 @@ async fn the_dashboard_and_api_need_a_session_unless_the_run_is_local() {
     assert!(String::from_utf8_lossy(&body).contains("answers only to localhost"));
 }
 
+/// Mints an upload link through the app's MCP route: its path, or the tool's error.
+async fn upload_path(app: &Router, args: serde_json::Value) -> Result<String, String> {
+    let call = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "create_document_upload", "arguments": args}});
+    let request = Request::post("/api/mcp")
+        .header("accept", "application/json, text/event-stream")
+        .header("content-type", "application/json")
+        .body(Body::from(call.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let reply: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    if reply["result"]["isError"] == true {
+        return Err(text.to_owned());
+    }
+    let link: serde_json::Value = serde_json::from_str(text).unwrap();
+    let url = link["uploadUrl"].as_str().unwrap();
+    // A local run's links start with its bind address.
+    let path = url.strip_prefix("http://127.0.0.1:0").expect(url);
+    Ok(path.to_owned())
+}
+
+#[tokio::test]
+async fn upload_links_need_no_login_and_refuse_a_file_over_50_mib() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(dir.path()).await.unwrap();
+    let owner = serve::build_app(&db, &config(dir.path(), false, false)).unwrap();
+    let unknown = Request::put("/api/uploads/no-such-token")
+        .body(Body::from("%PDF-1.7"))
+        .unwrap();
+    assert_eq!(
+        owner.oneshot(unknown).await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "the link is the credential: no login is asked for"
+    );
+
+    let local = serve::build_app(&db, &config(dir.path(), false, true)).unwrap();
+    let pdf = serde_json::json!({"filename": "big.pdf", "mimeType": "application/pdf"});
+    assert_eq!(
+        upload_path(
+            &local,
+            serde_json::json!({"filename": "x.pdf", "mimeType": "application/pdf", "applicationIds": ["424242"]})
+        )
+        .await,
+        Err("Application not found or access denied".to_owned())
+    );
+
+    // Of unknown length, so it is counted as it arrives.
+    let path = upload_path(&local, pdf.clone()).await.unwrap();
+    let chunk = Bytes::from(vec![b'x'; 1024 * 1024]);
+    let chunks = (0..51).map(move |_| Ok::<_, Infallible>(chunk.clone()));
+    let request = Request::put(&path)
+        .body(Body::from_stream(stream::iter(chunks)))
+        .unwrap();
+    let response = local.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let blobs = dir.path().join("blobs");
+    assert_eq!(
+        std::fs::read_dir(&blobs).unwrap().count(),
+        0,
+        "the temp file is gone"
+    );
+    let again = Request::put(&path).body(Body::from("%PDF-1.7")).unwrap();
+    assert_eq!(
+        local.clone().oneshot(again).await.unwrap().status(),
+        StatusCode::NOT_FOUND,
+        "a refused upload uses up its link"
+    );
+
+    // A declared length over the limit is refused before a byte is read.
+    let path = upload_path(&local, pdf).await.unwrap();
+    let over = nexus_mcp::MAX_LINK_UPLOAD_BYTES as usize + 1;
+    let request = Request::put(&path)
+        .body(Body::from(vec![b'x'; over]))
+        .unwrap();
+    let response = local.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(std::fs::read_dir(&blobs).unwrap().count(), 0);
+    db.close().await;
+}
+
 #[tokio::test]
 async fn auth_routes_keep_their_own_body_limits_inside_the_stack() {
     let dir = tempfile::tempdir().unwrap();

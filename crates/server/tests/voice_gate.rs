@@ -558,7 +558,7 @@ const UNKNOWN_NAMES: [&str; 10] = [
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_allowlist_permits_internal_updates_but_keeps_destructive_and_external_tools_out() {
-    assert_eq!(all_tools().len(), 40);
+    assert_eq!(all_tools().len(), 41);
     let h = start(Duration::from_secs(900), true).await;
     let id = h.seed().await;
     let login = h.login().await;

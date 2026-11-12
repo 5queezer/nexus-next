@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::{self, ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,11 +53,7 @@ impl BlobStore {
             _ => {}
         }
         fs::create_dir_all(&self.dir)?;
-        let temp = self.dir.join(format!(
-            ".tmp-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
+        let temp = self.temp_path();
         let written = write_synced(&temp, bytes).and_then(|()| fs::rename(&temp, &path));
         if let Err(e) = written {
             let _ = fs::remove_file(&temp);
@@ -65,6 +61,52 @@ impl BlobStore {
         }
         File::open(&self.dir)?.sync_all()?;
         Ok(sha256)
+    }
+
+    /// A name that `sweep_temp_files` removes after a crash.
+    fn temp_path(&self) -> PathBuf {
+        self.dir.join(format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    /// A new, empty temp file to write a large blob into, for `put_file`.
+    pub fn create_temp(&self) -> Result<(PathBuf, File)> {
+        fs::create_dir_all(&self.dir)?;
+        let temp = self.temp_path();
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        Ok((temp, file))
+    }
+
+    /// Stores a synced temp file whose content hashes to `sha256`, as `put` stores bytes. The temp
+    /// file stays, so it can be stored again, and is the caller's to remove.
+    pub fn put_file(&self, temp: &Path, sha256: &str) -> Result<()> {
+        let path = self.path(sha256)?;
+        match File::open(&path) {
+            Ok(mut existing) => {
+                let mut hasher = Sha256::new();
+                io::copy(&mut existing, &mut hasher)?;
+                if hex::encode(hasher.finalize()) == sha256 {
+                    return Ok(());
+                }
+            }
+            Err(e) if e.kind() != ErrorKind::NotFound => return Err(e.into()),
+            Err(_) => {}
+        }
+        let link = self.temp_path();
+        let linked = fs::hard_link(temp, &link).and_then(|()| fs::rename(&link, &path));
+        if let Err(e) = linked {
+            let _ = fs::remove_file(&link);
+            return Err(e.into());
+        }
+        File::open(&self.dir)?.sync_all()?;
+        Ok(())
     }
 
     /// Reads a blob and verifies it against its address.
@@ -191,6 +233,21 @@ mod tests {
         assert!(matches!(store.get(HELLO), Err(Error::BlobCorrupt(_))));
         store.put(b"hello").unwrap();
         assert_eq!(store.get(HELLO).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn put_file_stores_a_temp_file_and_repairs_a_wrong_one() {
+        let (dir, store) = store();
+        let (temp, mut file) = store.create_temp().unwrap();
+        file.write_all(b"hello").unwrap();
+        file.sync_all().unwrap();
+        fs::write(dir.path().join("blobs").join(HELLO), b"tampered").unwrap();
+        store.put_file(&temp, HELLO).unwrap();
+        store.put_file(&temp, HELLO).unwrap();
+        assert_eq!(store.get(HELLO).unwrap(), b"hello");
+        assert!(temp.exists());
+        assert_eq!(store.sweep_temp_files().unwrap(), 1);
+        assert_eq!(store.list().unwrap(), [HELLO]);
     }
 
     #[test]

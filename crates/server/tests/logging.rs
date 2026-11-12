@@ -98,6 +98,14 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     )
     .await;
 
+    let upload = send(
+        addr,
+        "PUT /api/uploads/upload-secret-token HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\n\
+         Connection: close\r\n\r\n%PDF-1.7",
+    )
+    .await;
+    assert!(upload.starts_with("HTTP/1.1 404"), "{upload}");
+
     let tool_call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_application","arguments":{"company":"mcp-secret-company","role":"R"}}}"#;
     let created = send(
         addr,
@@ -126,6 +134,7 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         "oauth-code",
         "body-secret",
         "mcp-secret",
+        "upload-secret",
         "?",
     ] {
         assert!(!logs.contains(secret), "log leaked {secret:?}:\n{logs}");
@@ -135,5 +144,6 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
         "{logs}"
     );
     assert!(logs.contains("route=/applications/{id}"), "{logs}");
+    assert!(logs.contains("route=/api/uploads/{token}"), "{logs}");
     assert!(logs.contains("route=unmatched"), "{logs}");
 }

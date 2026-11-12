@@ -28,7 +28,7 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 - **`/opt/data/nexus_refresh.py` and `nexus_mcp_call.py`.** QA could not read these. They hold a client registration and tokens, which end at cutover: the tables start empty, so they must re-register with a loopback or allowed redirect.
 
 **Every skill or script that counts Nexus's tools**
-- The server now lists 40 tools, not 35: the same 35 in the same order with the same schemas, then `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions` and `revert_cv`. A check for "35 tools" should become "at least these 35", because a client that compares the whole list will fail.
+- The server now lists 41 tools, not 35: the same 35 in the same order with the same schemas, then `get_cv_source`, `patch_cv`, `render_cv_pdf`, `list_cv_revisions`, `revert_cv` and `create_document_upload`. A check for "35 tools" should become "at least these 35", because a client that compares the whole list will fail.
 
 **`resume-tailoring`, `job-application-tracking` and anything else that produces a CV**
 - Typst replaces Reactive Resume once the owner has moved real applications across. Until then Reactive Resume stays usable. Don't remove its steps before the owner says so.
@@ -38,6 +38,10 @@ These changes haven't been applied: the skills live on Hermes, and the owner app
 - `patch_cv` refuses `origin` values `dashboard`, `revert`, `cli`, `lock` and `voice` as `cv_origin_reserved`, and anything but lowercase letters, digits, `-` and `_` as `cv_origin_invalid`. `telegram` is fine. A `generate_tailored_cv` naming a job or category twice, or no job at all, is a draft even over a lock.
 - `upsert_cv_profile` can refuse with `cv_facts_locked` once the owner has locked the facts. Its `fields` say what would have changed. Only the owner can change facts: `nexus cv-facts unlock` on the board. Wording changes go through, numbers included, and a CV generated from them is a draft.
 - **A rule for every skill that submits an application: a submission must only use a document made from an approved revision.** That means a document stored by `generate_tailored_cv` or `render_cv_pdf` with `saveToApplicationId`. `upload_document_content` is outside the gate, so never upload a CV made elsewhere and submit that. Never call a CV final, ready or approved until a tool says `state: "approved"`.
+
+**Every skill that uploads a document**
+- An agent with a shell should upload any file over a few MB through `create_document_upload`: call it with `filename`, `mimeType` and optional `applicationIds`, then run the `example` it returns with the real file path, `curl -fsS -T <file> '<uploadUrl>'`. The reply is the stored document, as `upload_document_content` returns it. The link works once and for 15 minutes, and takes up to 50 MiB. On a 404 mint a new link: a failed upload uses its link up too. `upload_document_content` stays for small files and agents without a shell, up to 10 MiB as base64.
+- The rule above holds here too: a file uploaded through a link is outside the CV approval gate, so never upload a CV made elsewhere and submit that.
 
 **A new skill section for dictation, for the Hermes agent on Telegram.** The full text and the reasons are in [`DICTATION.md`](DICTATION.md). In short:
 

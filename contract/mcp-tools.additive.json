@@ -1,6 +1,6 @@
 {
   "source": "Additive tools of Nexus M2, SPEC section 9a. Served after the 35 frozen tools, in this order.",
-  "count": 5,
+  "count": 6,
   "tools": [
     {
       "name": "get_cv_source",
@@ -202,6 +202,47 @@
         "required": [
           "toRevision",
           "expectedRevision"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "create_document_upload",
+      "description": "Get a one-time link to upload a document of up to 50 MB without base64. PUT or POST the raw file bytes to uploadUrl within 15 minutes, for example with the curl command in example. The reply to that request is the stored document, as upload_document_content returns it. Supports PDF, JPEG, PNG, and WEBP files. Use it instead of upload_document_content for anything over a few MB when you can run a command. Optionally links the uploaded document to applications.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "description": "Original filename to display, e.g. resume.pdf"
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "application/pdf",
+              "image/jpeg",
+              "image/png",
+              "image/webp"
+            ],
+            "description": "MIME type of the file to upload"
+          },
+          "applicationIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Application IDs to link"
+          }
+        },
+        "required": [
+          "filename",
+          "mimeType"
         ],
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#"

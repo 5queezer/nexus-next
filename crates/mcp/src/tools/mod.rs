@@ -8,6 +8,7 @@ mod documents;
 mod events;
 mod health;
 mod submissions;
+mod uploads;
 
 use std::sync::Arc;
 
@@ -35,6 +36,8 @@ pub(crate) use cv_source::{
     draw_unsaved, patch_as, render_as, render_busy, review,
 };
 pub(crate) use events::mark_applied;
+pub(crate) use uploads::Tickets;
+pub use uploads::{MAX_LINK_UPLOAD_BYTES, router as uploads_router};
 
 pub(crate) const INTERNAL_ERROR: &str = "Internal error";
 
@@ -274,6 +277,7 @@ async fn dispatch(ctx: &Ctx, name: &str, args: Args) -> ToolResult {
         "render_cv_pdf" => cv_source::render(ctx, &args).await,
         "list_cv_revisions" => cv_source::list(ctx, &args).await,
         "revert_cv" => cv_source::revert(ctx, &args).await,
+        "create_document_upload" => uploads::create(ctx, &args).await,
         _ => Ok(text_error(&format!(
             "MCP error -32602: Tool {name} not found"
         ))),

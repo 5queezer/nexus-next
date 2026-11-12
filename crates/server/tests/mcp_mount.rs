@@ -185,7 +185,7 @@ async fn both_paths_require_the_bearer_and_answer_with_it() {
                 .unwrap(),
         )
         .await;
-        assert_eq!(tools["tools"].as_array().unwrap().len(), 40, "{path}");
+        assert_eq!(tools["tools"].as_array().unwrap().len(), 41, "{path}");
     }
 }
 
