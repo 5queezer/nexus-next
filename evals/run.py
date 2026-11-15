@@ -209,9 +209,10 @@ def calibrate(args):
         if split == "dev":
             print("\n".join(rows))
         else:
+            # Sorted, so that no position joins back to a test item: the misses are not to be read.
             (ne.ROOT / "labels" / "judge-quality.json").write_text(json.dumps(
                 {"model": ne.PINNED["judge"], "test_set": labels.get("test_set", ""), "labels": "agent",
-                 "unparsable": unparsable, "pairs": pairs, **q}, indent=1) + "\n")
+                 "unparsable": unparsable, "pairs": sorted(pairs), **q}, indent=1) + "\n")
             # Per item, the judge's verdicts would name its test misses, so they stay out of git.
             ne.RUNS.mkdir(exist_ok=True)
             (ne.RUNS / "judge-verdicts.json").write_text(json.dumps(verdicts, indent=1) + "\n")
