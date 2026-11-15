@@ -240,14 +240,16 @@ impl Voice {
                 None
             }
         };
-        Self {
+        let voice = Self {
             client: upstream_client(&config),
             trace_dir: config.trace.then(|| data_dir.join(VOICE_TRACE_DIR)),
             config,
             stored: Arc::new(RwLock::new(stored)),
             key_file,
             live: Arc::default(),
-        }
+        };
+        voice.prune_traces();
+        voice
     }
 
     /// Appends one step to a session's trace, when traces are on. It holds the owner's words and
@@ -261,7 +263,9 @@ impl Voice {
         }
     }
 
-    /// Removes traces last written more than `VOICE_TRACE_DAYS` ago.
+    /// Removes traces last written more than `VOICE_TRACE_DAYS` ago. Runs when the server starts and
+    /// when a voice session starts. Traces turned off later are left alone: removing them is the
+    /// owner's call, as the deploy notes say.
     fn prune_traces(&self) {
         let Some(dir) = &self.trace_dir else { return };
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -517,8 +521,14 @@ fn append_trace(dir: &Path, session: &str, step: &Value) -> std::io::Result<()> 
         .append(true)
         .mode(0o600)
         .open(dir.join(format!("{session}.jsonl")))?;
-    writeln!(file, "{step}")
+    // One write of the whole line: a transcript and a tool call of one session can arrive at once,
+    // and a value written piece by piece would interleave with the other.
+    let mut line = step.to_string();
+    line.push('\n');
+    file.write_all(line.as_bytes())
 }
+
+/// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
 
 /// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
 fn trace_text(text: &str) -> String {
@@ -1256,5 +1266,49 @@ mod tests {
         ));
         arguments.insert("variant".to_owned(), "default".into());
         assert!(force_arguments("get_cv_source", "", &mut arguments).is_ok());
+    }
+    #[test]
+    fn trace_lines_stay_whole_when_steps_arrive_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "ä".repeat(3000);
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let (dir, text) = (dir.path(), &text);
+                scope.spawn(move || {
+                    for n in 0..100 {
+                        append_trace(dir, "s", &json!({"writer": writer, "n": n, "text": text}))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        let all = std::fs::read_to_string(dir.path().join("s.jsonl")).unwrap();
+        let lines: Vec<_> = all.lines().collect();
+        assert_eq!(lines.len(), 800);
+        assert!(
+            lines
+                .iter()
+                .all(|line| serde_json::from_str::<Value>(line).is_ok())
+        );
+    }
+
+    #[test]
+    fn traces_older_than_the_retention_go_when_the_server_starts() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = data.path().join(VOICE_TRACE_DIR);
+        std::fs::create_dir(&dir).unwrap();
+        let old = std::fs::File::create(dir.join("old.jsonl")).unwrap();
+        old.set_modified(
+            std::time::SystemTime::now() - Duration::from_secs((VOICE_TRACE_DAYS + 1) * 86_400),
+        )
+        .unwrap();
+        std::fs::write(dir.join("new.jsonl"), "{}\n").unwrap();
+        let config = VoiceConfig {
+            trace: true,
+            ..Default::default()
+        };
+        Voice::new(config, data.path());
+        assert!(!dir.join("old.jsonl").exists());
+        assert!(dir.join("new.jsonl").exists());
     }
 }

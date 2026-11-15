@@ -73,9 +73,17 @@ pub struct ServeArgs {
     #[arg(long, env = "NEXUS_VOICE_SESSION_SECONDS", default_value_t = 900)]
     pub voice_session_seconds: u64,
     /// Keep a trace of every voice session in `<data-dir>/voice-traces/`: the owner's words as
-    /// transcribed, the model's words and every tool call with its arguments and result, for 30
-    /// days. Private to the service user; never in a backup or the log.
-    #[arg(long, env = "NEXUS_VOICE_TRACE")]
+    /// transcribed, the model's words and every tool call with its arguments and result. A trace
+    /// whose last step is 30 days old goes when the server or a voice session starts. Private to
+    /// the service user; never in a backup or the log. `NEXUS_VOICE_TRACE=1` turns it on.
+    #[arg(
+        long,
+        env = "NEXUS_VOICE_TRACE",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        num_args = 0..=1,
+        default_value = "false",
+        default_missing_value = "true"
+    )]
     pub voice_trace: bool,
     /// For tests: where voice's OpenAI calls go. Refused unless --insecure-local-only is set, so a
     /// real server can't be pointed elsewhere.
@@ -315,6 +323,30 @@ mod tests {
         fs::write(&path, content).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn voice_traces_turn_on_with_one_as_the_docs_say() {
+        // The environment variable takes the same values as the flag.
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            args: ServeArgs,
+        }
+        use clap::Parser;
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["nexus", "--data-dir", "/var/lib/nexus"];
+            argv.extend_from_slice(extra);
+            Wrap::try_parse_from(argv).map(|w| w.args.voice_trace)
+        };
+        assert!(!parse(&[]).unwrap());
+        assert!(parse(&["--voice-trace"]).unwrap());
+        for on in ["1", "true", "yes", "on"] {
+            assert!(parse(&[&format!("--voice-trace={on}")]).unwrap(), "{on}");
+        }
+        for off in ["0", "false", "no", "off"] {
+            assert!(!parse(&[&format!("--voice-trace={off}")]).unwrap(), "{off}");
+        }
     }
 
     #[test]
