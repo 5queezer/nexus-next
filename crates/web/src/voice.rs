@@ -16,6 +16,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Router};
+use chrono::TimeZone;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
@@ -315,9 +316,16 @@ impl Voice {
     /// Asks OpenAI whether it accepts `key`, by opening a session nobody uses: that is the one call
     /// the key has to be good for, it costs nothing, and its secret lapses within a minute.
     pub(crate) async fn check_key(&self, key: &VoiceKey) -> Result<(), MintError> {
-        mint(&self.client, &self.config, key, "", None)
-            .await
-            .map(drop)
+        mint(
+            &self.client,
+            &self.config,
+            key,
+            "",
+            None,
+            chrono::Utc::now().with_timezone(&chrono_tz::UTC),
+        )
+        .await
+        .map(drop)
     }
 
     /// Keeps `key` in the data directory and uses it from the next mint on.
@@ -473,7 +481,12 @@ pub fn tool_definitions() -> Vec<Value> {
 
 /// What a mint asks OpenAI for: the session's model, instructions, context and tools. Public so the
 /// evaluation runner in `evals/` sends the model exactly what a real session gets.
-pub fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) -> Value {
+pub fn mint_body(
+    config: &VoiceConfig,
+    variant: &str,
+    application_id: Option<&str>,
+    now: chrono::DateTime<chrono_tz::Tz>,
+) -> Value {
     let seconds = config
         .lifetime
         .as_secs()
@@ -489,6 +502,35 @@ pub fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&st
             "\nThe application on screen has id {id}; use this ID when the person says this application."
         ));
     }
+    // The model has no clock of its own to trust, the person speaks in local time, and Nexus wants
+    // UTC: so the present in both, a worked conversion, and the dates around today by weekday.
+    let utc = now.with_timezone(&chrono::Utc);
+    let ten = now
+        .timezone()
+        .from_local_datetime(&now.date_naive().and_hms_opt(10, 0, 0).expect("a time"))
+        .earliest()
+        .map(|ten| ten.with_timezone(&chrono::Utc).format("%H:%M").to_string())
+        .unwrap_or_default();
+    let days = |range: std::ops::RangeInclusive<i64>| {
+        range
+            .map(|offset| {
+                (now.date_naive() + chrono::Duration::days(offset))
+                    .format("%A %Y-%m-%d")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    context.push_str(&format!(
+        "\nIt is now {} in the person's time zone, {} (UTC{}), which is {} in UTC. So 10:00 there today is {}Z. The last seven days were {}. The next seven are {}.",
+        now.format("%A %Y-%m-%d %H:%M"),
+        now.timezone().name(),
+        now.format("%:z"),
+        utc.format("%Y-%m-%dT%H:%M:%SZ"),
+        ten,
+        days(-7..=-1),
+        days(1..=7),
+    ));
     json!({
         "expires_after": {"anchor": "created_at", "seconds": seconds},
         "session": {
@@ -527,8 +569,6 @@ fn append_trace(dir: &Path, session: &str, step: &Value) -> std::io::Result<()> 
     line.push('\n');
     file.write_all(line.as_bytes())
 }
-
-/// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
 
 /// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
 fn trace_text(text: &str) -> String {
@@ -670,6 +710,7 @@ pub(crate) async fn session(
         &key,
         &request.variant,
         application_id,
+        chrono::Utc::now().with_timezone(&cv.tz),
     );
     let secret = match minted.await {
         Ok(secret) => secret,
@@ -739,6 +780,7 @@ async fn mint(
     key: &VoiceKey,
     variant: &str,
     application_id: Option<&str>,
+    now: chrono::DateTime<chrono_tz::Tz>,
 ) -> Result<String, MintError> {
     let mut authorization =
         HeaderValue::from_str(&format!("Bearer {}", key.0)).map_err(|_| MintError::Failed)?;
@@ -749,7 +791,7 @@ async fn mint(
         .header(header::AUTHORIZATION, authorization)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(
-            mint_body(config, variant, application_id).to_string(),
+            mint_body(config, variant, application_id, now).to_string(),
         )))
         .map_err(|_| MintError::Failed)?;
     let exchange = async {
@@ -1200,7 +1242,10 @@ mod tests {
             lifetime: Duration::from_secs(900),
             trace: false,
         };
-        let body = mint_body(&config, "default", Some("42"));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-03-04T09:15:00Z")
+            .unwrap()
+            .with_timezone(&chrono_tz::Europe::Madrid);
+        let body = mint_body(&config, "default", Some("42"), now);
         assert_eq!(body["expires_after"]["seconds"], 60);
         assert_eq!(body["session"]["model"], "model-x");
         assert!(body["session"]["audio"]["input"]["turn_detection"].is_null());
@@ -1211,6 +1256,12 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("application on screen has id 42")
+        );
+        assert!(
+            body["session"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("It is now Wednesday 2026-03-04 10:15 in the person's time zone, Europe/Madrid (UTC+01:00), which is 2026-03-04T09:15:00Z in UTC. So 10:00 there today is 09:00Z. The last seven days were Wednesday 2026-02-25,")
         );
         assert!(!body.to_string().contains("sk-synthetic"));
     }
@@ -1252,7 +1303,8 @@ mod tests {
             lifetime: Duration::from_secs(900),
             trace: false,
         };
-        let body = mint_body(&config, "", None);
+        let now = chrono::Utc::now().with_timezone(&chrono_tz::UTC);
+        let body = mint_body(&config, "", None, now);
         assert!(
             body["session"]["instructions"]
                 .as_str()
@@ -1267,6 +1319,7 @@ mod tests {
         arguments.insert("variant".to_owned(), "default".into());
         assert!(force_arguments("get_cv_source", "", &mut arguments).is_ok());
     }
+
     #[test]
     fn trace_lines_stay_whole_when_steps_arrive_at_once() {
         let dir = tempfile::tempdir().unwrap();
