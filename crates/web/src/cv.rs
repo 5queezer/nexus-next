@@ -103,6 +103,10 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route(
                 "/api/voice/tool",
                 post(voice::tool).layer(DefaultBodyLimit::max(MAX_TOOL_BODY_BYTES)),
+            )
+            .route(
+                "/api/voice/trace",
+                post(voice::trace_step).layer(DefaultBodyLimit::max(voice::MAX_TRACE_BODY_BYTES)),
             ),
     )
     .layer(middleware::map_response(crate::secure))

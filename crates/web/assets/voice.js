@@ -156,6 +156,17 @@
     return { "Content-Type": "application/json", "X-Nexus-Csrf": root.dataset.csrf, ...extra };
   }
 
+  // Only when the server keeps traces (NEXUS_VOICE_TRACE): what the page alone sees, for the
+  // session's trace. Fire and forget: a lost step never holds up the conversation.
+  function trace(live, step) {
+    if (!live.trace || !live.id) return;
+    fetch("/api/voice/trace", {
+      method: "POST",
+      headers: apiHeaders({ "X-Nexus-Voice-Session": live.id }),
+      body: JSON.stringify(step),
+    }).catch(() => {});
+  }
+
   function setPhase(phase, message) {
     const changed = root.dataset.phase !== phase;
     root.dataset.phase = phase;
@@ -546,6 +557,7 @@
         if (session !== live) return;
       }
       mark(answer.label, answer.state || "failed");
+      if (answer.output === DECLINED) trace(live, { kind: "declined", tool: call.name });
       if (session !== live) return;
       if (answer.updated) announceUpdate(call.name);
       send(live, {
@@ -591,6 +603,7 @@
       case "conversation.item.input_audio_transcription.completed":
         touch(live);
         writeTranscript(live, event.item_id, "you", event.transcript || "", false, true);
+        trace(live, { kind: "you", text: event.transcript || "" });
         break;
       case "response.output_audio_transcript.delta":
       case "response.output_text.delta":
@@ -600,10 +613,12 @@
       case "response.output_audio_transcript.done":
         touch(live);
         writeTranscript(live, event.item_id, "model", event.transcript || "", false, true);
+        trace(live, { kind: "model", text: event.transcript || "" });
         break;
       case "response.output_text.done":
         touch(live);
         writeTranscript(live, event.item_id, "model", event.text || "", false, true);
+        trace(live, { kind: "model", text: event.text || "" });
         break;
       case "output_audio_buffer.started":
         live.audioPlaying = true;
@@ -798,6 +813,7 @@
     }
     if (session !== live) return;
     live.id = minted.voiceSessionId;
+    live.trace = minted.trace === true;
     live.lifetimeMs = minted.lifetimeSeconds * 1000;
     live.idleMs = minted.idleSeconds * 1000;
     live.startedAt = performance.now();

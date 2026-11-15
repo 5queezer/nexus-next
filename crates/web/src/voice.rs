@@ -94,6 +94,15 @@ const FORCED_ARGUMENTS: [(&str, &str); 6] = [
     ("render_cv_pdf", "previewPages"),
 ];
 
+/// Where session traces go when they are on: one file per session, readable by the owner only. A
+/// backup holds the database and its blobs, so it never carries them.
+pub const VOICE_TRACE_DIR: &str = "voice-traces";
+/// A trace older than this is removed when the next session starts.
+pub const VOICE_TRACE_DAYS: u64 = 30;
+/// A trace step from the page: one transcript or one declined card.
+pub const MAX_TRACE_BODY_BYTES: usize = 16 * 1024;
+const MAX_TRACE_TEXT: usize = 4000;
+
 const INSTRUCTIONS: &str = include_str!("voice_instructions.txt");
 const TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
 /// The API's minimum for a client secret's lifetime.
@@ -157,6 +166,9 @@ pub struct VoiceConfig {
     /// Enforced here: an ephemeral key's expiry limits when a session can start, not how long it
     /// lives. Tool calls stop at this point and the page closes the connection.
     pub lifetime: Duration,
+    /// `NEXUS_VOICE_TRACE=1`: keep each session's steps in `<data-dir>/voice-traces/`, so that what
+    /// the model heard, said and asked for can be read back and evaluated. Off by default.
+    pub trace: bool,
 }
 
 impl VoiceConfig {
@@ -189,6 +201,8 @@ pub struct Voice {
     /// restart.
     stored: Arc<RwLock<Option<(VoiceKey, Timestamp)>>>,
     key_file: PathBuf,
+    /// Set when traces are on.
+    trace_dir: Option<PathBuf>,
     client: Upstream,
     live: Arc<Mutex<Live>>,
 }
@@ -228,10 +242,42 @@ impl Voice {
         };
         Self {
             client: upstream_client(&config),
+            trace_dir: config.trace.then(|| data_dir.join(VOICE_TRACE_DIR)),
             config,
             stored: Arc::new(RwLock::new(stored)),
             key_file,
             live: Arc::default(),
+        }
+    }
+
+    /// Appends one step to a session's trace, when traces are on. It holds the owner's words and
+    /// the calls in full, so it goes to a file only the service user reads, never to the log. A
+    /// failure to write is logged and never fails what it records.
+    fn trace(&self, session: &str, mut step: Value) {
+        let Some(dir) = &self.trace_dir else { return };
+        step["at"] = Value::from(Timestamp::now().as_str());
+        if let Err(error) = append_trace(dir, session, &step) {
+            tracing::warn!(event = "voice_trace_failed", error = %error.kind(), "could not write a voice trace");
+        }
+    }
+
+    /// Removes traces last written more than `VOICE_TRACE_DAYS` ago.
+    fn prune_traces(&self) {
+        let Some(dir) = &self.trace_dir else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let limit = Duration::from_secs(VOICE_TRACE_DAYS * 86_400);
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age > limit);
+            if old {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 
@@ -458,6 +504,31 @@ pub fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&st
     })
 }
 
+fn append_trace(dir: &Path, session: &str, step: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    // Session ids are 64 hex characters, made here, so the name can't leave the directory.
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(dir.join(format!("{session}.jsonl")))?;
+    writeln!(file, "{step}")
+}
+
+/// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
+fn trace_text(text: &str) -> String {
+    let mut end = text.len().min(MAX_TRACE_TEXT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
 fn failure(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
@@ -612,7 +683,13 @@ pub(crate) async fn session(
         .voice
         .open_session(&token, &request.variant, config.lifetime);
     tracing::info!(event = "voice_session_opened", "voice session opened");
+    cv.voice.prune_traces();
+    cv.voice.trace(
+        &id,
+        json!({"kind": "session", "variant": request.variant, "applicationId": application_id}),
+    );
     axum::Json(json!({
+        "trace": cv.voice.trace_dir.is_some(),
         "voiceSessionId": id,
         "clientSecret": secret,
         "callsUrl": format!("{}/v1/realtime/calls", config.base_url),
@@ -843,11 +920,12 @@ pub(crate) async fn tool(
     if cv.voice.config().is_none() {
         return disabled();
     }
-    let Some(variant) = headers
+    let session = headers
         .get(SESSION_HEADER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|id| cv.voice.session_variant(id, Some(&token)))
-    else {
+        .unwrap_or_default()
+        .to_owned();
+    let Some(variant) = cv.voice.session_variant(&session, Some(&token)) else {
         return session_ended();
     };
     let Ok(request) = serde_json::from_slice::<ToolRequest>(&body) else {
@@ -868,6 +946,10 @@ pub(crate) async fn tool(
             tool = logged,
             "refused a voice tool call"
         );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": trace_text(&request.name), "code": "voice_tool_not_allowed"}),
+        );
         return failure(
             StatusCode::FORBIDDEN,
             "voice_tool_not_allowed",
@@ -879,6 +961,10 @@ pub(crate) async fn tool(
             event = "voice_tool_refused",
             tool = *name,
             "refused a write the owner has not confirmed"
+        );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": *name, "code": "voice_confirmation_required", "arguments": request.arguments}),
         );
         return failure(
             StatusCode::FORBIDDEN,
@@ -903,16 +989,15 @@ pub(crate) async fn tool(
             tool = *name,
             "refused an argument"
         );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": *name, "code": "voice_argument_not_allowed", "arguments": arguments}),
+        );
         return error.response();
     }
-    let result = nexus_mcp::call_tool(
-        cv.mcp.clone(),
-        &[SCOPE_TOOLS],
-        "voice",
-        name,
-        Value::Object(arguments),
-    )
-    .await;
+    let ran = Value::Object(arguments);
+    let result =
+        nexus_mcp::call_tool(cv.mcp.clone(), &[SCOPE_TOOLS], "voice", name, ran.clone()).await;
     let is_error = result.is_error == Some(true);
     let output = output_text(&result);
     // Enough to tell a write from a no-op afterwards, and no more: `changed` is the result's own
@@ -930,11 +1015,71 @@ pub(crate) async fn tool(
         dry_run,
         "voice tool call"
     );
+    let output = for_model(&output);
+    cv.voice.trace(
+        &session,
+        json!({"kind": "call", "tool": *name, "arguments": ran, "confirmed": request.confirmed,
+               "isError": is_error, "output": trace_text(&output)}),
+    );
     axum::Json(json!({
-        "output": for_model(&output),
+        "output": output,
         "isError": is_error,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct TraceStep {
+    kind: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    tool: String,
+}
+
+/// `POST /api/voice/trace`: what only the page sees, for the session's trace: the owner's words as
+/// transcribed (`you`), the model's words (`model`) and a card the owner declined (`declined`).
+pub(crate) async fn trace_step(
+    State(cv): State<Cv>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !has_csrf(&headers, &token) {
+        return refused_csrf();
+    }
+    if cv.voice.config().is_none() {
+        return disabled();
+    }
+    let session = headers
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if cv.voice.session_variant(session, Some(&token)).is_none() {
+        return session_ended();
+    }
+    if cv.voice.trace_dir.is_none() {
+        return failure(
+            StatusCode::NOT_FOUND,
+            "voice_trace_off",
+            "Voice traces are off on this server.",
+        );
+    }
+    let step = serde_json::from_slice::<TraceStep>(&body)
+        .ok()
+        .filter(|step| matches!(step.kind.as_str(), "you" | "model" | "declined"));
+    let Some(step) = step else {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "voice_bad_request",
+            "This request was not understood.",
+        );
+    };
+    cv.voice.trace(
+        session,
+        json!({"kind": step.kind, "text": trace_text(&step.text), "tool": trace_text(&step.tool)}),
+    );
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[cfg(test)]
@@ -1043,6 +1188,7 @@ mod tests {
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),
             lifetime: Duration::from_secs(900),
+            trace: false,
         };
         let body = mint_body(&config, "default", Some("42"));
         assert_eq!(body["expires_after"]["seconds"], 60);
@@ -1094,6 +1240,7 @@ mod tests {
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),
             lifetime: Duration::from_secs(900),
+            trace: false,
         };
         let body = mint_body(&config, "", None);
         assert!(

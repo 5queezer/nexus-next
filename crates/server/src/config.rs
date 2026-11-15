@@ -72,6 +72,11 @@ pub struct ServeArgs {
     /// How long a voice session may last, in seconds. Nexus enforces this itself.
     #[arg(long, env = "NEXUS_VOICE_SESSION_SECONDS", default_value_t = 900)]
     pub voice_session_seconds: u64,
+    /// Keep a trace of every voice session in `<data-dir>/voice-traces/`: the owner's words as
+    /// transcribed, the model's words and every tool call with its arguments and result, for 30
+    /// days. Private to the service user; never in a backup or the log.
+    #[arg(long, env = "NEXUS_VOICE_TRACE")]
+    pub voice_trace: bool,
     /// For tests: where voice's OpenAI calls go. Refused unless --insecure-local-only is set, so a
     /// real server can't be pointed elsewhere.
     #[arg(long, hide = true)]
@@ -203,6 +208,7 @@ impl ServeArgs {
             voice: self.realtime_voice.clone(),
             base_url,
             lifetime: Duration::from_secs(self.voice_session_seconds),
+            trace: self.voice_trace,
         })
     }
 }
@@ -289,6 +295,7 @@ mod tests {
             realtime_model: "gpt-realtime-2.1-mini".into(),
             realtime_voice: "marin".into(),
             voice_session_seconds: 900,
+            voice_trace: false,
             voice_test_base_url: None,
         }
     }

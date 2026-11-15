@@ -66,6 +66,7 @@ function harness(options = {}) {
   const toolResponse = options.toolResponse;
   const lookup = options.lookup;
   const sessionResponse = options.sessionResponse;
+  const traceOn = options.trace === true;
   const ids = [
     "voice",
     "voice-status",
@@ -107,6 +108,7 @@ function harness(options = {}) {
   const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
   const toolCalls = [];
   const lookups = [];
+  const traces = [];
   const fetch = async (url, options = {}) => {
     if (url === "/api/voice/session") {
       if (sessionResponse) return sessionResponse;
@@ -118,10 +120,15 @@ function harness(options = {}) {
           idleSeconds: 300,
           lifetimeSeconds: 900,
           voiceSessionId: "voice-1",
+          trace: traceOn,
         }),
       };
     }
     if (url === "https://calls.test") return { ok: true, text: async () => "answer" };
+    if (url === "/api/voice/trace") {
+      traces.push({ session: options.headers?.["X-Nexus-Voice-Session"], ...JSON.parse(options.body) });
+      return { ok: true, status: 204 };
+    }
     if (url === "/api/voice/tool") {
       const request = JSON.parse(options.body);
       // The page's own read for a card's title, kept apart from the calls the model made.
@@ -169,7 +176,7 @@ function harness(options = {}) {
     setTimeout: () => 1,
     window,
   });
-  return { channel, elements, toolCalls, lookups, updates, document, documentListeners, track, advance: (ms) => { now += ms; } };
+  return { channel, elements, toolCalls, lookups, traces, updates, document, documentListeners, track, advance: (ms) => { now += ms; } };
 }
 
 async function connect(h) {
@@ -696,4 +703,25 @@ test("a dry run of a write that waits for a tap is shown and sent as the real ch
   assert.deepEqual(h.toolCalls[0], { name: "archive_application", arguments: { id: "14" }, confirmed: true });
   assert.equal(tagOf(card), "Saved");
   assert.deepEqual(h.updates, ["archive_application", "append_application_note"]);
+});
+
+test("the page sends its steps to the trace only when the server keeps traces", async () => {
+  const said = (text) => ({ data: JSON.stringify({
+    type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: text,
+  }) });
+  const answered = (text) => ({ data: JSON.stringify({ type: "response.output_text.done", item_id: "m1", text }) });
+
+  const off = harness();
+  await connect(off);
+  await off.channel.emit("message", said("archive example robotics"));
+  assert.deepEqual(off.traces, []);
+
+  const on = harness({ trace: true });
+  await connect(on);
+  await on.channel.emit("message", said("archive example robotics"));
+  await on.channel.emit("message", answered("Which one?"));
+  assert.deepEqual(on.traces, [
+    { session: "voice-1", kind: "you", text: "archive example robotics" },
+    { session: "voice-1", kind: "model", text: "Which one?" },
+  ]);
 });
