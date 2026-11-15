@@ -1314,7 +1314,7 @@
           "occurredAt": {
             "type": "string",
             "format": "date-time",
-            "description": "When the note was written or its content learned, in UTC ending in Z (2026-03-04T09:15:00Z): normally the current time, never a rounded or future guess. A retry with the same idempotencyKey sends the same value."
+            "description": "Stable event timestamp required for idempotent retries"
           },
           "idempotencyKey": {
             "type": "string",
@@ -1376,8 +1376,7 @@
           },
           "occurredAt": {
             "type": "string",
-            "format": "date-time",
-            "description": "When the event happened in the world, in UTC ending in Z (2026-03-04T09:15:00Z): when the interview ended, when the mail was sent. Not when it is recorded, and never in the future. Leave it out for something happening now: the server then uses its own clock."
+            "format": "date-time"
           },
           "expectedUpdatedAt": {
             "type": "string",
