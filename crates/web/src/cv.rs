@@ -1450,6 +1450,7 @@ fn voice_panel(
                 <div class="voice-stage">
                     <div class="voice-stage-top">
                         <span id="voice-mic-state" class="voice-mic-state">"Microphone off"</span>
+                        <meter id="voice-level" class="voice-level" min="0" max="1" value="0" hidden aria-label="Microphone level"></meter>
                         <span class="hint" id="voice-remaining" hidden></span>
                     </div>
                     <div class="voice-state-mark" aria-hidden="true">

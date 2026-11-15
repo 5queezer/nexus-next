@@ -426,6 +426,8 @@ form.act.card { padding: 16px; }
 .voice-stage-top { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; text-align: left; font-size: 12px; color: var(--muted); }
 .voice-mic-state { display: inline-flex; align-items: center; gap: 7px; }
 .voice-mic-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.voice-level { width: 72px; height: 8px; }
+li.you.unheard .message-text { font-style: italic; opacity: .75; }
 .voice-state-mark { width: 116px; height: 116px; display: grid; place-items: center; margin: 28px auto 22px; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); box-shadow: 0 0 0 10px var(--bg); }
 .voice-state-mark svg { width: 42px; height: 42px; }
 .voice-stage h3 { font-size: 25px; font-weight: 600; letter-spacing: -.025em; line-height: 1.2; margin: 0 0 10px; }
