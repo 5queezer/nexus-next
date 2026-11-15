@@ -421,7 +421,9 @@ pub fn tool_definitions() -> Vec<Value> {
         .collect()
 }
 
-fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) -> Value {
+/// What a mint asks OpenAI for: the session's model, instructions, context and tools. Public so the
+/// evaluation runner in `evals/` sends the model exactly what a real session gets.
+pub fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) -> Value {
     let seconds = config
         .lifetime
         .as_secs()

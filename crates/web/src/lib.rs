@@ -30,7 +30,7 @@ pub use dashboard::dashboard_router;
 pub use openai_key::openai_key_router;
 pub use voice::{
     CONFIRMED_VOICE_TOOLS, IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL,
-    OPENAI_KEY_FILE, VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, tool_definitions,
+    OPENAI_KEY_FILE, VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, mint_body, tool_definitions,
     voice_status_router,
 };
 

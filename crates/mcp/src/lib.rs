@@ -187,9 +187,10 @@ impl ServerHandler for Handler {
             .cloned()
             .ok_or_else(|| ErrorData::internal_error("missing auth context", None))?;
         let args = request.arguments.map(Value::Object);
+        let started = std::time::Instant::now();
         // rmcp runs this in a task of its own, so a lost connection doesn't drop it: it only cancels
         // this token.
-        Ok(tools::call(
+        let result = tools::call(
             self.state.clone(),
             &auth,
             "mcp",
@@ -197,8 +198,58 @@ impl ServerHandler for Handler {
             args,
             context.ct,
         )
-        .await
-        .into())
+        .await;
+        // One line per call, so that error rates per tool can be read from live traffic. Never an
+        // argument, id or result text: the tool only when it is a real one, the outcome only as one
+        // of the server's own codes.
+        let tool = all_tools()
+            .iter()
+            .find_map(|tool| tool["name"].as_str().filter(|name| *name == request.name))
+            .unwrap_or("unknown");
+        tracing::info!(
+            event = "mcp_tool",
+            tool,
+            auth = if auth.auth_type == AuthType::OAuth {
+                "oauth"
+            } else {
+                "token"
+            },
+            outcome = outcome(&result),
+            ms = started.elapsed().as_millis() as u64,
+            "mcp tool call"
+        );
+        Ok(result.into())
+    }
+}
+
+/// `ok`, or the code of an error as the server words it: `{"error":{"code":..}}`, a bare code such
+/// as `lifecycle_event_required`, or `invalid_arguments` for a schema error. Any other text can
+/// hold what the caller sent, so it reads only `error`.
+fn outcome(result: &CallToolResult) -> String {
+    if result.is_error != Some(true) {
+        return "ok".to_owned();
+    }
+    let block = result
+        .content
+        .first()
+        .and_then(|block| serde_json::to_value(block).ok());
+    let text = block
+        .as_ref()
+        .and_then(|block| block["text"].as_str())
+        .unwrap_or_default();
+    let code = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|value| value["error"]["code"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| text.to_owned());
+    if text.starts_with("MCP error -32602") {
+        "invalid_arguments".to_owned()
+    } else if !code.is_empty()
+        && code.len() <= 64
+        && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+    {
+        code
+    } else {
+        "error".to_owned()
     }
 }
 
