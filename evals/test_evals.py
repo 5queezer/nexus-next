@@ -88,16 +88,25 @@ class TimeEvaluator(unittest.TestCase):
         t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T09:15:00Z"))
         self.assertTrue(ne.eval_time(note, t)[0])
 
+    def test_a_midnight_guess_for_something_done_now_fails(self):
+        note = CASES["time-note-no-invented-time"]
+        t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T00:00:00Z"))
+        self.assertFalse(ne.eval_time(note, t)[0])
+        t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T09:10:00Z"))
+        self.assertTrue(ne.eval_time(note, t)[0])
+
     def test_a_refused_write_leaves_nothing_to_judge(self):
         note = CASES["time-note-no-invented-time"]
         t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T12:00:00Z"),
                {"role": "result", "name": "append_application_note", "output": "{}", "is_error": True})
         self.assertTrue(ne.eval_time(note, t)[0])
 
-    def test_a_time_without_offset_fails(self):
-        note = CASES["time-note-no-invented-time"]
-        t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T09:00:00"))
-        self.assertFalse(ne.eval_time(note, t)[0])
+    def test_a_metadata_time_without_offset_is_read_as_utc_like_the_server(self):
+        case = CASES["time-followup-friday"]
+        t = tr(call("record_application_event", applicationId="16", type="follow_up_scheduled",
+                    metadata={"followUpAt": "2026-03-06T10:00:00"}))
+        ok, why = ne.eval_time(case, t)
+        self.assertFalse(ok, "10:00 read as UTC is 11:00 in Madrid")
 
     def test_metadata_times_are_checked_by_path(self):
         case = CASES["time-followup-friday"]
@@ -169,6 +178,27 @@ class CvEvaluator(unittest.TestCase):
     def test_a_shorter_summary_passes(self):
         t = self.run_edit("I build APIs and internal tools with Python, TypeScript and Rust. ", "")
         self.assertTrue(ne.eval_cv(self.case, t)[0])
+
+
+class SimulatedValidation(unittest.TestCase):
+    def test_top_level_times_need_z_except_on_archive(self):
+        world = ne.World(CASES["time-note-no-invented-time"], "mcp")
+        for value in ("2026-03-04T09:00:00", "2026-03-04T10:00:00+01:00"):
+            out, err = world.call("append_application_note", {"applicationId": "14", "note": "n",
+                                                              "occurredAt": value, "idempotencyKey": "k-12345678"}, "t")
+            self.assertTrue(err, value)
+            self.assertIn("Invalid datetime", out)
+        out, err = world.call("append_application_note", {"applicationId": "14", "note": "n",
+                                                          "occurredAt": "2026-03-04T09:00Z", "idempotencyKey": "k-12345678"}, "t")
+        self.assertFalse(err, out)
+        out, err = world.call("archive_application", {"id": "14", "archivedAt": "2026-03-04T10:00:00+01:00"}, "t")
+        self.assertFalse(err, out)
+
+    def test_metadata_times_are_stored_in_utc(self):
+        world = ne.World(CASES["time-followup-friday"], "voice")
+        out, _ = world.call("record_application_event", {"applicationId": "16", "type": "follow_up_scheduled",
+                                                         "metadata": {"followUpAt": "2026-03-06T10:00:00+01:00"}}, "t")
+        self.assertEqual(json.loads(out)["event"]["metadata"]["followUpAt"], "2026-03-06T09:00:00.000Z")
 
 
 class StateAndText(unittest.TestCase):

@@ -5,6 +5,7 @@
   python3 -I evals/run.py paid --i-accept-cost  golden cases through the pinned models (costs money)
         [--surface voice|mcp|all] [--runs 3] [--cases id,id] [--budget 3.0] [--label NAME]
   python3 -I evals/run.py report DIR            the table for a finished run, offline
+  python3 -I evals/run.py rejudge DIR --i-accept-cost   a finished run's honesty verdicts again
   python3 -I evals/run.py calibrate --i-accept-cost   the honesty judge against held-out hand labels
 """
 
@@ -89,6 +90,26 @@ def paid(args):
     return 0
 
 
+def rejudge(args):
+    """The honesty verdicts of a finished run again, with the current judge. Other verdicts are code
+    and are recomputed for free."""
+    if not args.i_accept_cost:
+        print("the judge costs money: pass --i-accept-cost")
+        return 2
+    d = pathlib.Path(args.dir)
+    by_case = {c["id"]: c for c in ne.load_cases()}
+    judge = ne.make_judge(ne.Budget(args.budget))
+    transcripts = json.loads((d / "transcripts.json").read_text())
+    results = [r for r in json.loads((d / "results.json").read_text()) if r.get("error")]
+    for tr in transcripts:
+        tr["verdicts"] = ne.evaluate(by_case[tr["case"]], tr, judge)
+        results.append({"case": tr["case"], "run": tr["run"], "verdicts": tr["verdicts"]})
+    (d / "transcripts.json").write_text(json.dumps(transcripts, indent=1, ensure_ascii=False))
+    (d / "results.json").write_text(json.dumps(results, indent=1))
+    print(ne.table(results, ne.load_cases()))
+    return 0
+
+
 def report(args):
     d = pathlib.Path(args.dir)
     print(ne.table(json.loads((d / "results.json").read_text()), ne.load_cases()))
@@ -136,6 +157,11 @@ def main():
     q.add_argument("--budget", type=float, default=3.0)
     q.add_argument("--label", default="run")
     q.set_defaults(fn=paid)
+    j = sub.add_parser("rejudge")
+    j.add_argument("dir")
+    j.add_argument("--i-accept-cost", action="store_true")
+    j.add_argument("--budget", type=float, default=3.0)
+    j.set_defaults(fn=rejudge)
     r = sub.add_parser("report")
     r.add_argument("dir")
     r.set_defaults(fn=report)

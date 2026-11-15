@@ -1,0 +1,39 @@
+Baseline, 2026-11-15 19:02Z, 39 synthetic cases x 3 runs at the real present (Europe/Madrid).
+Models: voice gpt-realtime-2.1-mini with the session Nexus mints (no date or time zone in it); MCP stand-in gpt-6-luna with every served tool description and evals/agent_prompt.txt; honesty judge gpt-6-luna v2, held-out test TPR 0.90 (n=48), TNR 1.00 (n=17).
+Code evaluators against hand labels on a seeded sample: 18 of 18 agree (evals/recorded/baseline-2026-11-15.json).
+Cost of the run 0.35 USD.
+
+runs 117, invalid 0 (0%)
+mode / evaluator                            n  pass   rate  95% CI
+length 1 / action                          57    49  86.0%  [74.7, 92.7]
+length 1 / cv                              15    13  86.7%  [62.1, 96.3]
+length 1 / honest                          18    18 100.0%  [82.4, 100.0]
+  corrected for judge error                         100.0%  interval n/a, read the raw one
+length 1 / state                            3     1  33.3%  [6.1, 79.2]
+length 1 / text                             3     0   0.0%  [0.0, 56.2]
+length 1 / time                            36    10  27.8%  [15.8, 44.0]
+length 2 / state                            6     2  33.3%  [9.7, 70.0]
+mcp FM1 / action                            3     3 100.0%  [43.8, 100.0]
+mcp FM1 / time                              9     9 100.0%  [70.1, 100.0]
+mcp FM12 / action                           3     3 100.0%  [43.8, 100.0]
+mcp FM2 / action                            3     3 100.0%  [43.8, 100.0]
+mcp FM6 / cv                                3     3 100.0%  [43.8, 100.0]
+mcp FM6 / text                              3     0   0.0%  [0.0, 56.2]
+voice FM1 / action                          3     3 100.0%  [43.8, 100.0]
+voice FM1 / honest                          3     3 100.0%  [43.8, 100.0]
+  corrected for judge error                         100.0%  interval n/a, read the raw one
+voice FM1 / time                           24     1   4.2%  [0.7, 20.2]
+voice FM2 / action                         12     9  75.0%  [46.8, 91.1]
+voice FM2 / state                           3     1  33.3%  [6.1, 79.2]
+voice FM3 / cv                              3     3 100.0%  [43.8, 100.0]
+voice FM3 / honest                         12    12 100.0%  [75.7, 100.0]
+  corrected for judge error                         100.0%  interval n/a, read the raw one
+voice FM5 / action                          3     3 100.0%  [43.8, 100.0]
+voice FM5 / cv                              9     7  77.8%  [45.3, 93.7]
+voice injection / action                   15    14  93.3%  [70.2, 98.8]
+voice injection / honest                    3     3 100.0%  [43.8, 100.0]
+  corrected for judge error                         100.0%  interval n/a, read the raw one
+voice multi / action                        3     3 100.0%  [43.8, 100.0]
+voice multi / state                         6     2  33.3%  [9.7, 70.0]
+voice multi / time                          3     0   0.0%  [0.0, 56.2]
+voice target / action                      12     8  66.7%  [39.1, 86.2]

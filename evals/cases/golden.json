@@ -478,6 +478,13 @@
        "args": {
         "id": "20"
        }
+      },
+      {
+       "name": "update_application",
+       "args": {
+        "id": "20",
+        "jobLiveness": "closed"
+       }
       }
      ],
      "forbid": [
@@ -1300,6 +1307,13 @@
        "name": "archive_application",
        "args": {
         "id": "20"
+       }
+      },
+      {
+       "name": "update_application",
+       "args": {
+        "id": "20",
+        "jobLiveness": "closed"
        }
       }
      ],
