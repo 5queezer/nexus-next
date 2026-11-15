@@ -270,10 +270,16 @@
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;
       context.createMediaStreamSource(live.microphone).connect(analyser);
+      // A context made after an await may start suspended (Safari), and a suspended one reads zeros:
+      // that is no proof of a silent microphone, so only a running one counts.
+      if (context.state === "suspended") context.resume().catch(() => {});
       const samples = new Float32Array(analyser.fftSize);
       let silentFor = 0;
       live.level = { context, timer: setInterval(() => {
-        if (session !== live || !live.track || !live.track.enabled) { silentFor = 0; return; }
+        if (session !== live || !live.track || !live.track.enabled || context.state !== "running") {
+          silentFor = 0;
+          return;
+        }
         analyser.getFloatTimeDomainData(samples);
         let peak = 0, sum = 0;
         for (const x of samples) { peak = Math.max(peak, Math.abs(x)); sum += x * x; }

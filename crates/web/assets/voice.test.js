@@ -750,6 +750,7 @@ test("a turn transcribed as nothing, or not at all, shows instead of an empty bu
 
 test("a microphone that sends only zeros is named after three seconds with it on", async () => {
   class FakeContext {
+    constructor() { this.state = "running"; }
     createAnalyser() { return { fftSize: 0, getFloatTimeDomainData: (a) => a.fill(0) }; }
     createMediaStreamSource() { return { connect() {} }; }
     close() {}
@@ -766,4 +767,21 @@ test("a microphone that sends only zeros is named after three seconds with it on
   assert.doesNotMatch(h.elements["voice-status"].textContent, /no sound/);
   level();
   assert.match(h.elements["voice-status"].textContent, /sends no sound/);
+});
+
+test("a suspended audio context reads zeros and is not taken for a silent microphone", async () => {
+  class Suspended {
+    constructor() { this.state = "suspended"; }
+    createAnalyser() { return { fftSize: 0, getFloatTimeDomainData: (a) => a.fill(0) }; }
+    createMediaStreamSource() { return { connect() {} }; }
+    resume() { return Promise.resolve(); }
+    close() {}
+  }
+  const h = harness({ AudioContext: Suspended });
+  await connect(h);
+  const [level] = h.intervals.filter(([, ms]) => ms === 100).map(([fn]) => fn);
+  h.elements["voice-handsfree"].checked = true;
+  await h.elements["voice-handsfree"].emit("change");
+  for (let i = 0; i < 60; i++) level();
+  assert.doesNotMatch(h.elements["voice-status"].textContent, /no sound/);
 });
