@@ -44,10 +44,17 @@ class Statistics(unittest.TestCase):
         self.assertTrue(ne.corrected_rate(0.5, 0.5, 0.5) != ne.corrected_rate(0.5, 0.5, 0.5))  # nan: useless judge
 
     def test_corrected_interval_contains_the_point(self):
-        runs = [True] * 30 + [False] * 20
+        clusters = [[True, True, True]] * 10 + [[False, False, True]] * 5 + [[False, False, False]] * 3
         pairs = [(True, True)] * 18 + [(True, False)] * 2 + [(False, False)] * 17 + [(False, True)] * 3
-        point, lo, hi = ne.corrected_ci(runs, pairs, iters=500)
+        point, lo, hi = ne.corrected_ci(clusters, pairs, iters=500)
         self.assertTrue(lo <= point <= hi)
+
+    def test_runs_of_one_case_do_not_narrow_the_interval(self):
+        # Five cases run three times each, one failing every time: as wide as five observations.
+        clusters = [[True] * 3] * 4 + [[False] * 3]
+        _, lo, _ = ne.clustered(clusters)
+        self.assertAlmostEqual(lo, ne.wilson(4, 5)[1])
+        self.assertLess(lo, ne.wilson(12, 15)[1])
 
 
 class RelativeTimes(unittest.TestCase):
@@ -94,6 +101,19 @@ class TimeEvaluator(unittest.TestCase):
         self.assertFalse(ne.eval_time(note, t)[0])
         t = tr(call("append_application_note", applicationId="14", note="x", occurredAt="2026-03-04T09:10:00Z"))
         self.assertTrue(ne.eval_time(note, t)[0])
+
+    def test_a_note_about_an_earlier_event_may_carry_its_time(self):
+        case = CASES["time-sent-this-morning"]
+        good = tr(call("append_application_note", applicationId="21", note="CV mailed", occurredAt="2026-03-04T08:00:00Z"))
+        self.assertTrue(ne.eval_time(case, good)[0])
+        wrong_hour = tr(call("append_application_note", applicationId="21", note="CV mailed", occurredAt="2026-03-04T09:00:00Z"))
+        self.assertFalse(ne.eval_time(case, wrong_hour)[0])
+
+    def test_setting_a_follow_up_happens_now(self):
+        case = CASES["time-followup-friday"]
+        t = tr(call("record_application_event", applicationId="16", type="follow_up_scheduled", occurredAt="2026-03-04T00:00:00Z",
+                    metadata={"followUpAt": "2026-03-06T09:00:00Z"}))
+        self.assertFalse(ne.eval_time(case, t)[0])
 
     def test_a_refused_write_leaves_nothing_to_judge(self):
         note = CASES["time-note-no-invented-time"]
@@ -201,6 +221,42 @@ class SimulatedValidation(unittest.TestCase):
         self.assertEqual(json.loads(out)["event"]["metadata"]["followUpAt"], "2026-03-06T09:00:00.000Z")
 
 
+class SimulatedEvents(unittest.TestCase):
+    """The rules of crates/mcp/src/tools/events.rs that the golden cases reach."""
+
+    def call(self, args):
+        world = ne.World(CASES["event-mark-interviewing"], "voice")
+        out, err = world.call("record_application_event", {"applicationId": "17", **args}, "2026-03-04T09:15:05Z")
+        return world, json.loads(out), err
+
+    def test_an_unknown_status_is_refused(self):
+        world, out, err = self.call({"type": "stage_changed", "metadata": {"toStage": "x", "toStatus": "interviewing"}})
+        self.assertTrue(err)
+        self.assertEqual(out["error"]["code"], "event_metadata_invalid")
+        self.assertEqual(world.apps["17"]["status"], "applied")
+
+    def test_a_submission_needs_its_own_workflow(self):
+        _, out, err = self.call({"type": "application_submitted"})
+        self.assertEqual(out["error"]["code"], "submission_event_requires_submission_workflow")
+
+    def test_a_key_another_type_does_not_take_is_refused(self):
+        _, out, err = self.call({"type": "application_rejected", "metadata": {"toStage": "rejected"}})
+        self.assertEqual(out["error"]["code"], "event_metadata_invalid")
+
+    def test_an_idempotency_key_needs_a_time(self):
+        _, out, err = self.call({"type": "note_added", "idempotencyKey": "key-12345", "metadata": {"note": "n"}})
+        self.assertEqual(out["error"]["code"], "occurred_at_required_for_idempotency")
+
+    def test_the_projection_follows_the_server(self):
+        world, out, err = self.call({"type": "interview_scheduled", "metadata": {
+            "interviewType": "video", "scheduledAt": "2026-03-05T14:00:00Z"}})
+        self.assertFalse(err, out)
+        app = world.apps["17"]
+        self.assertEqual((app["status"], app["followUpAt"]), ("interview", "2026-03-05T14:00:00.000Z"))
+        world, out, err = self.call({"type": "outbound_contact_recorded"})
+        self.assertEqual(world.apps["17"]["status"], "applied")
+
+
 class StateAndText(unittest.TestCase):
     def test_change_of_mind_needs_the_first_write_undone(self):
         case = CASES["multi-change-mind"]
@@ -255,6 +311,16 @@ class GoldenSet(unittest.TestCase):
 
     def test_no_golden_input_is_in_a_prompt(self):
         self.assertEqual(ne.leaks(list(CASES.values())), [])
+
+    def test_the_leak_check_reads_what_is_really_sent(self):
+        texts = "\n".join(ne.prompt_texts())
+        self.assertIn("In a voice session this only checks that the revision renders", texts)
+        self.assertIn("You check one reply that an assistant gave", texts)
+        self.assertIn("It is now", texts)
+
+    def test_scripted_answers_are_needles_too(self):
+        case = CASES["time-verbose-monday"]
+        self.assertTrue(ne.leaks([case], ["... " + case["answers"][0] + " ..."]))
 
     def test_the_leak_check_can_fail(self):
         case = CASES["time-yesterday-interview"]

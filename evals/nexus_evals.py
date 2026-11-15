@@ -21,11 +21,12 @@ REPO = ROOT.parent
 RUNS = ROOT / "runs"
 
 # A model change is a code change: these are what the numbers in results/ were measured with.
-PINNED = {"voice": "gpt-realtime-2.1-mini", "mcp": "gpt-6-luna", "judge": "gpt-6-luna"}
+PINNED = {"voice": "gpt-realtime-2.1-mini", "mcp": "gpt-6-sol", "judge": "gpt-6-luna"}
 # USD per million tokens, from OpenAI's pricing page, read on 2026-11-15.
 PRICES = {
     "gpt-realtime-2.1-mini": {"in": 0.60, "cached": 0.06, "out": 2.40},
     "gpt-6-luna": {"in": 0.10, "cached": 0.01, "out": 0.50},
+    "gpt-6-sol": {"in": 2.00, "cached": 0.20, "out": 10.00},
 }
 OPENAI = "https://api.openai.com/v1"
 
@@ -76,7 +77,7 @@ def corrected_rate(observed, tpr, tnr):
 
 
 def judge_quality(pairs):
-    """pairs: (human, judge) booleans, True = pass. Returns TPR, TNR and their counts."""
+    """pairs: (label, judge) booleans, True = pass. Returns TPR, TNR and their counts."""
     pos = [j for h, j in pairs if h]
     neg = [j for h, j in pairs if not h]
     return {
@@ -85,15 +86,17 @@ def judge_quality(pairs):
     }
 
 
-def corrected_ci(run_verdicts, test_pairs, iters=2000, seed=7):
-    """Judge-corrected pass rate with a bootstrap 95% interval that resamples both the runs and the
-    held-out labels the judge's error rates come from."""
+def corrected_ci(clusters, test_pairs, iters=2000, seed=7):
+    """Judge-corrected pass rate with a bootstrap 95% interval that resamples whole cases (the runs of
+    one case are not independent) and the held-out labels the judge's error rates come from.
+    `clusters` is one list of verdicts per case."""
     rng = random.Random(seed)
     q = judge_quality(test_pairs)
-    point = corrected_rate(sum(run_verdicts) / len(run_verdicts), q["tpr"], q["tnr"])
+    flat = [v for c in clusters for v in c]
+    point = corrected_rate(sum(flat) / len(flat), q["tpr"], q["tnr"])
     samples = []
     for _ in range(iters):
-        runs = [rng.choice(run_verdicts) for _ in run_verdicts]
+        runs = [v for _ in clusters for v in rng.choice(clusters)]
         pairs = [rng.choice(test_pairs) for _ in test_pairs]
         qq = judge_quality(pairs)
         v = corrected_rate(sum(runs) / len(runs), qq["tpr"], qq["tnr"])
@@ -104,6 +107,16 @@ def corrected_ci(run_verdicts, test_pairs, iters=2000, seed=7):
         # The labels show the judge erring on neither side within reach of this rate: no interval.
         return point, float("nan"), float("nan")
     return point, samples[int(0.025 * len(samples))], samples[int(0.975 * len(samples)) - 1]
+
+
+def clustered(clusters):
+    """Pass rate over all runs, and a Wilson 95% interval that counts each case once, with its share
+    of passing runs: runs of one case are correlated, so they can't narrow the interval as if
+    independent."""
+    flat = [v for c in clusters for v in c]
+    k = sum(sum(c) / len(c) for c in clusters)
+    _, lo, hi = wilson(k, len(clusters))
+    return sum(flat) / len(flat), lo, hi
 
 
 # ---------------------------------------------------------------- transcripts
@@ -258,29 +271,45 @@ def eval_time(case, tr):
                 return False, f"{c['name']} {path}={raw!r} is not a date-time"
             if path.split(".")[-1] in PAST_FIELDS and t > at + dt.timedelta(seconds=60):
                 return False, f"{c['name']} {path}={raw} lies after the call"
-    checked = [c for check in spec.get("checks", []) for c in writes if check["field"] == "occurredAt"
-               and c["name"] == check["tool"] and matches(c["args"], check.get("args", {}))]
+    def tool_ok(c, check):
+        if "tool" not in check:
+            return False
+        tools = check["tool"] if isinstance(check["tool"], list) else [check["tool"]]
+        return c["name"] in tools and matches(c["args"], check.get("args", {}))
+    checks = [alt for check in spec.get("checks", []) for alt in check.get("any", [check])]
+    now_types = spec.get("now", [])
     for c in writes:
-        # An event or note the case gives no time for happens now: its time is omitted or the call's,
-        # never a date's midnight or a round guess.
+        # An event that happens as the person speaks (a note in a case that names no time, a
+        # follow-up being set, an invitation arriving) has its time omitted or the call's, never a
+        # date's midnight or a round guess.
         raw = (c["args"] or {}).get("occurredAt")
-        if c in checked or not raw or c["name"] not in ("record_application_event", "append_application_note"):
+        kind = c["args"].get("type") if c["name"] == "record_application_event" else "note_added"
+        happens_now = not checks or kind in now_types
+        if not raw or not happens_now or c["name"] not in ("record_application_event", "append_application_note"):
             continue
         at, t = parse_time(c.get("at") or "") or now, server_time(raw)
         if t is None or not at - dt.timedelta(minutes=15) <= t <= at + dt.timedelta(seconds=60):
             return False, f"{c['name']} occurredAt={raw} is not the time of the call ({at.isoformat()})"
     for check in spec.get("checks", []):
-        found = [c for c in writes if c["name"] == check["tool"] and matches(c["args"], check.get("args", {}))]
-        if not found:
-            return False, f"no {check['tool']} call matching {check.get('args', {})}"
-        c = found[-1]
-        raw = dict(times_in(c["args"])).get(check["field"])
-        if raw is None and check["field"] == "occurredAt":
-            raw = c.get("at") or now.isoformat()
-        t = server_time(raw) if raw else None
-        lo, hi = (resolve(x, now, tz) for x in check["between"])
-        if t is None or not lo <= t <= hi:
-            return False, f"{check['tool']} {check['field']}={raw} not in [{lo.isoformat()}, {hi.isoformat()}]"
+        # A check may list alternatives: the same event recorded another accepted way.
+        reasons = []
+        for alt in check.get("any", [check]):
+            found = [c for c in writes if tool_ok(c, alt)]
+            if not found:
+                reasons.append(f"no {alt['tool']} call matching {alt.get('args', {})}")
+                continue
+            c = found[-1]
+            raw = dict(times_in(c["args"])).get(alt["field"])
+            if raw is None and alt["field"] == "occurredAt":
+                raw = c.get("at") or now.isoformat()
+            t = server_time(raw) if raw else None
+            lo, hi = (resolve(x, now, tz) for x in alt["between"])
+            if t is not None and lo <= t <= hi:
+                reasons = None
+                break
+            reasons.append(f"{alt['tool']} {alt['field']}={raw} not in [{lo.isoformat()}, {hi.isoformat()}]")
+        if reasons is not None:
+            return False, "; ".join(reasons)
     return True, "times plausible"
 
 
@@ -469,7 +498,12 @@ class World:
         rows = list(self.apps.values())
         text = (args.get("q") or args.get("search") or args.get("company") or "").lower()
         if text:
-            rows = [a for a in rows if text in (a["company"] + " " + a["role"]).lower()]
+            fields = ("company", "role", "notes", "jobDescription")
+            rows = [a for a in rows if text in " ".join(str(a.get(f) or "") for f in fields).lower()]
+        status = args.get("status")
+        if status:
+            wanted = status if isinstance(status, list) else [status]
+            rows = [a for a in rows if a.get("status") in wanted]
         return [self.compact(a) for a in rows]
 
     t_list_applications_filtered = t_list_applications
@@ -509,36 +543,115 @@ class World:
         a["archivedAt"] = None
         return {"application": a, "changed": True}
 
+    # crates/mcp/src/tools/events.rs: the keys each event type takes, and those it needs.
+    COMMON = ["contactId", "outcome", "nextAction"]
+    EVENT_KEYS = {
+        "opportunity_discovered": ["channel", "nextAction"],
+        "recruiter_contacted": COMMON + ["channel", "direction", "followUpAt", "toStage"],
+        "outbound_contact_recorded": COMMON + ["channel"],
+        "reply_received": COMMON + ["channel", "responseKind", "replyDateKnown"],
+        "stage_changed": ["fromStage", "toStage", "toStatus"],
+        "interview_invited": COMMON + ["interviewType", "scheduledAt", "durationMinutes", "followUpAt", "toStage"],
+        "interview_scheduled": COMMON + ["interviewType", "scheduledAt", "durationMinutes", "toStage"],
+        "interview_completed": COMMON + ["interviewType", "followUpAt", "toStage"],
+        "feedback_received": COMMON + ["followUpAt", "toStage"],
+        "follow_up_scheduled": ["contactId", "followUpAt", "nextAction"],
+        "offer_received": COMMON + ["followUpAt"],
+        "application_rejected": ["contactId", "outcome", "reason", "fromStage"],
+        "document_attached": ["documentId", "documentType"],
+        "note_added": ["note"],
+    }
+    REQUIRED = {"stage_changed": ["toStage"], "reply_received": ["responseKind"],
+                "interview_scheduled": ["interviewType", "scheduledAt"], "follow_up_scheduled": ["followUpAt"],
+                "document_attached": ["documentId"], "note_added": ["note"]}
+    STATUSES = ("inbound", "applied", "interview", "offer", "rejected")
+
     def t_record_application_event(self, args, at):
-        if args.get("type") not in EVENT_TYPES:
+        kind = (args.get("type") or "").strip()
+        if kind == "application_submitted":
+            return {"error": {"code": "submission_event_requires_submission_workflow"}}
+        if kind not in EVENT_TYPES:
             return {"error": {"code": "event_type_invalid"}}
+        key = args.get("idempotencyKey")
+        if key is not None and not 8 <= len(key.strip()) <= 128:
+            return {"error": {"code": "idempotency_key_invalid"}}
+        if key is not None and not args.get("occurredAt"):
+            return {"error": {"code": "occurred_at_required_for_idempotency"}}
         a = self.app(args)
-        md = dict(args.get("metadata") or {})
-        for key in ("scheduledAt", "followUpAt"):
-            if md.get(key):
-                t = server_time(md[key])
+
+        def bad(path, reason):
+            return {"error": {"code": "event_metadata_invalid", "path": path, "reason": reason}}
+        raw = args.get("metadata") or {}
+        allowed = self.EVENT_KEYS[kind]
+        for k in raw:
+            if k not in allowed:
+                return bad(f"metadata.{k}", f"{k} is not accepted for {kind}")
+        md = {}
+        for k, v in raw.items():
+            if v is None or v == "":
+                continue
+            if k in ("scheduledAt", "followUpAt"):
+                t = server_time(v) if isinstance(v, str) else None
                 if t is None:
-                    return {"error": {"code": "event_metadata_invalid", "path": f"metadata.{key}"}}
-                md[key] = t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        event = {"type": args["type"], "occurredAt": args.get("occurredAt") or at, "metadata": md}
-        self.events.setdefault(str(a["id"]), []).append(event)
-        status = {"application_rejected": "rejected", "offer_received": "offer", "interview_scheduled": "interview",
-                  "interview_invited": "interview", "interview_completed": "interview",
-                  "application_submitted": "applied"}.get(args["type"])
-        if args["type"] == "stage_changed":
-            status = md.get("toStatus", a.get("status"))
-            a["currentStage"] = md.get("toStage")
-        if status:
-            a["status"] = status
-        if args["type"] == "follow_up_scheduled":
+                    return bad(f"metadata.{k}", f"{k} must be a valid ISO 8601 date-time string")
+                v = t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            elif k == "durationMinutes" and not (isinstance(v, int) and 1 <= v <= 1440):
+                return bad("metadata.durationMinutes", "durationMinutes must be an integer from 1 to 1440")
+            elif k == "toStatus" and v not in self.STATUSES:
+                return bad("metadata.toStatus", "toStatus must be a valid application status")
+            elif k == "direction" and v not in ("inbound", "outbound"):
+                return bad("metadata.direction", "direction must identify an inbound or outbound contact")
+            elif k == "responseKind" and v not in ("human", "automatic"):
+                return bad("metadata.responseKind", "responseKind must identify a human or automatic response")
+            md[k] = v
+        for k in self.REQUIRED.get(kind, []):
+            if k not in md:
+                return bad(f"metadata.{k}", f"{k} is required for {kind}")
+        occurred = args.get("occurredAt") or at
+        event = {"type": kind, "occurredAt": occurred, "metadata": md}
+        # The projection, as events.rs applies it.
+        stage = md.get("toStage")
+
+        def transition(status, default_stage):
+            a.update(status=status, currentStage=stage or default_stage, lastContact=occurred)
+        if kind == "stage_changed":
+            a["currentStage"] = stage
+            if md.get("toStatus"):
+                a["status"] = md["toStatus"]
+        elif kind in ("interview_invited", "interview_completed"):
+            transition("interview", kind)
+            if md.get("followUpAt"):
+                a["followUpAt"] = md["followUpAt"]
+        elif kind == "interview_scheduled":
+            transition("interview", "interview_scheduled")
+            a["followUpAt"] = md.get("scheduledAt")
+        elif kind == "outbound_contact_recorded":
+            if a.get("status") == "inbound":
+                a["status"] = "applied"
+            a["lastContact"] = occurred
+        elif kind == "reply_received":
+            a["lastContact"] = occurred
+        elif kind in ("recruiter_contacted", "feedback_received"):
+            a["lastContact"] = occurred
+            if stage:
+                a["currentStage"] = stage
+            if md.get("followUpAt"):
+                a["followUpAt"] = md["followUpAt"]
+        elif kind == "follow_up_scheduled":
             a["followUpAt"] = md.get("followUpAt")
-        if args["type"] in ("recruiter_contacted", "outbound_contact_recorded", "reply_received",
-                            "interview_completed", "feedback_received"):
-            a["lastContact"] = event["occurredAt"]
+        elif kind == "offer_received":
+            transition("offer", "offer_received")
+            if md.get("followUpAt"):
+                a["followUpAt"] = md["followUpAt"]
+        elif kind == "application_rejected":
+            a.update(status="rejected", currentStage="rejected", lastContact=occurred, followUpAt=None)
+        self.events.setdefault(str(a["id"]), []).append(event)
         return {"event": event, "application": self.compact(a), "changed": True}
 
     def t_append_application_note(self, args, at):
         a = self.app(args)
+        if not (args.get("note") or "").strip():
+            return {"error": {"code": "event_metadata_invalid", "path": "note"}}
         event = {"type": "note_added", "occurredAt": args.get("occurredAt") or at,
                  "metadata": {"note": args.get("note") or args.get("text")}}
         self.events.setdefault(str(a["id"]), []).append(event)
@@ -580,6 +693,21 @@ class World:
         variant = args.get("variant") or "default"
         return {"state": self.cv["state"], "reviewItems": [], "truncated": 0, "pageCount": 1,
                 "approvalPath": None if self.cv["state"] == "approved" else f"/cv/variants/{variant}?view=review"}
+
+
+def diverges(case, tr):
+    """Whether the simulated Nexus as it is now would answer any call of a recorded run otherwise.
+    Such a run says nothing about the model against Nexus and has to run again."""
+    world = World(case, tr.get("surface", case["surface"]))
+    steps = tr["steps"]
+    for i, step in enumerate(steps):
+        if step["role"] != "call":
+            continue
+        result = next((r for r in steps[i + 1:] if r["role"] == "result" and r["name"] == step["name"]), None)
+        output, _ = world.call(step["name"], step["args"], step.get("at") or "")
+        if result is None or output != result["output"]:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------- golden cases and leakage
@@ -627,13 +755,15 @@ def check_cases(cases):
 
 
 def prompt_texts():
-    """Everything a model is given as instructions or tool descriptions, as Nexus ships it."""
-    texts = [(REPO / "crates/web/src/voice_instructions.txt").read_text()]
-    for name in ("mcp-tools.snapshot.json", "mcp-tools.additive.json"):
-        data = json.loads((REPO / "contract" / name).read_text())
-        for tool in data["tools"] if isinstance(data, dict) else data:
-            texts.append(json.dumps(tool, ensure_ascii=False))
+    """Everything a model is given as instructions or tool descriptions: the voice instructions, the
+    source that builds the voice session (its context and voice-only description text), both
+    contract files, the stand-in agent's prompt and the judge's."""
+    texts = [(REPO / "crates/web/src/voice_instructions.txt").read_text(),
+             (REPO / "crates/web/src/voice.rs").read_text()]
+    for tool in all_tools():
+        texts.append(json.dumps(tool, ensure_ascii=False))
     texts.append((ROOT / "agent_prompt.txt").read_text())
+    texts.append(JUDGE_PROMPT)
     return texts
 
 
@@ -643,7 +773,7 @@ def leaks(cases, texts=None):
     texts = [t.lower() for t in (texts if texts is not None else prompt_texts())]
     found = []
     for c in cases:
-        needles = [t for t in c["turns"] if len(t) >= 24]
+        needles = [t for t in c["turns"] + c.get("answers", []) if len(t) >= 24]
         needles += [a["company"] for a in c.get("sim", {}).get("applications", [])]
         for needle in needles:
             n = needle.lower()
@@ -855,8 +985,8 @@ def make_judge(budget):
 # ---------------------------------------------------------------- reporting
 
 def table(results, cases):
-    """Pass rate per evaluator and failure mode with n and Wilson 95% interval, plus invalid runs and
-    a split by conversation length. results: list of {case, run, verdicts | error}."""
+    """Pass rate per evaluator and failure mode, with cases, runs and a 95% interval over cases, plus
+    invalid runs and a split by conversation length. results: list of {case, run, verdicts | error}."""
     by_case = {c["id"]: c for c in cases}
     rows, lines = {}, []
     invalid = [r for r in results if r.get("error")]
@@ -868,17 +998,19 @@ def table(results, cases):
             if ok is None:
                 continue
             for key in (f"{c['surface']} {c['mode']} / {ev}", f"length {len(c['turns'])} / {ev}"):
-                rows.setdefault(key, []).append(ok)
+                rows.setdefault(key, {}).setdefault(c["id"], []).append(ok)
     lines.append(f"runs {len(results)}, invalid {len(invalid)} ({100 * len(invalid) / max(1, len(results)):.0f}%)")
-    lines.append(f"{'mode / evaluator':40} {'n':>4} {'pass':>5} {'rate':>6}  95% CI")
+    lines.append(f"{'mode / evaluator':38} {'cases':>5} {'runs':>4} {'pass':>4} {'rate':>6}  95% CI over cases")
     quality = ROOT / "labels" / "judge-quality.json"
     pairs = [tuple(p) for p in json.loads(quality.read_text())["pairs"]] if quality.exists() else None
     for key in sorted(rows):
-        v = rows[key]
-        p, lo, hi = wilson(sum(v), len(v))
-        lines.append(f"{key:40} {len(v):>4} {sum(v):>5} {100 * p:5.1f}%  [{100 * lo:.1f}, {100 * hi:.1f}]")
+        clusters = list(rows[key].values())
+        runs = sum(len(c) for c in clusters)
+        passed = sum(sum(c) for c in clusters)
+        p, lo, hi = clustered(clusters)
+        lines.append(f"{key:38} {len(clusters):>5} {runs:>4} {passed:>4} {100 * p:5.1f}%  [{100 * lo:.1f}, {100 * hi:.1f}]")
         if key.endswith("/ honest") and pairs:
-            cp, clo, chi = corrected_ci(v, pairs)
+            cp, clo, chi = corrected_ci(clusters, pairs)
             ci = "interval n/a, read the raw one" if math.isnan(clo) else f"[{100 * clo:.1f}, {100 * chi:.1f}] bootstrap"
-            lines.append(f"{'  corrected for judge error':40} {'':>4} {'':>5} {100 * cp:5.1f}%  {ci}")
+            lines.append(f"{'  corrected for judge error':38} {'':>5} {'':>4} {'':>4} {100 * cp:5.1f}%  {ci}")
     return "\n".join(lines)

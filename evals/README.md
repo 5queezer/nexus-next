@@ -16,9 +16,10 @@ and replies.
    there. Evaluators are for the failures that remain when the instruction is clear.
 3. **One binary evaluator per failure mode**, in code wherever the answer is objective. The one
    judgement that needs a model, whether a reply claims more than the tools did, is checked by a
-   judge that is only trusted after it is measured against held-out hand labels.
+   judge that is only trusted after it is measured against held-out labels.
 4. **Numbers come with n and a 95% interval**, decisions go by the interval's lower bound, every case
-   runs several times, and invalid runs are counted and read.
+   runs several times, and invalid runs are counted and read. The runs of one case are not
+   independent, so an interval counts each case once, with its share of passing runs.
 5. **The golden set is a regression net**, not a quality claim: every case is synthetic and comes
    from an observed failure mode or an injection pattern. No golden input may appear in a prompt or a
    tool description; `run.py check` tests that.
@@ -46,7 +47,7 @@ Offline, part of `cargo test --workspace` (`crates/server/tests/evals_offline.rs
 
 ```sh
 python3 -I evals/test_evals.py      # evaluators can pass and fail, statistics, simulated Nexus
-python3 -I evals/run.py check       # golden set shape, leakage, recorded verdicts vs hand labels
+python3 -I evals/run.py check       # golden set shape, leakage, recorded verdicts vs agent labels
 ```
 
 Paid, only on purpose. It sends the golden cases (synthetic) to OpenAI, logs every call's tokens and
@@ -65,15 +66,51 @@ are relative to the run (`day-1 15:00`, `next friday 10:00`). Run between 10:00 
 time, Tuesday to Sunday.
 
 Pinned models are in `nexus_evals.PINNED`: a model change is a code change, and the numbers in
-`results/` hold only for the models they name. The MCP side uses a stand-in agent (a small model
-with every served tool description and `agent_prompt.txt`), so it measures what the descriptions
-make a model do, not Hermes itself.
+`results/` hold only for the models they name. The MCP side uses a stand-in agent: gpt-6-sol, the
+model family of most real Hermes sessions, with every served tool description and
+`agent_prompt.txt`. It measures what the descriptions make such a model do, not Hermes itself.
+
+The simulated Nexus answers as the server does where a case can reach it: date rules from
+`zod.rs` and `js.rs`, event types, keys, enums and the status projection from `events.rs`, the
+lifecycle refusal, `changed: false` and a declined card. When it is corrected, `run.py rerun`
+replays every recorded run and runs again those it would now answer otherwise.
+
+The honesty judge's quality comes from a test set labelled after its prompt was last changed; its
+mistakes on that set are never printed, so the prompt can't be fitted to them. Each label set says
+how it was made.
 
 ## Files
 
 - `cases/golden.json`: the golden cases and their fixture.
 - `nexus_evals.py`: statistics, evaluators, simulated Nexus, runners.
-- `recorded/`: transcripts of past paid runs with hand labels, which `check` compares with the
+- `recorded/`: transcripts of past paid runs with agent labels, which `check` compares with the
   evaluators' verdicts (false passes and false fails).
-- `labels/`: hand labels for the honesty judge, split into dev and test.
+- `labels/`: agent labels for the honesty judge, split into dev and test.
 - `results/`: summaries of runs that changes are measured against.
+- `owner_review.py`: the owner's labelling pass. `build` writes one private page (no network, no
+  library) with the judge's test items and a sample of Phase A traces with their agent notes; the
+  owner labels Pass, Fail or Defer with a note, and exports a JSON file. `score` then reports the
+  agreement between the owner's and the agent labels, and the judge's TPR and TNR against the
+  owner's. The page holds private traces, so it is built outside this repository.
+
+## Limits
+
+- **Labels are agent labels, not human ground truth.** The labels in `labels/` and `recorded/` were
+  written by the lead agent (Claude Opus 5.5) reading each transcript, not by a person. The
+  honesty judge is another model family (gpt-6-luna), which lowers but does not remove the risk
+  that labeller and judge share blind spots. Judge numbers are "against agent labels" until the
+  owner's labelling pass (`owner_review.py`) gives human labels; then agreement between the two
+  and the judge's TPR/TNR against the owner's labels are what counts.
+- **Real dishonest replies are rare**, so the judge's true-negative rate is measured on replies
+  with an overclaim added by the lead agent, marked `perturbed`.
+- **The Phase A open coding was done by note-taking agents** under a fixed brief, grouped by the
+  lead and spot-checked by the review agent; the owner's check of 20 random traces is pending.
+- **The MCP side cannot show the real agents' timestamp failures.** gpt-6-sol given the current
+  time in a short session passes every time case, while real Hermes sessions (long, compacted, run
+  on a schedule) did not. A description change is measured there as "no harm" only.
+- **Voice runs in text mode**: no audio and no speech recognition, so mishearing is only covered by
+  cases written as a recogniser might render speech.
+- **The simulated Nexus** mirrors the server where the cases reach it; `run.py rerun` keeps old
+  runs honest when it changes. Other differences are possible.
+- **Runs happen at the real present**, so a case's relative times depend on when it runs; see
+  Running.

@@ -6,7 +6,8 @@
         [--surface voice|mcp|all] [--runs 3] [--cases id,id] [--budget 3.0] [--label NAME]
   python3 -I evals/run.py report DIR            the table for a finished run, offline
   python3 -I evals/run.py rejudge DIR --i-accept-cost   a finished run's honesty verdicts again
-  python3 -I evals/run.py calibrate --i-accept-cost   the honesty judge against held-out hand labels
+  python3 -I evals/run.py rerun DIR [--i-accept-cost]    runs the simulator now answers otherwise
+  python3 -I evals/run.py calibrate --i-accept-cost   the honesty judge against held-out agent labels
 """
 
 import argparse
@@ -42,9 +43,11 @@ def check(_args):
                     disagree += 1
                     print(f"DISAGREE {path.name} {tr['case']} run {tr['run']} {ev}: evaluator {verdicts[ev][0]}, "
                           f"label {label} ({verdicts[ev][1]})")
-    print(f"{len(cases)} cases, {len(problems)} problems; recorded verdicts vs hand labels: "
+    print(f"{len(cases)} cases, {len(problems)} problems; recorded verdicts vs agent labels: "
           f"{agree} agree, {disagree} disagree")
-    return 1 if problems else 0
+    # A changed evaluator that contradicts a recorded label fails here, so it fails cargo test too. A
+    # label found wrong is corrected in recorded/, with the reason.
+    return 1 if problems or disagree else 0
 
 
 def paid(args):
@@ -110,14 +113,64 @@ def rejudge(args):
     return 0
 
 
-def report(args):
+def rerun(args):
+    """Runs again, in place, every run of a finished run whose calls the simulated Nexus would now
+    answer otherwise (`nexus_evals.diverges`), and rewrites its table."""
     d = pathlib.Path(args.dir)
-    print(ne.table(json.loads((d / "results.json").read_text()), ne.load_cases()))
+    by_case = {c["id"]: c for c in ne.load_cases()}
+    transcripts = json.loads((d / "transcripts.json").read_text())
+    stale = [i for i, tr in enumerate(transcripts)
+             if args.surface in ("all", tr.get("surface", by_case[tr["case"]]["surface"]))
+             and ne.diverges(by_case[tr["case"]], tr)]
+    print(f"{len(stale)} of {len(transcripts)} runs diverge:", sorted({transcripts[i]["case"] for i in stale}))
+    if not stale or not args.i_accept_cost:
+        return 0 if not stale else 2
+    budget = ne.Budget(args.budget)
+    judge = ne.make_judge(budget)
+    for i in stale:
+        old = transcripts[i]
+        case = by_case[old["case"]]
+        tr = asyncio.run(ne.run_voice(case, budget, old["run"])) if case["surface"] == "voice" \
+            else ne.run_mcp(case, budget, old["run"])
+        tr["verdicts"] = ne.evaluate(case, tr, judge)
+        tr["rerun"] = True
+        transcripts[i] = tr
+        print(case["id"], old["run"], {k: v[0] for k, v in tr["verdicts"].items()}, f"spent {budget.spent:.4f} USD")
+    invalid = [r for r in json.loads((d / "results.json").read_text()) if r.get("error")]
+    results = invalid + [{"case": tr["case"], "run": tr["run"], "verdicts": tr["verdicts"]} for tr in transcripts]
+    (d / "transcripts.json").write_text(json.dumps(transcripts, indent=1, ensure_ascii=False))
+    (d / "results.json").write_text(json.dumps(results, indent=1))
+    print(ne.table(results, ne.load_cases()))
+    return 0
+
+
+def report(args):
+    if len(args.dir) > 1:
+        # Several runs of one setup, read together: each case's runs from all of them.
+        results = [r for d in args.dir for r in json.loads((pathlib.Path(d) / "results.json").read_text())]
+        print(ne.table(results, ne.load_cases()))
+        return 0
+    d = pathlib.Path(args.dir[0])
+    results = json.loads((d / "results.json").read_text())
+    if args.reeval:
+        # The code verdicts again, with the evaluators as they are now; the judge's stay as they were.
+        by_case = {c["id"]: c for c in ne.load_cases()}
+        transcripts = json.loads((d / "transcripts.json").read_text())
+        for tr in transcripts:
+            honest = tr["verdicts"].get("honest")
+            tr["verdicts"] = ne.evaluate(by_case[tr["case"]], tr)
+            if honest is not None:
+                tr["verdicts"]["honest"] = honest
+        results = [r for r in results if r.get("error")] + [
+            {"case": tr["case"], "run": tr["run"], "verdicts": tr["verdicts"]} for tr in transcripts]
+        (d / "transcripts.json").write_text(json.dumps(transcripts, indent=1, ensure_ascii=False))
+        (d / "results.json").write_text(json.dumps(results, indent=1))
+    print(ne.table(results, ne.load_cases()))
     return 0
 
 
 def calibrate(args):
-    """The judge's true-positive and true-negative rates on held-out hand labels. The dev split is for
+    """The judge's true-positive and true-negative rates on held-out agent labels (see labels/honesty.json for who wrote them). The dev split is for
     reading the judge's mistakes while its prompt is written; only the test split is reported."""
     if not args.i_accept_cost:
         print("calibration costs money: pass --i-accept-cost")
@@ -126,21 +179,26 @@ def calibrate(args):
     judge = ne.make_judge(budget)
     labels = json.loads((ne.ROOT / "labels" / "honesty.json").read_text())
     for split in ("dev", "test"):
-        pairs, rows = [], []
+        pairs, rows, unparsable, verdicts = [], [], 0, {}
         for item in labels[split]:
             verdict, reason = judge(item["transcript"])
+            verdicts[item["id"]] = verdict
             if verdict is None:
-                rows.append(f"  unparsable {item['id']}")
+                unparsable += 1
                 continue
             pairs.append((item["label"], verdict))
             if verdict != item["label"]:
-                rows.append(f"  miss {item['id']}: human {item['label']}, judge {verdict}: {reason}")
+                rows.append(f"  miss {item['id']}: label {item['label']}, judge {verdict}: {reason}")
         q = ne.judge_quality(pairs)
-        print(f"{split}: n={len(pairs)} TPR {q['tpr']:.2f} (n={q['n_pos']}) TNR {q['tnr']:.2f} (n={q['n_neg']})")
-        print("\n".join(rows))
-        if split == "test":
+        print(f"{split}: n={len(pairs)} TPR {q['tpr']:.2f} (n={q['n_pos']}) TNR {q['tnr']:.2f} (n={q['n_neg']}), "
+              f"unparsable {unparsable}")
+        # The test split's mistakes stay unread, so that the judge's prompt is never fitted to them.
+        if split == "dev":
+            print("\n".join(rows))
+        else:
             (ne.ROOT / "labels" / "judge-quality.json").write_text(json.dumps(
-                {"model": ne.PINNED["judge"], "pairs": pairs, **q}, indent=1) + "\n")
+                {"model": ne.PINNED["judge"], "test_set": labels.get("test_set", ""), "labels": "agent",
+                 "unparsable": unparsable, "pairs": pairs, "verdicts": verdicts, **q}, indent=1) + "\n")
     print(f"total logged {budget.spent:.4f} USD")
     return 0
 
@@ -162,8 +220,15 @@ def main():
     j.add_argument("--i-accept-cost", action="store_true")
     j.add_argument("--budget", type=float, default=3.0)
     j.set_defaults(fn=rejudge)
+    rr = sub.add_parser("rerun")
+    rr.add_argument("dir")
+    rr.add_argument("--i-accept-cost", action="store_true")
+    rr.add_argument("--budget", type=float, default=3.0)
+    rr.add_argument("--surface", default="all", choices=["voice", "mcp", "all"])
+    rr.set_defaults(fn=rerun)
     r = sub.add_parser("report")
-    r.add_argument("dir")
+    r.add_argument("dir", nargs="+")
+    r.add_argument("--reeval", action="store_true")
     r.set_defaults(fn=report)
     c = sub.add_parser("calibrate")
     c.add_argument("--i-accept-cost", action="store_true")

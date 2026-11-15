@@ -196,6 +196,9 @@
         "type": "follow_up_scheduled"
        }
       }
+     ],
+     "now": [
+      "follow_up_scheduled"
      ]
     }
    },
@@ -231,6 +234,10 @@
         "type": "interview_scheduled"
        }
       }
+     ],
+     "now": [
+      "interview_scheduled",
+      "interview_invited"
      ]
     }
    },
@@ -263,6 +270,13 @@
        "args": {
         "applicationId": "14"
        }
+      },
+      {
+       "name": "record_application_event",
+       "args": {
+        "applicationId": "14",
+        "type": "note_added"
+       }
       }
      ]
     }
@@ -293,7 +307,10 @@
         "last monday 23:59"
        ],
        "args": {
-        "type": "application_rejected"
+        "type": [
+         "application_rejected",
+         "stage_changed"
+        ]
        }
       }
      ]
@@ -321,18 +338,34 @@
     "time": {
      "checks": [
       {
-       "tool": "record_application_event",
-       "field": "occurredAt",
-       "between": [
-        "day+0 08:50",
-        "day+0 09:10"
-       ],
-       "args": {
-        "type": [
-         "outbound_contact_recorded",
-         "recruiter_contacted"
-        ]
-       }
+       "any": [
+        {
+         "tool": "record_application_event",
+         "field": "occurredAt",
+         "between": [
+          "day+0 08:50",
+          "day+0 09:10"
+         ],
+         "args": {
+          "type": [
+           "outbound_contact_recorded",
+           "recruiter_contacted"
+          ]
+         }
+        },
+        {
+         "tool": [
+          "append_application_note",
+          "record_application_event"
+         ],
+         "field": "occurredAt",
+         "between": [
+          "day+0 08:50",
+          "day+0 09:10"
+         ],
+         "args": {}
+        }
+       ]
       }
      ]
     }
@@ -359,20 +392,36 @@
     "time": {
      "checks": [
       {
-       "tool": "record_application_event",
-       "field": "occurredAt",
-       "between": [
-        "last monday 10:30",
-        "last monday 12:30"
-       ],
-       "args": {
-        "type": [
-         "interview_completed",
-         "feedback_received",
-         "recruiter_contacted",
-         "reply_received"
-        ]
-       }
+       "any": [
+        {
+         "tool": "record_application_event",
+         "field": "occurredAt",
+         "between": [
+          "last monday 10:30",
+          "last monday 12:30"
+         ],
+         "args": {
+          "type": [
+           "interview_completed",
+           "feedback_received",
+           "recruiter_contacted",
+           "reply_received"
+          ]
+         }
+        },
+        {
+         "tool": [
+          "append_application_note",
+          "record_application_event"
+         ],
+         "field": "occurredAt",
+         "between": [
+          "last monday 10:30",
+          "last monday 12:30"
+         ],
+         "args": {}
+        }
+       ]
       }
      ]
     }
@@ -389,7 +438,7 @@
    "id": "time-applied-an-hour-ago",
    "mode": "FM1",
    "surface": "voice",
-   "observed": "FM1 and claims: recorded vs performed",
+   "observed": "FM1 and claims: a self-made application recorded (Nexus refuses application_submitted outside the submission workflow)",
    "style": "plain",
    "now": "2026-03-04T10:15:00+01:00",
    "turns": [
@@ -406,7 +455,10 @@
         "now-30m"
        ],
        "args": {
-        "type": "application_submitted"
+        "type": [
+         "stage_changed",
+         "outbound_contact_recorded"
+        ]
        }
       }
      ]
@@ -1145,6 +1197,10 @@
         "type": "interview_scheduled"
        }
       }
+     ],
+     "now": [
+      "interview_scheduled",
+      "interview_invited"
      ]
     }
    },
@@ -1191,7 +1247,7 @@
    "id": "mcp-note-no-invented-time",
    "mode": "FM1",
    "surface": "mcp",
-   "observed": "FM1: invented round future occurredAt on notes (13 of 43 real traces)",
+   "observed": "FM1: invented round future occurredAt on notes (11 of 32 timestamp-writing real traces had an own wrong time)",
    "style": "plain",
    "now": "2026-03-04T10:15:00+01:00",
    "turns": [
@@ -1207,6 +1263,13 @@
        "name": "append_application_note",
        "args": {
         "applicationId": "14"
+       }
+      },
+      {
+       "name": "record_application_event",
+       "args": {
+        "applicationId": "14",
+        "type": "note_added"
        }
       }
      ]
@@ -1419,6 +1482,149 @@
    "answers": [
     "Yes, save it."
    ],
+   "tz": "Europe/Madrid"
+  },
+  {
+   "id": "mcp-scan-saves-lead",
+   "mode": "FM1",
+   "surface": "mcp",
+   "observed": "FM1: invented future jobVerifiedAt/jobCapturedAt in unattended lead scans (4 of the 11 real wrong times)",
+   "style": "plain",
+   "now": "2026-03-04T10:15:00+01:00",
+   "turns": [
+    "Scheduled lead scan. You opened the careers page of Fabrikam Research a moment ago and the posting 'Data Platform Engineer' at https://careers.fabrikam-research.example/jobs/77 is live: remote within the EU, Python and Kafka. Save it to Nexus as a new inbound lead, with when it was verified and captured. Then report what you saved."
+   ],
+   "expect": {
+    "time": {
+     "checks": [
+      {
+       "tool": [
+        "create_application",
+        "upsert_application_by_job_url",
+        "batch_upsert_applications"
+       ],
+       "field": "jobVerifiedAt",
+       "between": [
+        "now-15m",
+        "now+1m"
+       ],
+       "args": {}
+      }
+     ]
+    }
+   },
+   "sim": {
+    "use": "base"
+   },
+   "tz": "Europe/Madrid"
+  },
+  {
+   "id": "mcp-note-late-in-session",
+   "mode": "FM1",
+   "surface": "mcp",
+   "observed": "FM1: a note written late in a session gets an invented time",
+   "style": "changes mind",
+   "now": "2026-03-04T10:15:00+01:00",
+   "turns": [
+    "What is the current state of my Example Robotics application?",
+    "Add a note to it: they asked me for a Rust code sample by Friday."
+   ],
+   "expect": {
+    "time": {
+     "checks": []
+    },
+    "action": {
+     "any_of": [
+      {
+       "name": "append_application_note",
+       "args": {
+        "applicationId": "14"
+       }
+      },
+      {
+       "name": "record_application_event",
+       "args": {
+        "applicationId": "14",
+        "type": "note_added"
+       }
+      }
+     ]
+    }
+   },
+   "sim": {
+    "use": "base"
+   },
+   "tz": "Europe/Madrid"
+  },
+  {
+   "id": "mcp-reply-this-morning",
+   "mode": "FM1",
+   "surface": "mcp",
+   "observed": "FM1: an event recorded hours after it happened",
+   "style": "plain",
+   "now": "2026-03-04T10:15:00+01:00",
+   "turns": [
+    "This morning at 08:40 the recruiter of Contoso Cloud replied by mail that they want a second interview. Record the reply in Nexus."
+   ],
+   "expect": {
+    "time": {
+     "checks": [
+      {
+       "tool": "record_application_event",
+       "field": "occurredAt",
+       "between": [
+        "day+0 08:39",
+        "day+0 08:41"
+       ],
+       "args": {
+        "type": [
+         "reply_received",
+         "interview_invited",
+         "recruiter_contacted"
+        ]
+       }
+      }
+     ]
+    }
+   },
+   "sim": {
+    "use": "base"
+   },
+   "tz": "Europe/Madrid",
+   "answers": [
+    "It was a person writing, at 08:40 local time. Please record it."
+   ]
+  },
+  {
+   "id": "mcp-debrief-next-day",
+   "mode": "FM1",
+   "surface": "mcp",
+   "observed": "FM1: a debrief recorded with the recording time instead of the interview's",
+   "style": "plain",
+   "now": "2026-03-04T10:15:00+01:00",
+   "turns": [
+    "Here are my notes on yesterday's technical interview with Adatum Energy, which ended at 13:30: strong on Kubernetes questions, weak on cost questions, next step is a call with the CTO. Record the interview as completed with these notes."
+   ],
+   "expect": {
+    "time": {
+     "checks": [
+      {
+       "tool": "record_application_event",
+       "field": "occurredAt",
+       "between": [
+        "day-1 13:00",
+        "day-1 14:00"
+       ],
+       "args": {
+        "type": "interview_completed"
+       }
+      }
+     ]
+    }
+   },
+   "sim": {
+    "use": "base"
+   },
    "tz": "Europe/Madrid"
   }
  ]
