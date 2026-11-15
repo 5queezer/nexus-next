@@ -106,18 +106,30 @@ pub(super) fn capped_items(items: &[ReviewItem]) -> (Vec<ReviewItem>, usize) {
     (reported, truncated)
 }
 
-/// Where the owner looks at this variant and approves it. Relative: the client knows the origin.
+/// Where the owner looks at this variant and approves it. Relative, kept for clients that read it.
 pub(super) fn approval_path(variant: &str) -> String {
     format!("/cv/variants/{variant}#cv-approval")
 }
 
-pub(super) fn approval_required(variant: &str, revision: i64) -> CallToolResult {
+/// The same place as a whole link, from the origin clients reach this server at: an agent can't
+/// know that origin, and a path alone left the owner without a link to tap. Null when the server
+/// knows no origin.
+pub(super) fn approval_url(base_url: &str, variant: &str) -> Value {
+    let base = base_url.trim_end_matches('/');
+    if base.is_empty() {
+        return Value::Null;
+    }
+    format!("{base}{}", approval_path(variant)).into()
+}
+
+pub(super) fn approval_required(base_url: &str, variant: &str, revision: i64) -> CallToolResult {
     error_with(
         "cv_approval_required",
         json!({
             "variant": variant,
             "revision": revision,
             "approvalPath": approval_path(variant),
+            "approvalUrl": approval_url(base_url, variant),
         }),
     )
 }
@@ -160,17 +172,25 @@ fn layout_json(layout: &Layout) -> Value {
 }
 
 /// `state` and what comes with it, for a reply about a revision.
-fn add_standing(out: &mut Value, variant: &str, approved: bool, items: &[ReviewItem]) {
+fn add_standing(
+    out: &mut Value,
+    base_url: &str,
+    variant: &str,
+    approved: bool,
+    items: &[ReviewItem],
+) {
     out["state"] = state_name(approved).into();
     if approved {
         out["reviewItems"] = json!([]);
         out["truncated"] = 0.into();
         out["approvalPath"] = Value::Null;
+        out["approvalUrl"] = Value::Null;
     } else {
         let (reported, truncated) = capped_items(items);
         out["reviewItems"] = json!(reported);
         out["truncated"] = truncated.into();
         out["approvalPath"] = approval_path(variant).into();
+        out["approvalUrl"] = approval_url(base_url, variant);
     }
 }
 
@@ -749,10 +769,10 @@ pub(crate) async fn patch_as(
     tx.commit().await?;
     publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
+        &ctx.state.public_base_url,
         name,
         &revision,
         &base,
-        &source,
         &rendered,
         &report.review_items,
         approved,
@@ -760,10 +780,10 @@ pub(crate) async fn patch_as(
 }
 
 fn written(
+    base_url: &str,
     name: &str,
     revision: &Revision,
     base: &Base,
-    source: &str,
     rendered: &Rendered,
     items: &[ReviewItem],
     approved: bool,
@@ -774,12 +794,12 @@ fn written(
         "pageCount": rendered.page_count,
         "diff": unified_diff(
             &base.source,
-            source,
+            &revision.source,
             &format!("revision {}", base.number),
             &format!("revision {}", revision.number),
         ),
     });
-    add_standing(&mut out, name, approved, items);
+    add_standing(&mut out, base_url, name, approved, items);
     out["layout"] = layout_json(&rendered.text.layout);
     if !rendered.warnings.is_empty() {
         out["diagnostics"] = json!(rendered.warnings);
@@ -847,10 +867,10 @@ pub async fn revert(ctx: &Ctx, args: &Args) -> ToolResult {
     tx.commit().await?;
     publish(ctx, name, &revision, approved, report.review_items.len());
     Ok(written(
+        &ctx.state.public_base_url,
         name,
         &revision,
         &head,
-        &target.source,
         &rendered,
         &report.review_items,
         approved,
@@ -955,7 +975,11 @@ async fn save_pdf(
         }
         let source_sha256 = sha256_hex(base.source.as_bytes());
         if !is_approved(&mut tx, state, Some(base.variant.id), &source_sha256).await? {
-            return Ok(Err(approval_required(&base.variant.name, base.number)));
+            return Ok(Err(approval_required(
+                &ctx.state.public_base_url,
+                &base.variant.name,
+                base.number,
+            )));
         }
         // A delete of the same bytes may have removed the file since the put above.
         if !db.blobs().exists(&sha256)? {
@@ -1016,7 +1040,11 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
         )
         .await?;
         if application.is_some() && !approved {
-            return Ok(approval_required(&base.variant.name, base.number));
+            return Ok(approval_required(
+                &ctx.state.public_base_url,
+                &base.variant.name,
+                base.number,
+            ));
         }
         let known = known_to_owner(&mut conn, Some(&base.variant), &state.facts).await?;
         (state, base, application, approved, known)
@@ -1055,7 +1083,11 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
         if application.is_none()
             && !is_approved(&mut conn, &state, Some(base.variant.id), &source_sha256).await?
         {
-            return Ok(approval_required(&base.variant.name, base.number));
+            return Ok(approval_required(
+                &ctx.state.public_base_url,
+                &base.variant.name,
+                base.number,
+            ));
         }
     }
     let mut summary = json!({
@@ -1067,6 +1099,7 @@ pub(crate) async fn render_as(ctx: &Ctx, args: &Args, stamped_pdf: bool) -> Tool
     });
     add_standing(
         &mut summary,
+        &ctx.state.public_base_url,
         &base.variant.name,
         approved,
         &report.review_items,
@@ -1369,6 +1402,15 @@ pub(super) fn application_variant(application_id: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_approval_link_is_whole_with_or_without_a_slash_and_null_without_an_origin() {
+        let want = "https://nexus.example.org/cv/variants/default#cv-approval";
+        assert_eq!(approval_url("https://nexus.example.org", "default"), want);
+        assert_eq!(approval_url("https://nexus.example.org/", "default"), want);
+        assert_eq!(approval_url("", "default"), Value::Null);
+        assert_eq!(approval_path("default"), "/cv/variants/default#cv-approval");
+    }
+
     use std::sync::Arc;
 
     use nexus_core::Db;
