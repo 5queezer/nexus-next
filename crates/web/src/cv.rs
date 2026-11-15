@@ -103,6 +103,10 @@ pub fn cv_router(state: McpState, tz: Tz, voice: Voice, data_dir: &FilePath) -> 
             .route(
                 "/api/voice/tool",
                 post(voice::tool).layer(DefaultBodyLimit::max(MAX_TOOL_BODY_BYTES)),
+            )
+            .route(
+                "/api/voice/trace",
+                post(voice::trace_step).layer(DefaultBodyLimit::max(voice::MAX_TRACE_BODY_BYTES)),
             ),
     )
     .layer(middleware::map_response(crate::secure))
@@ -1446,6 +1450,7 @@ fn voice_panel(
                 <div class="voice-stage">
                     <div class="voice-stage-top">
                         <span id="voice-mic-state" class="voice-mic-state">"Microphone off"</span>
+                        <meter id="voice-level" class="voice-level" min="0" max="1" value="0" hidden aria-label="Microphone level"></meter>
                         <span class="hint" id="voice-remaining" hidden></span>
                     </div>
                     <div class="voice-state-mark" aria-hidden="true">

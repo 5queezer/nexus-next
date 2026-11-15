@@ -283,7 +283,7 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
                 if added {
                     publish(ctx, &name, &revision, false, report.review_items.len());
                 }
-                approval_required(&name, revision.number)
+                approval_required(&ctx.state.public_base_url, &name, revision.number)
             }
             Ok(None) => facts_changed_error(),
             Err(error) => {
@@ -379,7 +379,11 @@ pub async fn generate(ctx: &Ctx, args: &Args) -> ToolResult {
             if added {
                 publish(ctx, &name, &revision, false, report.review_items.len());
             }
-            return Ok(approval_required(&name, revision.number));
+            return Ok(approval_required(
+                &ctx.state.public_base_url,
+                &name,
+                revision.number,
+            ));
         }
         Ok(None) => {
             let _ = remove_blob_if_unreferenced(db, sha256).await;

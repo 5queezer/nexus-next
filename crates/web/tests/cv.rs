@@ -34,6 +34,7 @@ fn voice() -> VoiceConfig {
         voice: "marin".to_owned(),
         base_url: OPENAI_BASE_URL.to_owned(),
         lifetime: Duration::from_secs(900),
+        trace: false,
     }
 }
 

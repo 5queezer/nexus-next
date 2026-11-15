@@ -30,8 +30,8 @@ pub use dashboard::dashboard_router;
 pub use openai_key::openai_key_router;
 pub use voice::{
     CONFIRMED_VOICE_TOOLS, IDLE_SECONDS, MAX_MODEL_OUTPUT_BYTES, MINTS_PER_HOUR, OPENAI_BASE_URL,
-    OPENAI_KEY_FILE, VOICE_TOOLS, Voice, VoiceConfig, VoiceKey, tool_definitions,
-    voice_status_router,
+    OPENAI_KEY_FILE, VOICE_TOOLS, VOICE_TRACE_DAYS, VOICE_TRACE_DIR, Voice, VoiceConfig, VoiceKey,
+    mint_body, tool_definitions, voice_status_router,
 };
 
 /// Default response headers: no inline script or foreign asset can load, nothing sniffs types, and

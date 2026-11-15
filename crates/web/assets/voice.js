@@ -18,6 +18,12 @@
   const toolList = byId("voice-tools");
   const phaseLabel = byId("voice-phase");
   const micLabel = byId("voice-mic-state");
+  const levelMeter = byId("voice-level");
+  // A microphone that sends only zeros (unplugged, muted at the device, a broken driver) still opens
+  // and still lets a session run: the model then answers sound it never got. After this long of
+  // nothing at all with the microphone on, the page says so.
+  const SILENT_MS = 3000;
+  const LEVEL_MS = 100;
   const holdLabel = byId("voice-hold-label") || holdButton;
   const interruptButton = byId("voice-interrupt");
   const announcement = byId("voice-announcement");
@@ -156,6 +162,17 @@
     return { "Content-Type": "application/json", "X-Nexus-Csrf": root.dataset.csrf, ...extra };
   }
 
+  // Only when the server keeps traces (NEXUS_VOICE_TRACE): what the page alone sees, for the
+  // session's trace. Fire and forget: a lost step never holds up the conversation.
+  function trace(live, step) {
+    if (!live.trace || !live.id) return;
+    fetch("/api/voice/trace", {
+      method: "POST",
+      headers: apiHeaders({ "X-Nexus-Voice-Session": live.id }),
+      body: JSON.stringify(step),
+    }).catch(() => {});
+  }
+
   function setPhase(phase, message) {
     const changed = root.dataset.phase !== phase;
     root.dataset.phase = phase;
@@ -213,6 +230,11 @@
     if (ending.microphone) {
       for (const track of ending.microphone.getTracks()) track.stop();
     }
+    if (ending.level) {
+      clearInterval(ending.level.timer);
+      ending.level.context.close();
+    }
+    if (levelMeter) levelMeter.hidden = true;
     if (ending.audio) ending.audio.srcObject = null;
     showLive(false);
     setPhase(error ? "error" : "ended", message);
@@ -234,7 +256,44 @@
 
   function setMic(live, on) {
     if (live.track) live.track.enabled = on;
+    if (levelMeter) levelMeter.hidden = !on || !live.level;
     syncState(live);
+  }
+
+  // The microphone's level, read from the stream the page already holds. Pure digital silence is
+  // what a dead microphone sends; real rooms are never at exactly zero.
+  function watchLevel(live) {
+    if (typeof AudioContext === "undefined" || !live.microphone) return;
+    let context;
+    try {
+      context = new AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      context.createMediaStreamSource(live.microphone).connect(analyser);
+      // A context made after an await may start suspended (Safari), and a suspended one reads zeros:
+      // that is no proof of a silent microphone, so only a running one counts.
+      if (context.state === "suspended") context.resume().catch(() => {});
+      const samples = new Float32Array(analyser.fftSize);
+      let silentFor = 0;
+      live.level = { context, timer: setInterval(() => {
+        if (session !== live || !live.track || !live.track.enabled || context.state !== "running") {
+          silentFor = 0;
+          return;
+        }
+        analyser.getFloatTimeDomainData(samples);
+        let peak = 0, sum = 0;
+        for (const x of samples) { peak = Math.max(peak, Math.abs(x)); sum += x * x; }
+        if (levelMeter) levelMeter.value = Math.min(1, Math.sqrt(sum / samples.length) * 8);
+        silentFor = peak === 0 ? silentFor + LEVEL_MS : 0;
+        if (silentFor >= SILENT_MS && !live.silentWarned) {
+          live.silentWarned = true;
+          say("Your microphone sends no sound at all. Check that it is plugged in and not muted, or choose another one in the browser's settings for this site.");
+        }
+        if (silentFor === 0) live.silentWarned = false;
+      }, LEVEL_MS) };
+    } catch {
+      if (context) context.close();
+    }
   }
 
   function interrupt(live = session) {
@@ -546,6 +605,7 @@
         if (session !== live) return;
       }
       mark(answer.label, answer.state || "failed");
+      if (answer.output === DECLINED) trace(live, { kind: "declined", tool: call.name });
       if (session !== live) return;
       if (answer.updated) announceUpdate(call.name);
       send(live, {
@@ -564,6 +624,13 @@
     if (live.holding) live.responseOwed = true;
     else { live.awaiting = true; send(live, { type: "response.create" }); }
     syncState(live);
+  }
+
+  // A turn the model got as sound but the transcriber turned into no words: shown, not left blank,
+  // so that a dead or muted microphone is visible.
+  function unheard(live, key, text) {
+    writeTranscript(live, key, "you", text, false, true);
+    live.items.get(key)?.parentElement?.classList.add("unheard");
   }
 
   function onEvent(live, event) {
@@ -590,7 +657,17 @@
         break;
       case "conversation.item.input_audio_transcription.completed":
         touch(live);
-        writeTranscript(live, event.item_id, "you", event.transcript || "", false, true);
+        if ((event.transcript || "").trim()) {
+          writeTranscript(live, event.item_id, "you", event.transcript, false, true);
+        } else {
+          unheard(live, event.item_id, "(no words recognised)");
+        }
+        trace(live, { kind: "you", text: event.transcript || "" });
+        break;
+      case "conversation.item.input_audio_transcription.failed":
+        touch(live);
+        unheard(live, event.item_id, `(no words recognised: ${event.error?.message || "the transcription failed"})`);
+        trace(live, { kind: "you", text: `[transcription failed] ${event.error?.message || ""}` });
         break;
       case "response.output_audio_transcript.delta":
       case "response.output_text.delta":
@@ -600,10 +677,12 @@
       case "response.output_audio_transcript.done":
         touch(live);
         writeTranscript(live, event.item_id, "model", event.transcript || "", false, true);
+        trace(live, { kind: "model", text: event.transcript || "" });
         break;
       case "response.output_text.done":
         touch(live);
         writeTranscript(live, event.item_id, "model", event.text || "", false, true);
+        trace(live, { kind: "model", text: event.text || "" });
         break;
       case "output_audio_buffer.started":
         live.audioPlaying = true;
@@ -762,6 +841,7 @@
       return;
     }
     [live.track] = live.microphone.getAudioTracks();
+    watchLevel(live);
     setMic(live, false);
     say("Connecting…");
 
@@ -798,6 +878,7 @@
     }
     if (session !== live) return;
     live.id = minted.voiceSessionId;
+    live.trace = minted.trace === true;
     live.lifetimeMs = minted.lifetimeSeconds * 1000;
     live.idleMs = minted.idleSeconds * 1000;
     live.startedAt = performance.now();

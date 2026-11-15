@@ -30,7 +30,7 @@
     },
     {
       "name": "patch_cv",
-      "description": "Edit a CV variant's Typst source by exact text replacement. Needs locked facts. All edits apply and compile, or nothing is stored. Wording is free, and every change is a draft until the owner approves it on their dashboard: no tool can approve. The reply says state, the reviewItems the owner will check, and approvalPath. Compile errors come back as diagnostics to fix and retry. A cv_fact_violation is final and means a reader would see something else than the owner reviews: report the token to the user and never reword around it. Hard facts can't be changed here.",
+      "description": "Edit a CV variant's Typst source by exact text replacement. Needs locked facts. All edits apply and compile, or nothing is stored. Wording is free, and every change is a draft until the owner approves it on their dashboard: no tool can approve. The reply says state, the reviewItems the owner will check, approvalPath, and approvalUrl: the whole link to give the owner, where they read the draft and approve it. Compile errors come back as diagnostics to fix and retry. A cv_fact_violation is final and means a reader would see something else than the owner reviews: report the token to the user and never reword around it. Hard facts can't be changed here.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -102,7 +102,7 @@
     },
     {
       "name": "render_cv_pdf",
-      "description": "Render a CV variant. A draft gives PNG previews stamped DRAFT, NOT APPROVED, no PDF, its reviewItems and approvalPath, and saving it returns cv_approval_required. A revision the owner approved, and hasn't since replaced with a newer approval in this variant, gives the real PDF and clean previews, and can be saved as a document linked to an application. Never call a CV final unless state is approved.",
+      "description": "Render a CV variant. A draft gives PNG previews stamped DRAFT, NOT APPROVED, no PDF, its reviewItems, approvalPath and approvalUrl (the whole link to give the owner for approving it), and saving it returns cv_approval_required. A revision the owner approved, and hasn't since replaced with a newer approval in this variant, gives the real PDF and clean previews, and can be saved as a document linked to an application. Never call a CV final unless state is approved.",
       "inputSchema": {
         "type": "object",
         "properties": {

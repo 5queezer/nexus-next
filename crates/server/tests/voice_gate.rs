@@ -95,6 +95,10 @@ struct Harness {
 }
 
 async fn start(lifetime: Duration, voice_on: bool) -> Harness {
+    start_with(lifetime, voice_on, false).await
+}
+
+async fn start_with(lifetime: Duration, voice_on: bool, trace: bool) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let mut set = nexus()
         .args(["set-passphrase", "--data-dir"])
@@ -128,6 +132,7 @@ async fn start(lifetime: Duration, voice_on: bool) -> Harness {
             voice: "marin".to_owned(),
             base_url: stub_url,
             lifetime,
+            trace,
         },
         renderer: Renderer::InProcess,
         stream_shutdown: watch::Sender::new(false),
@@ -2087,4 +2092,102 @@ async fn voice_cannot_bring_back_text_the_owner_replaced() {
 
     let undone = revert(2, 3).await;
     assert_eq!(undone["state"], "approved", "{undone}");
+}
+
+#[tokio::test]
+async fn a_trace_keeps_every_step_privately_and_only_when_turned_on() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let off = start(Duration::from_secs(900), true).await;
+    let login = off.login().await;
+    let (_, minted) = login.mint().await;
+    assert_eq!(minted["trace"], false);
+    let id = login.voice_id().await;
+    let headers = [
+        ("cookie", login.cookies.as_str()),
+        ("x-nexus-csrf", login.csrf.as_str()),
+        ("x-nexus-voice-session", id.as_str()),
+    ];
+    let step = json!({"kind": "you", "text": "archive example robotics"}).to_string();
+    let (status, body) = login.post("/api/voice/trace", &headers, step.clone()).await;
+    assert_eq!(
+        (status, body["error"]["code"].as_str()),
+        (404, Some("voice_trace_off"))
+    );
+    login.tool(&id, "list_applications", json!({})).await;
+    assert!(!off.dir.path().join(nexus_web::VOICE_TRACE_DIR).exists());
+
+    let on = start_with(Duration::from_secs(900), true, true).await;
+    let app = on.seed().await;
+    let login = on.login().await;
+    let (_, minted) = login.mint().await;
+    assert_eq!(minted["trace"], true);
+    let id = minted["voiceSessionId"].as_str().unwrap().to_owned();
+    let headers = [
+        ("cookie", login.cookies.as_str()),
+        ("x-nexus-csrf", login.csrf.as_str()),
+        ("x-nexus-voice-session", id.as_str()),
+    ];
+    assert_eq!(login.post("/api/voice/trace", &headers, step).await.0, 204);
+    let (status, _) = login.tool(&id, "get_application", json!({"id": app})).await;
+    assert_eq!(status, 200);
+    // A write without the tap is refused, and the refusal is in the trace with what was asked.
+    let (status, _) = login
+        .tool_request(
+            &id,
+            json!({"name": "archive_application", "arguments": {"id": app}}),
+        )
+        .await;
+    assert_eq!(status, 403);
+    let declined = json!({"kind": "declined", "tool": "archive_application"}).to_string();
+    assert_eq!(
+        login.post("/api/voice/trace", &headers, declined).await.0,
+        204
+    );
+    let odd = json!({"kind": "system", "text": "x"}).to_string();
+    assert_eq!(login.post("/api/voice/trace", &headers, odd).await.0, 400);
+    // Another login's page can't write into this session's trace.
+    let other = on.login().await;
+    let foreign = [
+        ("cookie", other.cookies.as_str()),
+        ("x-nexus-csrf", other.csrf.as_str()),
+        ("x-nexus-voice-session", id.as_str()),
+    ];
+    let forged = json!({"kind": "you", "text": "forged"}).to_string();
+    assert_ne!(
+        other.post("/api/voice/trace", &foreign, forged).await.0,
+        204
+    );
+
+    let dir = on.dir.path().join(nexus_web::VOICE_TRACE_DIR);
+    assert_eq!(
+        std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let file = dir.join(format!("{id}.jsonl"));
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let steps: Vec<Value> = std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let kinds: Vec<_> = steps
+        .iter()
+        .map(|step| step["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["session", "you", "call", "refused", "declined"],
+        "{steps:?}"
+    );
+    assert_eq!(steps[1]["text"], "archive example robotics");
+    assert_eq!(steps[2]["tool"], "get_application");
+    assert_eq!(steps[2]["arguments"]["id"], json!(app));
+    assert!(steps[2]["output"].as_str().unwrap().contains("\"id\""));
+    assert_eq!(steps[3]["code"], "voice_confirmation_required");
+    assert!(steps.iter().all(|step| step["at"].is_string()));
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("forged"));
 }

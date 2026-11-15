@@ -118,6 +118,18 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     )
     .await;
     assert!(created.contains("mcp-secret-company"), "{created}");
+    let refused_call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"update_application","arguments":{"id":"1","status":"applied","notes":"mcp-secret-notes"}}}"#;
+    let refused = send(
+        addr,
+        &format!(
+            "POST /api/mcp HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{refused_call}",
+            refused_call.len()
+        ),
+    )
+    .await;
+    assert!(refused.contains("lifecycle_event_required"), "{refused}");
 
     stop.send(()).unwrap();
     server.await.unwrap().unwrap();
@@ -146,4 +158,15 @@ async fn tokens_query_strings_ids_and_bodies_never_reach_the_logs() {
     assert!(logs.contains("route=/applications/{id}"), "{logs}");
     assert!(logs.contains("route=/api/uploads/{token}"), "{logs}");
     assert!(logs.contains("route=unmatched"), "{logs}");
+    // Each tool call has its own line: the tool and the server's own outcome code, nothing sent.
+    assert!(
+        logs.contains(r#"event="mcp_tool" tool="create_application" auth="token" outcome="ok""#),
+        "{logs}"
+    );
+    assert!(
+        logs.contains(
+            r#"tool="update_application" auth="token" outcome="lifecycle_event_required""#
+        ),
+        "{logs}"
+    );
 }

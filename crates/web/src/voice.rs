@@ -16,6 +16,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Extension, Router};
+use chrono::TimeZone;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
@@ -94,6 +95,15 @@ const FORCED_ARGUMENTS: [(&str, &str); 6] = [
     ("render_cv_pdf", "previewPages"),
 ];
 
+/// Where session traces go when they are on: one file per session, readable by the owner only. A
+/// backup holds the database and its blobs, so it never carries them.
+pub const VOICE_TRACE_DIR: &str = "voice-traces";
+/// A trace older than this is removed when the next session starts.
+pub const VOICE_TRACE_DAYS: u64 = 30;
+/// A trace step from the page: one transcript or one declined card.
+pub const MAX_TRACE_BODY_BYTES: usize = 16 * 1024;
+const MAX_TRACE_TEXT: usize = 4000;
+
 const INSTRUCTIONS: &str = include_str!("voice_instructions.txt");
 const TRANSCRIPTION_MODEL: &str = "gpt-4o-mini-transcribe";
 /// The API's minimum for a client secret's lifetime.
@@ -157,6 +167,9 @@ pub struct VoiceConfig {
     /// Enforced here: an ephemeral key's expiry limits when a session can start, not how long it
     /// lives. Tool calls stop at this point and the page closes the connection.
     pub lifetime: Duration,
+    /// `NEXUS_VOICE_TRACE=1`: keep each session's steps in `<data-dir>/voice-traces/`, so that what
+    /// the model heard, said and asked for can be read back and evaluated. Off by default.
+    pub trace: bool,
 }
 
 impl VoiceConfig {
@@ -189,6 +202,8 @@ pub struct Voice {
     /// restart.
     stored: Arc<RwLock<Option<(VoiceKey, Timestamp)>>>,
     key_file: PathBuf,
+    /// Set when traces are on.
+    trace_dir: Option<PathBuf>,
     client: Upstream,
     live: Arc<Mutex<Live>>,
 }
@@ -226,12 +241,48 @@ impl Voice {
                 None
             }
         };
-        Self {
+        let voice = Self {
             client: upstream_client(&config),
+            trace_dir: config.trace.then(|| data_dir.join(VOICE_TRACE_DIR)),
             config,
             stored: Arc::new(RwLock::new(stored)),
             key_file,
             live: Arc::default(),
+        };
+        voice.prune_traces();
+        voice
+    }
+
+    /// Appends one step to a session's trace, when traces are on. It holds the owner's words and
+    /// the calls in full, so it goes to a file only the service user reads, never to the log. A
+    /// failure to write is logged and never fails what it records.
+    fn trace(&self, session: &str, mut step: Value) {
+        let Some(dir) = &self.trace_dir else { return };
+        step["at"] = Value::from(Timestamp::now().as_str());
+        if let Err(error) = append_trace(dir, session, &step) {
+            tracing::warn!(event = "voice_trace_failed", error = %error.kind(), "could not write a voice trace");
+        }
+    }
+
+    /// Removes traces last written more than `VOICE_TRACE_DAYS` ago. Runs when the server starts and
+    /// when a voice session starts. Traces turned off later are left alone: removing them is the
+    /// owner's call, as the deploy notes say.
+    fn prune_traces(&self) {
+        let Some(dir) = &self.trace_dir else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let limit = Duration::from_secs(VOICE_TRACE_DAYS * 86_400);
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|at| at.elapsed().ok())
+                .is_some_and(|age| age > limit);
+            if old {
+                let _ = std::fs::remove_file(entry.path());
+            }
         }
     }
 
@@ -265,9 +316,16 @@ impl Voice {
     /// Asks OpenAI whether it accepts `key`, by opening a session nobody uses: that is the one call
     /// the key has to be good for, it costs nothing, and its secret lapses within a minute.
     pub(crate) async fn check_key(&self, key: &VoiceKey) -> Result<(), MintError> {
-        mint(&self.client, &self.config, key, "", None)
-            .await
-            .map(drop)
+        mint(
+            &self.client,
+            &self.config,
+            key,
+            "",
+            None,
+            chrono::Utc::now().with_timezone(&chrono_tz::UTC),
+        )
+        .await
+        .map(drop)
     }
 
     /// Keeps `key` in the data directory and uses it from the next mint on.
@@ -421,7 +479,14 @@ pub fn tool_definitions() -> Vec<Value> {
         .collect()
 }
 
-fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) -> Value {
+/// What a mint asks OpenAI for: the session's model, instructions, context and tools. Public so the
+/// evaluation runner in `evals/` sends the model exactly what a real session gets.
+pub fn mint_body(
+    config: &VoiceConfig,
+    variant: &str,
+    application_id: Option<&str>,
+    now: chrono::DateTime<chrono_tz::Tz>,
+) -> Value {
     let seconds = config
         .lifetime
         .as_secs()
@@ -437,6 +502,35 @@ fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) 
             "\nThe application on screen has id {id}; use this ID when the person says this application."
         ));
     }
+    // The model has no clock of its own to trust, the person speaks in local time, and Nexus wants
+    // UTC: so the present in both, a worked conversion, and the dates around today by weekday.
+    let utc = now.with_timezone(&chrono::Utc);
+    let ten = now
+        .timezone()
+        .from_local_datetime(&now.date_naive().and_hms_opt(10, 0, 0).expect("a time"))
+        .earliest()
+        .map(|ten| ten.with_timezone(&chrono::Utc).format("%H:%M").to_string())
+        .unwrap_or_default();
+    let days = |range: std::ops::RangeInclusive<i64>| {
+        range
+            .map(|offset| {
+                (now.date_naive() + chrono::Duration::days(offset))
+                    .format("%A %Y-%m-%d")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    context.push_str(&format!(
+        "\nIt is now {} in the person's time zone, {} (UTC{}), which is {} in UTC. So 10:00 there today is {}Z. The last seven days were {}. The next seven are {}.",
+        now.format("%A %Y-%m-%d %H:%M"),
+        now.timezone().name(),
+        now.format("%:z"),
+        utc.format("%Y-%m-%dT%H:%M:%SZ"),
+        ten,
+        days(-7..=-1),
+        days(1..=7),
+    ));
     json!({
         "expires_after": {"anchor": "created_at", "seconds": seconds},
         "session": {
@@ -454,6 +548,35 @@ fn mint_body(config: &VoiceConfig, variant: &str, application_id: Option<&str>) 
             },
         },
     })
+}
+
+fn append_trace(dir: &Path, session: &str, step: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    // Session ids are 64 hex characters, made here, so the name can't leave the directory.
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(dir.join(format!("{session}.jsonl")))?;
+    // One write of the whole line: a transcript and a tool call of one session can arrive at once,
+    // and a value written piece by piece would interleave with the other.
+    let mut line = step.to_string();
+    line.push('\n');
+    file.write_all(line.as_bytes())
+}
+
+/// At most `MAX_TRACE_TEXT` bytes, cut at a character boundary.
+fn trace_text(text: &str) -> String {
+    let mut end = text.len().min(MAX_TRACE_TEXT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
 }
 
 fn failure(status: StatusCode, code: &str, message: &str) -> Response {
@@ -587,6 +710,7 @@ pub(crate) async fn session(
         &key,
         &request.variant,
         application_id,
+        chrono::Utc::now().with_timezone(&cv.tz),
     );
     let secret = match minted.await {
         Ok(secret) => secret,
@@ -610,7 +734,13 @@ pub(crate) async fn session(
         .voice
         .open_session(&token, &request.variant, config.lifetime);
     tracing::info!(event = "voice_session_opened", "voice session opened");
+    cv.voice.prune_traces();
+    cv.voice.trace(
+        &id,
+        json!({"kind": "session", "variant": request.variant, "applicationId": application_id}),
+    );
     axum::Json(json!({
+        "trace": cv.voice.trace_dir.is_some(),
         "voiceSessionId": id,
         "clientSecret": secret,
         "callsUrl": format!("{}/v1/realtime/calls", config.base_url),
@@ -650,6 +780,7 @@ async fn mint(
     key: &VoiceKey,
     variant: &str,
     application_id: Option<&str>,
+    now: chrono::DateTime<chrono_tz::Tz>,
 ) -> Result<String, MintError> {
     let mut authorization =
         HeaderValue::from_str(&format!("Bearer {}", key.0)).map_err(|_| MintError::Failed)?;
@@ -660,7 +791,7 @@ async fn mint(
         .header(header::AUTHORIZATION, authorization)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(
-            mint_body(config, variant, application_id).to_string(),
+            mint_body(config, variant, application_id, now).to_string(),
         )))
         .map_err(|_| MintError::Failed)?;
     let exchange = async {
@@ -841,11 +972,12 @@ pub(crate) async fn tool(
     if cv.voice.config().is_none() {
         return disabled();
     }
-    let Some(variant) = headers
+    let session = headers
         .get(SESSION_HEADER)
         .and_then(|value| value.to_str().ok())
-        .and_then(|id| cv.voice.session_variant(id, Some(&token)))
-    else {
+        .unwrap_or_default()
+        .to_owned();
+    let Some(variant) = cv.voice.session_variant(&session, Some(&token)) else {
         return session_ended();
     };
     let Ok(request) = serde_json::from_slice::<ToolRequest>(&body) else {
@@ -866,6 +998,10 @@ pub(crate) async fn tool(
             tool = logged,
             "refused a voice tool call"
         );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": trace_text(&request.name), "code": "voice_tool_not_allowed"}),
+        );
         return failure(
             StatusCode::FORBIDDEN,
             "voice_tool_not_allowed",
@@ -877,6 +1013,10 @@ pub(crate) async fn tool(
             event = "voice_tool_refused",
             tool = *name,
             "refused a write the owner has not confirmed"
+        );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": *name, "code": "voice_confirmation_required", "arguments": request.arguments}),
         );
         return failure(
             StatusCode::FORBIDDEN,
@@ -901,16 +1041,15 @@ pub(crate) async fn tool(
             tool = *name,
             "refused an argument"
         );
+        cv.voice.trace(
+            &session,
+            json!({"kind": "refused", "tool": *name, "code": "voice_argument_not_allowed", "arguments": arguments}),
+        );
         return error.response();
     }
-    let result = nexus_mcp::call_tool(
-        cv.mcp.clone(),
-        &[SCOPE_TOOLS],
-        "voice",
-        name,
-        Value::Object(arguments),
-    )
-    .await;
+    let ran = Value::Object(arguments);
+    let result =
+        nexus_mcp::call_tool(cv.mcp.clone(), &[SCOPE_TOOLS], "voice", name, ran.clone()).await;
     let is_error = result.is_error == Some(true);
     let output = output_text(&result);
     // Enough to tell a write from a no-op afterwards, and no more: `changed` is the result's own
@@ -928,11 +1067,71 @@ pub(crate) async fn tool(
         dry_run,
         "voice tool call"
     );
+    let output = for_model(&output);
+    cv.voice.trace(
+        &session,
+        json!({"kind": "call", "tool": *name, "arguments": ran, "confirmed": request.confirmed,
+               "isError": is_error, "output": trace_text(&output)}),
+    );
     axum::Json(json!({
-        "output": for_model(&output),
+        "output": output,
         "isError": is_error,
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct TraceStep {
+    kind: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    tool: String,
+}
+
+/// `POST /api/voice/trace`: what only the page sees, for the session's trace: the owner's words as
+/// transcribed (`you`), the model's words (`model`) and a card the owner declined (`declined`).
+pub(crate) async fn trace_step(
+    State(cv): State<Cv>,
+    Extension(FormToken(token)): Extension<FormToken>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !has_csrf(&headers, &token) {
+        return refused_csrf();
+    }
+    if cv.voice.config().is_none() {
+        return disabled();
+    }
+    let session = headers
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if cv.voice.session_variant(session, Some(&token)).is_none() {
+        return session_ended();
+    }
+    if cv.voice.trace_dir.is_none() {
+        return failure(
+            StatusCode::NOT_FOUND,
+            "voice_trace_off",
+            "Voice traces are off on this server.",
+        );
+    }
+    let step = serde_json::from_slice::<TraceStep>(&body)
+        .ok()
+        .filter(|step| matches!(step.kind.as_str(), "you" | "model" | "declined"));
+    let Some(step) = step else {
+        return failure(
+            StatusCode::BAD_REQUEST,
+            "voice_bad_request",
+            "This request was not understood.",
+        );
+    };
+    cv.voice.trace(
+        session,
+        json!({"kind": step.kind, "text": trace_text(&step.text), "tool": trace_text(&step.tool)}),
+    );
+    StatusCode::NO_CONTENT.into_response()
 }
 
 #[cfg(test)]
@@ -1041,8 +1240,12 @@ mod tests {
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),
             lifetime: Duration::from_secs(900),
+            trace: false,
         };
-        let body = mint_body(&config, "default", Some("42"));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-03-04T09:15:00Z")
+            .unwrap()
+            .with_timezone(&chrono_tz::Europe::Madrid);
+        let body = mint_body(&config, "default", Some("42"), now);
         assert_eq!(body["expires_after"]["seconds"], 60);
         assert_eq!(body["session"]["model"], "model-x");
         assert!(body["session"]["audio"]["input"]["turn_detection"].is_null());
@@ -1053,6 +1256,12 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("application on screen has id 42")
+        );
+        assert!(
+            body["session"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("It is now Wednesday 2026-03-04 10:15 in the person's time zone, Europe/Madrid (UTC+01:00), which is 2026-03-04T09:15:00Z in UTC. So 10:00 there today is 09:00Z. The last seven days were Wednesday 2026-02-25,")
         );
         assert!(!body.to_string().contains("sk-synthetic"));
     }
@@ -1092,8 +1301,10 @@ mod tests {
             voice: "marin".to_owned(),
             base_url: OPENAI_BASE_URL.to_owned(),
             lifetime: Duration::from_secs(900),
+            trace: false,
         };
-        let body = mint_body(&config, "", None);
+        let now = chrono::Utc::now().with_timezone(&chrono_tz::UTC);
+        let body = mint_body(&config, "", None, now);
         assert!(
             body["session"]["instructions"]
                 .as_str()
@@ -1107,5 +1318,50 @@ mod tests {
         ));
         arguments.insert("variant".to_owned(), "default".into());
         assert!(force_arguments("get_cv_source", "", &mut arguments).is_ok());
+    }
+
+    #[test]
+    fn trace_lines_stay_whole_when_steps_arrive_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = "ä".repeat(3000);
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let (dir, text) = (dir.path(), &text);
+                scope.spawn(move || {
+                    for n in 0..100 {
+                        append_trace(dir, "s", &json!({"writer": writer, "n": n, "text": text}))
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        let all = std::fs::read_to_string(dir.path().join("s.jsonl")).unwrap();
+        let lines: Vec<_> = all.lines().collect();
+        assert_eq!(lines.len(), 800);
+        assert!(
+            lines
+                .iter()
+                .all(|line| serde_json::from_str::<Value>(line).is_ok())
+        );
+    }
+
+    #[test]
+    fn traces_older_than_the_retention_go_when_the_server_starts() {
+        let data = tempfile::tempdir().unwrap();
+        let dir = data.path().join(VOICE_TRACE_DIR);
+        std::fs::create_dir(&dir).unwrap();
+        let old = std::fs::File::create(dir.join("old.jsonl")).unwrap();
+        old.set_modified(
+            std::time::SystemTime::now() - Duration::from_secs((VOICE_TRACE_DAYS + 1) * 86_400),
+        )
+        .unwrap();
+        std::fs::write(dir.join("new.jsonl"), "{}\n").unwrap();
+        let config = VoiceConfig {
+            trace: true,
+            ..Default::default()
+        };
+        Voice::new(config, data.path());
+        assert!(!dir.join("old.jsonl").exists());
+        assert!(dir.join("new.jsonl").exists());
     }
 }

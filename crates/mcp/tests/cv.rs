@@ -174,6 +174,11 @@ async fn patching_needs_locked_facts_and_the_right_head() {
     );
     assert_eq!(first["state"], "draft", "{first}");
     assert_eq!(first["approvalPath"], "/cv/variants/default#cv-approval");
+    // The whole link too, from the origin the server is reached at, for the owner to tap.
+    assert_eq!(
+        first["approvalUrl"],
+        format!("http://{}/cv/variants/default#cv-approval", server.addr)
+    );
     assert!(first["reviewItems"].is_array(), "{first}");
     assert_eq!(first["truncated"], 0);
 
@@ -678,6 +683,10 @@ async fn a_draft_renders_stamped_with_no_pdf_and_cannot_be_saved() {
     let summary = done.text_json();
     assert_eq!(summary["state"], "draft");
     assert_eq!(summary["approvalPath"], "/cv/variants/default#cv-approval");
+    assert_eq!(
+        summary["approvalUrl"],
+        format!("http://{}/cv/variants/default#cv-approval", server.addr)
+    );
     assert!(summary["reviewItems"].is_array());
     assert!(summary.get("pdfBytes").is_none());
     assert_eq!(done.content[1]["type"], "image");
@@ -690,6 +699,10 @@ async fn a_draft_renders_stamped_with_no_pdf_and_cannot_be_saved() {
     assert_eq!(error["revision"], 1);
     assert_eq!(error["variant"], "default");
     assert_eq!(error["approvalPath"], "/cv/variants/default#cv-approval");
+    assert_eq!(
+        error["approvalUrl"],
+        format!("http://{}/cv/variants/default#cv-approval", server.addr)
+    );
     assert_eq!(
         server
             .call("list_documents", json!({"applicationId": app}))
@@ -716,6 +729,7 @@ async fn an_approved_render_returns_a_resource_and_images_and_can_save_a_documen
     assert_eq!(summary["state"], "approved");
     assert_eq!(summary["reviewItems"], json!([]));
     assert_eq!(summary["approvalPath"], Value::Null);
+    assert_eq!(summary["approvalUrl"], Value::Null);
     assert_eq!(done.content[1]["type"], "resource");
     assert_eq!(done.content[1]["resource"]["mimeType"], "application/pdf");
     assert_eq!(

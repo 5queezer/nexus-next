@@ -9,7 +9,8 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
 class FakeElement {
   constructor() {
     this.children = [];
-    this.classList = { add() {}, remove() {} };
+    const classes = new Set();
+    this.classList = { add: (c) => classes.add(c), remove: (c) => classes.delete(c), contains: (c) => classes.has(c) };
     this.dataset = {};
     this.hidden = false;
     this.listeners = new Map();
@@ -26,6 +27,7 @@ class FakeElement {
   }
 
   append(...children) {
+    for (const child of children) if (child && typeof child === "object") child.parentElement = this;
     this.children.push(...children);
   }
 
@@ -66,6 +68,7 @@ function harness(options = {}) {
   const toolResponse = options.toolResponse;
   const lookup = options.lookup;
   const sessionResponse = options.sessionResponse;
+  const traceOn = options.trace === true;
   const ids = [
     "voice",
     "voice-status",
@@ -107,6 +110,8 @@ function harness(options = {}) {
   const stream = { getAudioTracks: () => [track], getTracks: () => [track] };
   const toolCalls = [];
   const lookups = [];
+  const traces = [];
+  const intervals = [];
   const fetch = async (url, options = {}) => {
     if (url === "/api/voice/session") {
       if (sessionResponse) return sessionResponse;
@@ -118,10 +123,15 @@ function harness(options = {}) {
           idleSeconds: 300,
           lifetimeSeconds: 900,
           voiceSessionId: "voice-1",
+          trace: traceOn,
         }),
       };
     }
     if (url === "https://calls.test") return { ok: true, text: async () => "answer" };
+    if (url === "/api/voice/trace") {
+      traces.push({ session: options.headers?.["X-Nexus-Voice-Session"], ...JSON.parse(options.body) });
+      return { ok: true, status: 204 };
+    }
     if (url === "/api/voice/tool") {
       const request = JSON.parse(options.body);
       // The page's own read for a card's title, kept apart from the calls the model made.
@@ -165,11 +175,14 @@ function harness(options = {}) {
     fetch,
     navigator: { mediaDevices: { getUserMedia: options.getUserMedia || (async () => stream) } },
     performance: { now: () => now },
-    setInterval: () => 1,
+    setInterval: (fn, ms) => { intervals.push([fn, ms]); return intervals.length; },
+    AudioContext: options.AudioContext,
+    Float32Array,
+    Math,
     setTimeout: () => 1,
     window,
   });
-  return { channel, elements, toolCalls, lookups, updates, document, documentListeners, track, advance: (ms) => { now += ms; } };
+  return { channel, elements, toolCalls, lookups, traces, updates, intervals, document, documentListeners, track, advance: (ms) => { now += ms; } };
 }
 
 async function connect(h) {
@@ -696,4 +709,79 @@ test("a dry run of a write that waits for a tap is shown and sent as the real ch
   assert.deepEqual(h.toolCalls[0], { name: "archive_application", arguments: { id: "14" }, confirmed: true });
   assert.equal(tagOf(card), "Saved");
   assert.deepEqual(h.updates, ["archive_application", "append_application_note"]);
+});
+
+test("the page sends its steps to the trace only when the server keeps traces", async () => {
+  const said = (text) => ({ data: JSON.stringify({
+    type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: text,
+  }) });
+  const answered = (text) => ({ data: JSON.stringify({ type: "response.output_text.done", item_id: "m1", text }) });
+
+  const off = harness();
+  await connect(off);
+  await off.channel.emit("message", said("archive example robotics"));
+  assert.deepEqual(off.traces, []);
+
+  const on = harness({ trace: true });
+  await connect(on);
+  await on.channel.emit("message", said("archive example robotics"));
+  await on.channel.emit("message", answered("Which one?"));
+  assert.deepEqual(on.traces, [
+    { session: "voice-1", kind: "you", text: "archive example robotics" },
+    { session: "voice-1", kind: "model", text: "Which one?" },
+  ]);
+});
+
+test("a turn transcribed as nothing, or not at all, shows instead of an empty bubble", async () => {
+  const h = harness();
+  await connect(h);
+  await h.channel.emit("message", { data: JSON.stringify({
+    type: "conversation.item.input_audio_transcription.completed", item_id: "u1", transcript: "  ",
+  }) });
+  await h.channel.emit("message", { data: JSON.stringify({
+    type: "conversation.item.input_audio_transcription.failed", item_id: "u2", error: { message: "Audio too short" },
+  }) });
+  const rows = h.elements["voice-transcript"].children;
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].children[1].textContent, /no words recognised/);
+  assert.ok(rows[0].classList.contains("unheard"));
+  assert.match(rows[1].children[1].textContent, /no words recognised: Audio too short/);
+});
+
+test("a microphone that sends only zeros is named after three seconds with it on", async () => {
+  class FakeContext {
+    constructor() { this.state = "running"; }
+    createAnalyser() { return { fftSize: 0, getFloatTimeDomainData: (a) => a.fill(0) }; }
+    createMediaStreamSource() { return { connect() {} }; }
+    close() {}
+  }
+  const h = harness({ AudioContext: FakeContext });
+  await connect(h);
+  const [level] = h.intervals.filter(([, ms]) => ms === 100).map(([fn]) => fn);
+  assert.ok(level, "the page watches the level");
+  for (let i = 0; i < 40; i++) level();
+  assert.doesNotMatch(h.elements["voice-status"].textContent, /no sound/, "not while the microphone is off");
+  h.elements["voice-handsfree"].checked = true;
+  await h.elements["voice-handsfree"].emit("change");
+  for (let i = 0; i < 29; i++) level();
+  assert.doesNotMatch(h.elements["voice-status"].textContent, /no sound/);
+  level();
+  assert.match(h.elements["voice-status"].textContent, /sends no sound/);
+});
+
+test("a suspended audio context reads zeros and is not taken for a silent microphone", async () => {
+  class Suspended {
+    constructor() { this.state = "suspended"; }
+    createAnalyser() { return { fftSize: 0, getFloatTimeDomainData: (a) => a.fill(0) }; }
+    createMediaStreamSource() { return { connect() {} }; }
+    resume() { return Promise.resolve(); }
+    close() {}
+  }
+  const h = harness({ AudioContext: Suspended });
+  await connect(h);
+  const [level] = h.intervals.filter(([, ms]) => ms === 100).map(([fn]) => fn);
+  h.elements["voice-handsfree"].checked = true;
+  await h.elements["voice-handsfree"].emit("change");
+  for (let i = 0; i < 60; i++) level();
+  assert.doesNotMatch(h.elements["voice-status"].textContent, /no sound/);
 });
