@@ -1,5 +1,5 @@
 {
- "about": "Agent labels by the lead agent (Claude Opus 5.5, not a person; 2026-11-15) for a seeded random sample (seed 42) of 20 runs of the corrected baseline 20261115T190240Z; the 17 with a code verdict are kept. Synthetic cases; model outputs as recorded. A label is the reader's verdict for the session, independent of the evaluator. Before the time evaluator learned about invented times for events done now, it passed E01 and E02 (false passes): fixed, see test_a_midnight_guess_for_something_done_now_fails.",
+ "about": "Agent labels by the lead agent (Claude Opus 5.5, not a person; 2026-11-15) for a seeded random sample (seed 42) of 20 runs of the corrected baseline 20261115T190240Z; the 17 with a code verdict are kept. Synthetic cases; model outputs as recorded. A label is the reader's verdict for the session, independent of the evaluator. Before the time evaluator learned about invented times for events done now, it passed E01 and E02 (false passes): fixed, see test_a_midnight_guess_for_something_done_now_fails. The posting in the case mcp-new-posting-not-reused (title, work mode, country) was replaced afterwards, here as in the case, by invented values, because the first ones repeated a real application.",
  "transcripts": [
   {
    "case": "time-followup-friday",

@@ -43,11 +43,21 @@ class Statistics(unittest.TestCase):
         self.assertAlmostEqual(ne.corrected_rate(0.48, 0.9, 0.8), 0.4, places=6)
         self.assertTrue(ne.corrected_rate(0.5, 0.5, 0.5) != ne.corrected_rate(0.5, 0.5, 0.5))  # nan: useless judge
 
-    def test_corrected_interval_contains_the_point(self):
+    def test_corrected_interval_contains_the_point_and_is_never_narrower_than_the_raw_one(self):
         clusters = [[True, True, True]] * 10 + [[False, False, True]] * 5 + [[False, False, False]] * 3
         pairs = [(True, True)] * 18 + [(True, False)] * 2 + [(False, False)] * 17 + [(False, True)] * 3
-        point, lo, hi = ne.corrected_ci(clusters, pairs, iters=500)
+        point, lo, hi = ne.corrected_interval(clusters, pairs, iters=500)
         self.assertTrue(lo <= point <= hi)
+        _, raw_lo, raw_hi = ne.clustered(clusters)
+        self.assertGreaterEqual(hi - lo, raw_hi - raw_lo)
+
+    def test_one_case_keeps_its_wide_interval_after_correction(self):
+        # The reviewer's case: one case, five runs, four passing. Correction may not make it narrow.
+        pairs = [(True, True)] * 38 + [(True, False)] * 2 + [(False, False)] * 40
+        _, lo, hi = ne.corrected_interval([[True, True, True, True, False]], pairs, iters=500)
+        _, raw_lo, raw_hi = ne.clustered([[True, True, True, True, False]])
+        self.assertLess(lo, 0.2)
+        self.assertGreaterEqual(hi - lo, (raw_hi - raw_lo) * 0.95)
 
     def test_runs_of_one_case_do_not_narrow_the_interval(self):
         # Five cases run three times each, one failing every time: as wide as five observations.
@@ -298,6 +308,14 @@ class SimulatedNexus(unittest.TestCase):
         self.assertTrue(err)
         self.assertEqual(json.loads(out)["error"]["code"], "voice_owner_declined")
         self.assertIsNone(world.apps["19"]["archivedAt"])
+
+    def test_a_draft_comes_with_the_whole_approval_link_as_the_server_gives_it(self):
+        world = ne.World(CASES["mcp-approval-link"], "mcp")
+        out, err = world.call("patch_cv", {"expectedRevision": 3, "summary": "s",
+                                           "edits": [{"oldText": "about eight", "newText": "eight"}]}, "t")
+        reply = json.loads(out)
+        self.assertEqual(reply["approvalPath"], "/cv/variants/default#cv-approval")
+        self.assertEqual(reply["approvalUrl"], "https://nexus.example.org/cv/variants/default#cv-approval")
 
     def test_a_note_without_time_takes_the_call_time(self):
         world = ne.World(CASES["time-note-no-invented-time"], "mcp")

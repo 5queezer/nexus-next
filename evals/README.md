@@ -66,8 +66,9 @@ are relative to the run (`day-1 15:00`, `next friday 10:00`). Run between 10:00 
 time, Tuesday to Sunday.
 
 Pinned models are in `nexus_evals.PINNED`: a model change is a code change, and the numbers in
-`results/` hold only for the models they name. The MCP side uses a stand-in agent: gpt-6-sol, the
-model family of most real Hermes sessions, with every served tool description and
+`results/` hold only for the models they name. The MCP side uses a stand-in agent: gpt-6-sol, one of
+the model families in the real Hermes sessions (gpt-6-astra 27, gpt-5.6-sol 15, claude-sonnet-5-5 14, gpt-6-sol
+11 of the exported sessions), with every served tool description and
 `agent_prompt.txt`. It measures what the descriptions make such a model do, not Hermes itself.
 
 The simulated Nexus answers as the server does where a case can reach it: date rules from

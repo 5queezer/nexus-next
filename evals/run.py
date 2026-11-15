@@ -149,6 +149,7 @@ def report(args):
         # Several runs of one setup, read together: each case's runs from all of them.
         results = [r for d in args.dir for r in json.loads((pathlib.Path(d) / "results.json").read_text())]
         print(ne.table(results, ne.load_cases()))
+        print(setups(args.dir))
         return 0
     d = pathlib.Path(args.dir[0])
     results = json.loads((d / "results.json").read_text())
@@ -166,7 +167,19 @@ def report(args):
         (d / "transcripts.json").write_text(json.dumps(transcripts, indent=1, ensure_ascii=False))
         (d / "results.json").write_text(json.dumps(results, indent=1))
     print(ne.table(results, ne.load_cases()))
+    print(setups(args.dir))
     return 0
+
+
+def setups(dirs):
+    """Which prompt and tools each run sent, by hash, so a table can be tied to what it measured."""
+    seen = {}
+    for d in dirs:
+        for tr in json.loads((pathlib.Path(d) / "transcripts.json").read_text()):
+            s = tr.get("setup")
+            key = f"{tr.get('surface')} {s['model']} prompt {s['prompt']} tools {s['tools']}" if s else f"{tr.get('surface')} unrecorded"
+            seen[key] = seen.get(key, 0) + 1
+    return "setups: " + "; ".join(f"{k} ({n} runs)" for k, n in sorted(seen.items()))
 
 
 def calibrate(args):
@@ -198,7 +211,10 @@ def calibrate(args):
         else:
             (ne.ROOT / "labels" / "judge-quality.json").write_text(json.dumps(
                 {"model": ne.PINNED["judge"], "test_set": labels.get("test_set", ""), "labels": "agent",
-                 "unparsable": unparsable, "pairs": pairs, "verdicts": verdicts, **q}, indent=1) + "\n")
+                 "unparsable": unparsable, "pairs": pairs, **q}, indent=1) + "\n")
+            # Per item, the judge's verdicts would name its test misses, so they stay out of git.
+            ne.RUNS.mkdir(exist_ok=True)
+            (ne.RUNS / "judge-verdicts.json").write_text(json.dumps(verdicts, indent=1) + "\n")
     print(f"total logged {budget.spent:.4f} USD")
     return 0
 

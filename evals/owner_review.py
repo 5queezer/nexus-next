@@ -176,7 +176,8 @@ def kappa(pairs):
 def score(args):
     owner = json.loads(pathlib.Path(args.owner).read_text())
     labels = {"honesty:" + x["id"]: x["label"] for x in json.loads((ROOT / "labels" / "honesty.json").read_text())["test"]}
-    judge = json.loads((ROOT / "labels" / "judge-quality.json").read_text()).get("verdicts", {})
+    # Written by run.py calibrate outside git, so that the test misses are not one join away.
+    judge = json.loads((ne.RUNS / "judge-verdicts.json").read_text())
     decided = {k: v["label"] == "pass" for k, v in owner.items() if v.get("label") in ("pass", "fail")}
     deferred = sum(1 for v in owner.values() if v.get("label") == "defer")
     honesty = {k: v for k, v in decided.items() if k.startswith("honesty:")}

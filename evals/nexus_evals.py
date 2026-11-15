@@ -7,12 +7,14 @@ Every input here is synthetic. Real traces stay out of this directory: see READM
 
 import copy
 import datetime as dt
+import hashlib
 import json
 import math
 import os
 import pathlib
 import random
 import re
+import shutil
 import subprocess
 import urllib.request
 
@@ -45,6 +47,8 @@ TAPPED = {
     "update_document_metadata", "revert_cv",
 }
 LIFECYCLE = {"status", "appliedAt", "lastContact", "followUpAt", "currentStage"}
+# The origin the simulated server is reached at, as NEXUS_PUBLIC_BASE_URL would give it.
+SIM_ORIGIN = "https://nexus.example.org"
 EVENT_TYPES = {
     "opportunity_discovered", "application_submitted", "recruiter_contacted", "outbound_contact_recorded",
     "reply_received", "stage_changed", "interview_invited", "interview_scheduled", "interview_completed",
@@ -86,27 +90,27 @@ def judge_quality(pairs):
     }
 
 
-def corrected_ci(clusters, test_pairs, iters=2000, seed=7):
-    """Judge-corrected pass rate with a bootstrap 95% interval that resamples whole cases (the runs of
-    one case are not independent) and the held-out labels the judge's error rates come from.
+def corrected_interval(clusters, test_pairs, iters=2000, seed=7):
+    """Judge-corrected pass rate and 95% interval. The case-level Wilson bounds (`clustered`) are
+    corrected with the judge's error rates, which are resampled from the held-out labels, so the
+    interval keeps the width that few cases give and adds the judge's own uncertainty.
     `clusters` is one list of verdicts per case."""
     rng = random.Random(seed)
+    p, lo, hi = clustered(clusters)
     q = judge_quality(test_pairs)
-    flat = [v for c in clusters for v in c]
-    point = corrected_rate(sum(flat) / len(flat), q["tpr"], q["tnr"])
-    samples = []
+    point = corrected_rate(p, q["tpr"], q["tnr"])
+    lows, highs = [], []
     for _ in range(iters):
-        runs = [v for _ in clusters for v in rng.choice(clusters)]
-        pairs = [rng.choice(test_pairs) for _ in test_pairs]
-        qq = judge_quality(pairs)
-        v = corrected_rate(sum(runs) / len(runs), qq["tpr"], qq["tnr"])
-        if not math.isnan(v):
-            samples.append(v)
-    samples.sort()
-    if not samples or samples[0] == samples[-1]:
-        # The labels show the judge erring on neither side within reach of this rate: no interval.
+        qq = judge_quality([rng.choice(test_pairs) for _ in test_pairs])
+        a, b = corrected_rate(lo, qq["tpr"], qq["tnr"]), corrected_rate(hi, qq["tpr"], qq["tnr"])
+        if not (math.isnan(a) or math.isnan(b)):
+            lows.append(a)
+            highs.append(b)
+    if not lows:
         return point, float("nan"), float("nan")
-    return point, samples[int(0.025 * len(samples))], samples[int(0.975 * len(samples)) - 1]
+    lows.sort()
+    highs.sort()
+    return point, lows[int(0.025 * len(lows))], highs[int(0.975 * len(highs)) - 1]
 
 
 def clustered(clusters):
@@ -687,12 +691,21 @@ class World:
         cv.update(source=source, revision=cv["revision"] + 1, state="draft")
         variant = args.get("variant") or "default"
         return {"revision": cv["revision"], "state": "draft", "reviewItems": [], "truncated": 0,
-                "approvalPath": f"/cv/variants/{variant}?view=review", "pageCount": 1}
+                **self.approval(variant), "pageCount": 1}
+
+    def approval(self, variant):
+        """approvalPath as cv_source.rs words it, and approvalUrl from the origin the simulated
+        server is reached at, as cv_source.rs approval_url builds it."""
+        path = f"/cv/variants/{variant}#cv-approval"
+        return {"approvalPath": path, "approvalUrl": SIM_ORIGIN + path}
 
     def t_render_cv_pdf(self, args, at):
         variant = args.get("variant") or "default"
+        if self.cv["state"] == "approved":
+            return {"state": "approved", "reviewItems": [], "truncated": 0, "pageCount": 1,
+                    "approvalPath": None, "approvalUrl": None}
         return {"state": self.cv["state"], "reviewItems": [], "truncated": 0, "pageCount": 1,
-                "approvalPath": None if self.cv["state"] == "approved" else f"/cv/variants/{variant}?view=review"}
+                **self.approval(variant)}
 
 
 def diverges(case, tr):
@@ -815,18 +828,36 @@ def openai_key():
     return key
 
 
+_BUILT = False
+
+
 def voice_session(case, variant_override=None):
-    """The session body Nexus would mint, from the real code (crates/web/examples/voice_session.rs)."""
+    """The session body Nexus would mint, from the real code (crates/web/examples/voice_session.rs).
+    The example is built once per process, always: the prompt is compiled in, so a binary left from
+    before an edit would send the old prompt."""
+    global _BUILT
+    if not _BUILT:
+        build = ["cargo", "build", "-q", "-p", "nexus-web", "--example", "voice_session"]
+        if shutil.which("lessor"):
+            build = ["lessor", "hold", "build", "--need", "cores=4", "--wait", "600", "--", *build]
+        subprocess.run(build, cwd=REPO, check=True)
+        _BUILT = True
     screen = case.get("screen", {})
     args = [variant_override if variant_override is not None else screen.get("variant", "")]
     if screen.get("application"):
         args.append(str(screen["application"]))
     exe = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", REPO / "target")) / "debug/examples/voice_session"
-    if not exe.exists():
-        subprocess.run(["cargo", "build", "-q", "-p", "nexus-web", "--example", "voice_session"], cwd=REPO, check=True)
     session = json.loads(subprocess.run([str(exe), *args], capture_output=True, text=True, check=True).stdout)["session"]
     session["model"] = PINNED["voice"]
     return session
+
+
+def setup_of(model, instructions, tools):
+    """What a run sent, as hashes: the instructions without the line that names the present, and the
+    tools. A report shows them, so that a result can be tied to the prompt it measured."""
+    static = "\n".join(l for l in instructions.splitlines() if not l.startswith("It is now"))
+    digest = lambda text: hashlib.sha256(text.encode()).hexdigest()[:12]
+    return {"model": model, "prompt": digest(static), "tools": digest(json.dumps(tools, sort_keys=True))}
 
 
 async def run_voice(case, budget, run_id):
@@ -837,7 +868,7 @@ async def run_voice(case, budget, run_id):
     world = World(case, "voice")
     clock = run_now(case)
     tr = {"case": case["id"], "run": run_id, "surface": "voice", "model": session["model"], "now": clock.isoformat(),
-          "steps": []}
+          "setup": setup_of(session["model"], session["instructions"], session["tools"]), "steps": []}
     url = f"wss://api.openai.com/v1/realtime?model={session['model']}"
     headers = {"Authorization": f"Bearer {openai_key()}"}
     async with websockets.connect(url, additional_headers=headers, max_size=16 * 2**20) as ws:
@@ -926,8 +957,10 @@ def run_mcp(case, budget, run_id):
     system = (ROOT / "agent_prompt.txt").read_text().replace("{now}", now.isoformat()).replace(
         "{weekday}", now.strftime("%A"))
     world = World(case, "mcp")
-    tr = {"case": case["id"], "run": run_id, "surface": "mcp", "model": model, "now": now.isoformat(), "steps": []}
     clock, tools, previous = now, mcp_tools(), None
+    template = (ROOT / "agent_prompt.txt").read_text()
+    tr = {"case": case["id"], "run": run_id, "surface": "mcp", "model": model, "now": now.isoformat(),
+          "setup": setup_of(model, template, tools), "steps": []}
     turns, answers = list(case["turns"]), list(case.get("answers", []))
     while turns:
         turn, start = turns.pop(0), len(tr["steps"])
@@ -1010,7 +1043,7 @@ def table(results, cases):
         p, lo, hi = clustered(clusters)
         lines.append(f"{key:38} {len(clusters):>5} {runs:>4} {passed:>4} {100 * p:5.1f}%  [{100 * lo:.1f}, {100 * hi:.1f}]")
         if key.endswith("/ honest") and pairs:
-            cp, clo, chi = corrected_ci(clusters, pairs)
-            ci = "interval n/a, read the raw one" if math.isnan(clo) else f"[{100 * clo:.1f}, {100 * chi:.1f}] bootstrap"
+            cp, clo, chi = corrected_interval(clusters, pairs)
+            ci = "interval n/a, read the raw one" if math.isnan(clo) else f"[{100 * clo:.1f}, {100 * chi:.1f}]"
             lines.append(f"{'  corrected for judge error':38} {'':>5} {'':>4} {'':>4} {100 * cp:5.1f}%  {ci}")
     return "\n".join(lines)
