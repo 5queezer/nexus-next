@@ -26,7 +26,7 @@ pub use config::{
     AuthConfig, ConfigError, TrustedProxy, normalize_base_url, owner_passphrase_file,
 };
 pub use oauth::{SENSITIVE_CONSENT_VERSION, effective_mcp_scopes, require_mcp_auth};
-pub use session::require_owner_session;
+pub use session::{passphrase_tag, require_owner_session};
 pub use state::{AuthState, ClientKey};
 
 /// Larger than any real login, consent or token request, and enough for a long `state`.

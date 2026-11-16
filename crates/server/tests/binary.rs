@@ -529,6 +529,50 @@ async fn set_passphrase_serve_login_dashboard_and_passphrase_change() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_login_with_the_old_passphrase_ends_at_the_restart_after_a_host_change() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(set_passphrase(dir.path(), PASSPHRASE).status.success());
+    let server = Server::start(dir.path(), &[]);
+    let addr = server.addr;
+    let mut owner = Browser::default();
+    assert_eq!(owner.login(addr, PASSPHRASE, &[]).await.status, 303);
+
+    // The passphrase is suspected leaked and changed on the host while the server runs.
+    let output = set_passphrase(dir.path(), NEW_PASSPHRASE);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    assert_eq!(owner.send(addr, "GET", "/", &[], "").await.status, 303);
+    // Until the restart the server knows only the old hash, so its holder can still log in.
+    let mut holder = Browser::default();
+    assert_eq!(holder.login(addr, PASSPHRASE, &[]).await.status, 303);
+    assert_eq!(holder.send(addr, "GET", "/", &[], "").await.status, 200);
+    server.stop();
+
+    let sessions = nexus()
+        .args([
+            "sessions",
+            "list",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let listed = text(&sessions.stdout);
+    assert_eq!(listed.lines().count(), 1, "{listed}");
+    assert!(listed.contains("earlier passphrase: refused"), "{listed}");
+
+    let server = Server::start(dir.path(), &[]);
+    let addr = server.addr;
+    assert_eq!(
+        holder.send(addr, "GET", "/", &[], "").await.status,
+        303,
+        "the old passphrase's session outlived the restart"
+    );
+    assert_eq!(owner.login(addr, NEW_PASSPHRASE, &[]).await.status, 303);
+    assert_eq!(owner.send(addr, "GET", "/", &[], "").await.status, 200);
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_trusted_ip_header_separates_clients_behind_a_tunnel() {
     let dir = tempfile::tempdir().unwrap();
     assert!(set_passphrase(dir.path(), PASSPHRASE).status.success());

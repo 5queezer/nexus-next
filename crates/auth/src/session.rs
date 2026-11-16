@@ -48,6 +48,7 @@ const LOGOUT_CSRF_PURPOSE: &str = "logout-csrf";
 const FORM_CSRF_PURPOSE: &str = "form-csrf";
 const PASSPHRASE_CSRF_PURPOSE: &str = "passphrase-csrf";
 const DEVICE_PURPOSE: &str = "known-device";
+const SESSION_PASSPHRASE_PURPOSE: &str = "session-passphrase";
 /// The limiter bucket of browsers holding the device cookie.
 const DEVICE_KEY: &str = "known-device";
 
@@ -168,9 +169,10 @@ pub(crate) fn with_cookie(
 /// revocation from the command line ends them at the next request.
 pub(crate) async fn current_session(state: &AuthState, headers: &HeaderMap) -> Option<String> {
     let hash = sha256_hex(cookie_value(headers, SESSION_COOKIE)?);
+    let tag = current_passphrase_tag(state);
     let found = async {
         let mut conn = state.0.db.conn().await?;
-        owner_login::live_session(&mut conn, &hash).await
+        owner_login::live_session(&mut conn, &hash, &tag).await
     };
     match found.await {
         Ok(session) => session.map(|_| hash),
@@ -181,10 +183,24 @@ pub(crate) async fn current_session(state: &AuthState, headers: &HeaderMap) -> O
     }
 }
 
-/// Starts a session and returns the cookie value and its lifetime in seconds.
+/// Names a passphrase hash without revealing it. A session carries the tag of the hash its login
+/// was checked against and counts only while the server's hash has that tag, so a session made
+/// with an old passphrase ends at the change, or at the restart after a change on the host,
+/// however the timing falls.
+pub fn passphrase_tag(hash: &str) -> String {
+    sign(hash.as_bytes(), SESSION_PASSPHRASE_PURPOSE, "")
+}
+
+pub(crate) fn current_passphrase_tag(state: &AuthState) -> String {
+    passphrase_tag(&state.0.passphrase_hash.lock().unwrap())
+}
+
+/// Starts a session under the passphrase `tag` and returns the cookie value and its lifetime in
+/// seconds.
 pub(crate) async fn create_session(
     state: &AuthState,
     remembered: bool,
+    tag: &str,
 ) -> nexus_core::error::Result<(String, u64)> {
     let id = hex::encode(random_bytes());
     let days = if remembered {
@@ -197,6 +213,7 @@ pub(crate) async fn create_session(
     owner_login::insert_session(
         &mut tx,
         &sha256_hex(&id),
+        tag,
         remembered,
         &expires_at,
         MAX_SESSIONS,
@@ -323,19 +340,21 @@ pub(crate) async fn login_page(
 }
 
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
-/// a change can follow before anyone else's attempt is checked. `Err` carries the wait if the
-/// backoff refused the attempt, and `None` if the passphrase was wrong.
+/// a change can follow before anyone else's attempt is checked, and the tag of the hash the
+/// passphrase matched. `Err` carries the wait if the backoff refused the attempt, and `None` if the
+/// passphrase was wrong.
 pub(crate) async fn attempt(
     state: &AuthState,
     client: &str,
     known_device: bool,
     passphrase: String,
-) -> Result<OwnedSemaphorePermit, Option<u64>> {
+) -> Result<(OwnedSemaphorePermit, String), Option<u64>> {
     reserve_attempt(state, client, known_device).map_err(Some)?;
 
     let slot = state.0.hash_slot.clone().acquire_owned().await;
     let slot = slot.map_err(|_| None)?;
     let hash = state.0.passphrase_hash.lock().unwrap().clone();
+    let tag = passphrase_tag(&hash);
     let verified = tokio::task::spawn_blocking(move || verify_passphrase(&hash, &passphrase))
         .await
         .unwrap_or(false);
@@ -349,7 +368,7 @@ pub(crate) async fn attempt(
         return Err(None);
     }
     attempt_succeeded(state, client, known_device);
-    Ok(slot)
+    Ok((slot, tag))
 }
 
 /// Counts a login attempt, by passphrase or passkey, on the backoff. `Err` is the wait.
@@ -483,16 +502,16 @@ pub(crate) async fn login(
 
     let known_device = known_device(&state, &headers);
     let passphrase = form.get("passphrase").cloned().unwrap_or_default();
-    match attempt(&state, &client, known_device, passphrase).await {
-        Ok(_) => {}
+    let tag = match attempt(&state, &client, known_device, passphrase).await {
+        Ok((_, tag)) => tag,
         Err(Some(retry)) => return locked_out(respond, retry),
         Err(None) => {
             return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
         }
-    }
+    };
 
     let remembered = form.get("remember").is_some_and(|value| value == "1");
-    let (session, max_age) = match create_session(&state, remembered).await {
+    let (session, max_age) = match create_session(&state, remembered, &tag).await {
         Ok(session) => session,
         Err(error) => {
             tracing::error!(event = "session_store_failed", %error, "could not store the owner's session");
@@ -652,7 +671,7 @@ pub(crate) async fn change_passphrase(
     let known_device = cookie_value(&headers, DEVICE_COOKIE)
         .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
     let slot = match attempt(&state, &client, known_device, field("current")).await {
-        Ok(slot) => slot,
+        Ok((slot, _)) => slot,
         Err(Some(retry)) => return locked_out(respond, retry),
         Err(None) => {
             return respond(
@@ -884,7 +903,9 @@ mod tests {
     #[tokio::test]
     async fn an_expired_session_is_refused() {
         let (state, _dir) = state().await;
-        let (id, _) = create_session(&state, false).await.unwrap();
+        let (id, _) = create_session(&state, false, &current_passphrase_tag(&state))
+            .await
+            .unwrap();
         let headers = cookie_headers(&id);
         assert!(current_session(&state, &headers).await.is_some());
 
@@ -901,11 +922,15 @@ mod tests {
     #[tokio::test]
     async fn sessions_are_stored_hashed_and_capped_oldest_first() {
         let (state, _dir) = state().await;
-        let (first, _) = create_session(&state, false).await.unwrap();
+        let (first, _) = create_session(&state, false, &current_passphrase_tag(&state))
+            .await
+            .unwrap();
         assert_eq!(stored_hashes(&state).await, [sha256_hex(&first)]);
         for _ in 0..MAX_SESSIONS {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            create_session(&state, false).await.unwrap();
+            create_session(&state, false, &current_passphrase_tag(&state))
+                .await
+                .unwrap();
         }
         assert_eq!(stored_hashes(&state).await.len() as i64, MAX_SESSIONS);
         assert!(
@@ -916,10 +941,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_ends_with_the_passphrase_it_was_made_under() {
+        let (first, dir) = state().await;
+        let old_tag = current_passphrase_tag(&first);
+        let (id, _) = create_session(&first, true, &old_tag).await.unwrap();
+        let headers = cookie_headers(&id);
+
+        // The host changed the passphrase; the server restarts with the new hash.
+        let db = Db::open(dir.path()).await.unwrap();
+        let restarted = AuthState::new(
+            db,
+            AuthConfig {
+                public_base_url: BASE.to_owned(),
+                owner_passphrase_hash:
+                    "$argon2id$v=19$m=8,t=1,p=1$b3RoZXJzYWx0$AAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                owner_passphrase_file: None,
+                trusted_proxy: None,
+                redirect_hosts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(current_session(&restarted, &headers).await.is_none());
+
+        // A login checked against the old hash that stores its session only after the change in
+        // this process (the race of a slow write) gets a dead session too.
+        *first.0.passphrase_hash.lock().unwrap() =
+            "$argon2id$v=19$m=8,t=1,p=1$dGhpcmRzYWx0$AAAAAAAAAAAAAAAAAAAAAA".to_owned();
+        let (late, _) = create_session(&first, true, &old_tag).await.unwrap();
+        assert!(
+            current_session(&first, &cookie_headers(&late))
+                .await
+                .is_none()
+        );
+        let (fresh, _) = create_session(&first, true, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
+        assert!(
+            current_session(&first, &cookie_headers(&fresh))
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            stored_hashes(&first).await,
+            [sha256_hex(&fresh)],
+            "old ones pruned"
+        );
+    }
+
+    #[tokio::test]
     async fn sessions_outlast_a_restart_and_remembered_ones_last_thirty_days() {
         let (first, dir) = state().await;
-        let (short, short_age) = create_session(&first, false).await.unwrap();
-        let (long, long_age) = create_session(&first, true).await.unwrap();
+        let (short, short_age) = create_session(&first, false, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
+        let (long, long_age) = create_session(&first, true, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
         assert_eq!(short_age, 7 * 24 * 3600);
         assert_eq!(long_age, 30 * 24 * 3600);
 

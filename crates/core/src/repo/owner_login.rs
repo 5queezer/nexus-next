@@ -11,23 +11,27 @@ use crate::time::Timestamp;
 pub struct OwnerSession {
     #[serde(skip)]
     pub id_hash: String,
+    #[serde(skip)]
+    pub passphrase_tag: String,
     pub remembered: bool,
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
 }
 
-/// Stores a new session and keeps at most `max` live ones, ending the oldest first. Run inside
-/// `Db::begin_write`.
+/// Stores a new session and keeps at most `max` live ones, ending the oldest first and any made
+/// under another passphrase. Run inside `Db::begin_write`.
 pub async fn insert_session(
     conn: &mut SqliteConnection,
     id_hash: &str,
+    passphrase_tag: &str,
     remembered: bool,
     expires_at: &Timestamp,
     max: i64,
 ) -> Result<()> {
     let now = Timestamp::now();
-    sqlx::query("DELETE FROM owner_sessions WHERE expires_at <= ?")
+    sqlx::query("DELETE FROM owner_sessions WHERE expires_at <= ? OR passphrase_tag != ?")
         .bind(now.as_str())
+        .bind(passphrase_tag)
         .execute(&mut *conn)
         .await?;
     sqlx::query(
@@ -37,27 +41,33 @@ pub async fn insert_session(
     .bind(max - 1)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("INSERT INTO owner_sessions (id_hash, remembered, expires_at) VALUES (?, ?, ?)")
-        .bind(id_hash)
-        .bind(remembered)
-        .bind(expires_at.as_str())
-        .execute(conn)
-        .await?;
+    sqlx::query(
+        "INSERT INTO owner_sessions (id_hash, passphrase_tag, remembered, expires_at)
+         VALUES (?, ?, ?, ?)",
+    )
+    .bind(id_hash)
+    .bind(passphrase_tag)
+    .bind(remembered)
+    .bind(expires_at.as_str())
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
-/// The session with this hash, if it has not expired.
+/// The session with this hash, if it has not expired and was made under this passphrase.
 pub async fn live_session(
     conn: &mut SqliteConnection,
     id_hash: &str,
+    passphrase_tag: &str,
 ) -> Result<Option<OwnerSession>> {
-    Ok(
-        sqlx::query_as("SELECT * FROM owner_sessions WHERE id_hash = ? AND expires_at > ?")
-            .bind(id_hash)
-            .bind(Timestamp::now().as_str())
-            .fetch_optional(conn)
-            .await?,
+    Ok(sqlx::query_as(
+        "SELECT * FROM owner_sessions WHERE id_hash = ? AND passphrase_tag = ? AND expires_at > ?",
     )
+    .bind(id_hash)
+    .bind(passphrase_tag)
+    .bind(Timestamp::now().as_str())
+    .fetch_optional(conn)
+    .await?)
 }
 
 pub async fn live_sessions(conn: &mut SqliteConnection) -> Result<Vec<OwnerSession>> {

@@ -709,8 +709,8 @@ async fn an_empty_database_is_replaced_but_a_foreign_file_is_not() {
     let env = Env::new();
     let db = env.db().await;
     sqlx::query(
-        "INSERT INTO owner_sessions (id_hash, remembered, expires_at)
-         VALUES (?, 1, '2999-01-01T00:00:00.000Z')",
+        "INSERT INTO owner_sessions (id_hash, passphrase_tag, remembered, expires_at)
+         VALUES (?1, ?1, 1, '2999-01-01T00:00:00.000Z')",
     )
     .bind("0".repeat(64))
     .execute(db.pool())

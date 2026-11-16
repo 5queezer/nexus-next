@@ -28,9 +28,9 @@ use webauthn_rs::prelude::{
 
 use crate::crypto::{escape_html, parse_params, random_bytes, secret_eq, sha256_hex, sign};
 use crate::session::{
-    attempt, attempt_succeeded, cookie_value, create_session, current_session,
-    html_page_with_passkeys, known_device, logged_in, origin_of, reserve_attempt, safe_next,
-    with_cookie,
+    attempt, attempt_succeeded, cookie_value, create_session, current_passphrase_tag,
+    current_session, html_page_with_passkeys, known_device, logged_in, origin_of, reserve_attempt,
+    safe_next, with_cookie,
 };
 use crate::state::{AuthState, ClientKey};
 
@@ -281,7 +281,8 @@ pub(crate) async fn login_finish(
     }
 
     attempt_succeeded(&state, &client, known_device);
-    let (session, max_age) = match create_session(&state, finish.remember).await {
+    let tag = current_passphrase_tag(&state);
+    let (session, max_age) = match create_session(&state, finish.remember, &tag).await {
         Ok(session) => session,
         Err(error) => return failed(error),
     };

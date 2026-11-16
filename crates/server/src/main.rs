@@ -1,5 +1,5 @@
 use std::io::{BufRead, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
@@ -534,19 +534,35 @@ async fn run_grants(db: &Db, action: GrantAction) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_sessions(db: &Db, action: SessionAction) -> anyhow::Result<()> {
+async fn run_sessions(db: &Db, data_dir: &Path, action: SessionAction) -> anyhow::Result<()> {
     match action {
         SessionAction::List => {
+            // The server's hash, read as `serve` reads it, to tell sessions made under an earlier
+            // passphrase: the server refuses those.
+            let current = std::env::var("NEXUS_OWNER_PASSPHRASE_HASH")
+                .ok()
+                .or_else(|| {
+                    std::fs::read_to_string(nexus_auth::owner_passphrase_file(data_dir)).ok()
+                })
+                .map(|hash| nexus_auth::passphrase_tag(hash.trim()));
             let mut conn = db.conn().await?;
             for session in nexus_core::repo::owner_login::live_sessions(&mut conn).await? {
+                let stale = current
+                    .as_ref()
+                    .is_some_and(|tag| *tag != session.passphrase_tag);
                 println!(
-                    "started {}\texpires {}\t{}",
+                    "started {}\texpires {}\t{}{}",
                     session.created_at,
                     session.expires_at,
                     if session.remembered {
                         "remembered"
                     } else {
                         "not remembered"
+                    },
+                    if stale {
+                        "\tearlier passphrase: refused"
+                    } else {
+                        ""
                     }
                 );
             }
@@ -642,7 +658,7 @@ async fn run() -> anyhow::Result<()> {
             let db = Db::open(&data_dir)
                 .await
                 .context("cannot open the database")?;
-            let result = run_sessions(&db, action).await;
+            let result = run_sessions(&db, &data_dir, action).await;
             db.close().await;
             result?;
         }

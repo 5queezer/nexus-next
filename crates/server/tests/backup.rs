@@ -783,8 +783,9 @@ async fn restore_clears_credentials_and_skips_unreferenced_blobs_unless_told() {
                VALUES ('r', 'forged', '[]', '2999-01-01T00:00:00.000Z');
            INSERT INTO oauth_auth_codes (code, client_id, redirect_uri, code_challenge, scopes, expires_at)
                VALUES ('c', 'forged', 'x', 'y', '[]', '2999-01-01T00:00:00.000Z');
-           INSERT INTO owner_sessions (id_hash, remembered, expires_at)
-               VALUES ('0000000000000000000000000000000000000000000000000000000000000000', 1,
+           INSERT INTO owner_sessions (id_hash, passphrase_tag, remembered, expires_at)
+               VALUES ('0000000000000000000000000000000000000000000000000000000000000000',
+                       '0000000000000000000000000000000000000000000000000000000000000000', 1,
                        '2999-01-01T00:00:00.000Z');
            INSERT INTO owner_passkeys (credential_id, name, passkey) VALUES ('k', 'forged', '{}');"#,
     )
