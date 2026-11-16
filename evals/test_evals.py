@@ -78,6 +78,12 @@ class RelativeTimes(unittest.TestCase):
         self.assertEqual(ne.resolve("day-1 15:00", wednesday, tz).isoformat(), "2026-03-03T15:00:00+01:00")
         self.assertEqual(ne.resolve("now-60m", wednesday, tz).isoformat(), "2026-03-04T09:15:00+01:00")
 
+    def test_runs_only_where_relative_times_hold(self):
+        self.assertTrue(ne.in_run_window(ne.parse_time("2026-11-17T10:00:00+01:00")))
+        self.assertFalse(ne.in_run_window(ne.parse_time("2026-11-17T23:00:00+01:00")))
+        self.assertFalse(ne.in_run_window(ne.parse_time("2026-11-15T09:59:00+01:00")))
+        self.assertFalse(ne.in_run_window(ne.parse_time("2026-11-16T12:00:00+01:00")))
+
     def test_summer_time_is_the_zones_own(self):
         tz = ne.case_tz({})
         july = ne.parse_time("2026-07-01T12:00:00+02:00")

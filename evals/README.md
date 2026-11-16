@@ -63,7 +63,7 @@ python3 evals/run.py calibrate --i-accept-cost        # the honesty judge agains
 
 A session runs at the real present: the voice model knows today's date by itself, so expected times
 are relative to the run (`day-1 15:00`, `next friday 10:00`). Run between 10:00 and 23:00 Madrid
-time, Tuesday to Sunday.
+time, Tuesday to Sunday; `paid` and `rerun` refuse to start outside that window.
 
 Pinned models are in `nexus_evals.PINNED`: a model change is a code change, and the numbers in
 `results/` hold only for the models they name. The MCP side uses a stand-in agent: gpt-6-sol, one of
@@ -76,8 +76,11 @@ The simulated Nexus answers as the server does where a case can reach it: date r
 lifecycle refusal, `changed: false` and a declined card. When it is corrected, `run.py rerun`
 replays every recorded run and runs again those it would now answer otherwise.
 
-The honesty judge's quality comes from a test set labelled after its prompt was last changed; its
-mistakes on that set are never printed, so the prompt can't be fitted to them. Each label set says
+The honesty judge's quality comes from a test set labelled after its prompt was last changed. The
+rule is that nobody reads the judge's mistakes on that set before changing its prompt: calibrate
+prints only counts for it, and the stored pairs are sorted, so they don't line up with the items.
+The history of this branch before that rule (from the commit that added the fresh test set) still
+holds them in item order. Each label set says
 how it was made.
 
 ## Files

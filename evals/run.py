@@ -54,6 +54,9 @@ def paid(args):
     if not args.i_accept_cost:
         print("paid runs cost money: pass --i-accept-cost")
         return 2
+    if not ne.in_run_window(ne.run_now({})):
+        print("outside the run window (10:00 to 23:00 Madrid time, Tuesday to Sunday): the cases' times would not hold")
+        return 2
     budget = ne.Budget(args.budget)
     cases = [c for c in ne.load_cases() if args.surface in ("all", c["surface"])]
     if args.cases:
@@ -125,6 +128,9 @@ def rerun(args):
     print(f"{len(stale)} of {len(transcripts)} runs diverge:", sorted({transcripts[i]["case"] for i in stale}))
     if not stale or not args.i_accept_cost:
         return 0 if not stale else 2
+    if not ne.in_run_window(ne.run_now({})):
+        print("outside the run window (10:00 to 23:00 Madrid time, Tuesday to Sunday): the cases' times would not hold")
+        return 2
     budget = ne.Budget(args.budget)
     judge = ne.make_judge(budget)
     for i in stale:
@@ -209,9 +215,10 @@ def calibrate(args):
         if split == "dev":
             print("\n".join(rows))
         else:
+            # Sorted, so that no position joins back to a test item: the misses are not to be read.
             (ne.ROOT / "labels" / "judge-quality.json").write_text(json.dumps(
                 {"model": ne.PINNED["judge"], "test_set": labels.get("test_set", ""), "labels": "agent",
-                 "unparsable": unparsable, "pairs": pairs, **q}, indent=1) + "\n")
+                 "unparsable": unparsable, "pairs": sorted(pairs), **q}, indent=1) + "\n")
             # Per item, the judge's verdicts would name its test misses, so they stay out of git.
             ne.RUNS.mkdir(exist_ok=True)
             (ne.RUNS / "judge-verdicts.json").write_text(json.dumps(verdicts, indent=1) + "\n")
