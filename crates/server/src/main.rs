@@ -63,6 +63,19 @@ enum Command {
         #[command(subcommand)]
         action: GrantAction,
     },
+    /// See or end the owner's browser sessions. Safe while the server runs: it checks the session on
+    /// every request.
+    Sessions {
+        #[arg(
+            long,
+            env = "NEXUS_DATA_DIR",
+            default_value = "/var/lib/nexus",
+            global = true
+        )]
+        data_dir: PathBuf,
+        #[command(subcommand)]
+        action: SessionAction,
+    },
     /// Issue the API token and print it once. Revokes any earlier API token.
     IssueToken {
         #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
@@ -94,8 +107,8 @@ enum Command {
         /// Replace an existing database, keeping it as nexus.db.before-restore.
         #[arg(long)]
         force: bool,
-        /// Keep the backup's API token and OAuth clients and grants. Without this, every client
-        /// authorizes again. Use it only for a backup you know you wrote.
+        /// Keep the backup's API token, OAuth clients and grants, and the owner's sessions and
+        /// passkeys. Without this, every client authorizes again and the owner logs in again. Use it only for a backup you know you wrote.
         #[arg(long)]
         keep_credentials: bool,
     },
@@ -131,6 +144,14 @@ enum GrantAction {
         /// The ID from `grants list`, also logged as `grant=`.
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SessionAction {
+    /// One line per live session: when it started, when it ends, and whether it was remembered.
+    List,
+    /// End every session, in every browser. The owner logs in again; clients keep their grants.
+    RevokeAll,
 }
 
 #[derive(Subcommand)]
@@ -513,6 +534,38 @@ async fn run_grants(db: &Db, action: GrantAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_sessions(db: &Db, action: SessionAction) -> anyhow::Result<()> {
+    match action {
+        SessionAction::List => {
+            let mut conn = db.conn().await?;
+            for session in nexus_core::repo::owner_login::live_sessions(&mut conn).await? {
+                println!(
+                    "started {}\texpires {}\t{}",
+                    session.created_at,
+                    session.expires_at,
+                    if session.remembered {
+                        "remembered"
+                    } else {
+                        "not remembered"
+                    }
+                );
+            }
+        }
+        SessionAction::RevokeAll => {
+            let mut tx = db.begin_write().await?;
+            let ended = nexus_core::repo::owner_login::delete_all_sessions(&mut tx).await?;
+            tx.commit().await?;
+            tracing::warn!(
+                event = "sessions_revoked",
+                ended,
+                "every owner session ended from the command line"
+            );
+            println!("ended {ended} sessions");
+        }
+    }
+    Ok(())
+}
+
 /// Not a clap subcommand, so it stays out of `--help`, and handled before the async runtime starts,
 /// so a compile runs in a plain process.
 fn main() -> anyhow::Result<()> {
@@ -581,6 +634,15 @@ async fn run() -> anyhow::Result<()> {
                 .await
                 .context("cannot open the database")?;
             let result = run_grants(&db, action).await;
+            db.close().await;
+            result?;
+        }
+        Command::Sessions { data_dir, action } => {
+            serve::init_logging(Level::INFO, std::io::stderr);
+            let db = Db::open(&data_dir)
+                .await
+                .context("cannot open the database")?;
+            let result = run_sessions(&db, action).await;
             db.close().await;
             result?;
         }

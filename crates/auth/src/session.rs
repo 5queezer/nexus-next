@@ -1,6 +1,6 @@
 //! The owner login that replaces better-auth: one passphrase, a server-side session, no accounts.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -18,7 +18,8 @@ use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use nexus_core::auth::FormToken;
-use nexus_core::repo::oauth;
+use nexus_core::repo::{oauth, owner_login};
+use nexus_core::time::Timestamp;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::admin::{
@@ -33,11 +34,13 @@ use crate::state::{AuthState, ClientKey};
 const SESSION_COOKIE: &str = "__Host-nexus_session";
 const LOGIN_CSRF_COOKIE: &str = "__Host-nexus_login_csrf";
 const DEVICE_COOKIE: &str = "__Host-nexus_device";
-const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+const SESSION_TTL_DAYS: i64 = 7;
+/// A session from a login with "Remember this device" ticked.
+const REMEMBERED_TTL_DAYS: i64 = 30;
 const LOGIN_CSRF_TTL_SECS: u64 = 3600;
 const DEVICE_TTL_SECS: u64 = 400 * 24 * 3600;
 /// Well above what one owner has open; the oldest session goes first.
-const MAX_SESSIONS: usize = 32;
+const MAX_SESSIONS: i64 = 32;
 pub(crate) const MAX_NEXT_BYTES: usize = 8192;
 
 const LOGIN_CSRF_PURPOSE: &str = "login-csrf";
@@ -131,37 +134,46 @@ fn with_cookie(mut response: Response, name: &str, value: &str, max_age: u64) ->
 }
 
 /// The hash identifying the caller's live session, if any. Sessions are looked up by hash, so no
-/// comparison runs against the raw id.
-pub(crate) fn current_session(state: &AuthState, headers: &HeaderMap) -> Option<String> {
+/// comparison runs against the raw id. They live in the database, so they outlast a restart, and a
+/// revocation from the command line ends them at the next request.
+pub(crate) async fn current_session(state: &AuthState, headers: &HeaderMap) -> Option<String> {
     let hash = sha256_hex(cookie_value(headers, SESSION_COOKIE)?);
-    let now = Instant::now();
-    let mut sessions = state.0.sessions.lock().unwrap();
-    match sessions.get(&hash) {
-        Some(expiry) if now < *expiry => Some(hash),
-        Some(_) => {
-            sessions.remove(&hash);
+    let found = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::live_session(&mut conn, &hash).await
+    };
+    match found.await {
+        Ok(session) => session.map(|_| hash),
+        Err(error) => {
+            tracing::error!(event = "session_lookup_failed", %error, "could not read the owner's sessions");
             None
         }
-        None => None,
     }
 }
 
-fn create_session(state: &AuthState) -> String {
+/// Starts a session and returns the cookie value and its lifetime in seconds.
+pub(crate) async fn create_session(
+    state: &AuthState,
+    remembered: bool,
+) -> nexus_core::error::Result<(String, u64)> {
     let id = hex::encode(random_bytes());
-    let now = Instant::now();
-    let mut sessions = state.0.sessions.lock().unwrap();
-    sessions.retain(|_, expiry| now < *expiry);
-    if sessions.len() >= MAX_SESSIONS {
-        let oldest = sessions
-            .iter()
-            .min_by_key(|(_, expiry)| **expiry)
-            .map(|(hash, _)| hash.clone());
-        if let Some(oldest) = oldest {
-            sessions.remove(&oldest);
-        }
-    }
-    sessions.insert(sha256_hex(&id), now + SESSION_TTL);
-    id
+    let days = if remembered {
+        REMEMBERED_TTL_DAYS
+    } else {
+        SESSION_TTL_DAYS
+    };
+    let expires_at = Timestamp::now().plus(chrono::Duration::days(days));
+    let mut tx = state.0.db.begin_write().await?;
+    owner_login::insert_session(
+        &mut tx,
+        &sha256_hex(&id),
+        remembered,
+        &expires_at,
+        MAX_SESSIONS,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((id, days.unsigned_abs() * 24 * 3600))
 }
 
 /// `next` as a same-origin path, or `None`. Printable ASCII only: browsers strip tabs and newlines
@@ -217,7 +229,7 @@ fn login_form(
         "Log in to Nexus",
         &format!(
             r#"<h1>Log in to Nexus</h1>{message}
-<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><button type="submit">Log in</button></form>"#
+<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><label class="check"><input type="checkbox" name="remember" value="1" checked> Remember this device for {REMEMBERED_TTL_DAYS} days</label><button type="submit">Log in</button></form>"#
         ),
         None,
     );
@@ -241,7 +253,7 @@ pub(crate) async fn login_page(
     let next = params
         .get("next")
         .and_then(|next| safe_next(&state.0.base_url, next));
-    if current_session(&state, &headers).is_some() {
+    if current_session(&state, &headers).await.is_some() {
         return redirect_after_login(next.as_deref());
     }
     login_form(
@@ -374,10 +386,20 @@ pub(crate) async fn login(
         }
     }
 
-    tracing::info!(event = "login_success", source = %client, known_device, "owner logged in");
-    let session = create_session(&state);
+    let remembered = form.get("remember").is_some_and(|value| value == "1");
+    let (session, max_age) = match create_session(&state, remembered).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(event = "session_store_failed", %error, "could not store the owner's session");
+            return respond(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "You could not be logged in. The server log says why.",
+            );
+        }
+    };
+    tracing::info!(event = "login_success", source = %client, known_device, remembered, "owner logged in");
     let response = redirect_after_login(next.as_deref());
-    let response = with_cookie(response, SESSION_COOKIE, &session, SESSION_TTL.as_secs());
+    let response = with_cookie(response, SESSION_COOKIE, &session, max_age);
     let response = with_cookie(
         response,
         DEVICE_COOKIE,
@@ -388,7 +410,7 @@ pub(crate) async fn login(
 }
 
 pub(crate) async fn logout_page(State(state): State<AuthState>, headers: HeaderMap) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let csrf = sign(&state.0.key, LOGOUT_CSRF_PURPOSE, &session);
@@ -408,7 +430,7 @@ pub(crate) async fn logout(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let form = parse_params(&body);
@@ -423,7 +445,19 @@ pub(crate) async fn logout(
             None,
         );
     }
-    state.0.sessions.lock().unwrap().remove(&session);
+    let ended = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::delete_session(&mut conn, &session).await
+    };
+    if let Err(error) = ended.await {
+        tracing::error!(event = "logout_failed", %error, "could not end the owner's session");
+        return html_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Log out of Nexus",
+            r#"<h1>You are still logged in</h1><p>The session could not be ended. The server log says why. <a href="/logout">Try again</a></p>"#,
+            None,
+        );
+    }
     state.0.logouts.send_modify(|count| *count += 1);
     with_cookie(
         Redirect::to("/login").into_response(),
@@ -471,7 +505,7 @@ pub(crate) async fn passphrase_page(
     State(state): State<AuthState>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login?next=/passphrase").into_response();
     };
     passphrase_form(&state, &session, StatusCode::OK, "")
@@ -486,7 +520,7 @@ pub(crate) async fn change_passphrase(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let form = parse_params(&body);
@@ -532,7 +566,9 @@ pub(crate) async fn change_passphrase(
             let _slot = slot;
             let hash = set_owner_passphrase(&state.0.db, &path, &new).await?;
             *state.0.passphrase_hash.lock().unwrap() = hash;
-            state.0.sessions.lock().unwrap().clear();
+            let mut tx = state.0.db.begin_write().await?;
+            owner_login::delete_all_sessions(&mut tx).await?;
+            tx.commit().await.map_err(nexus_core::error::Error::from)?;
             state.0.logouts.send_modify(|count| *count += 1);
             tracing::warn!(
                 event = "passphrase_changed",
@@ -598,7 +634,7 @@ pub async fn require_owner_session(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if let Some(session) = current_session(&state, request.headers()) {
+    if let Some(session) = current_session(&state, request.headers()).await {
         let token = sign(&state.0.key, FORM_CSRF_PURPOSE, &session);
         request.extensions_mut().insert(FormToken(token));
         return next.run(request).await;
@@ -734,33 +770,85 @@ mod tests {
         assert_ne!(device_token(&first), device_token(&rotated));
     }
 
-    #[tokio::test]
-    async fn an_expired_session_is_refused_and_removed() {
-        let (state, _dir) = state().await;
-        let id = create_session(&state);
-        let headers = cookie_headers(&id);
-        assert!(current_session(&state, &headers).is_some());
-
-        let hash = sha256_hex(&id);
-        state
-            .0
-            .sessions
-            .lock()
+    async fn stored_hashes(state: &AuthState) -> Vec<String> {
+        let mut conn = state.0.db.conn().await.unwrap();
+        sqlx::query_scalar("SELECT id_hash FROM owner_sessions")
+            .fetch_all(&mut *conn)
+            .await
             .unwrap()
-            .insert(hash.clone(), Instant::now());
-        assert!(current_session(&state, &headers).is_none());
-        assert!(!state.0.sessions.lock().unwrap().contains_key(&hash));
+    }
+
+    #[tokio::test]
+    async fn an_expired_session_is_refused() {
+        let (state, _dir) = state().await;
+        let (id, _) = create_session(&state, false).await.unwrap();
+        let headers = cookie_headers(&id);
+        assert!(current_session(&state, &headers).await.is_some());
+
+        let mut conn = state.0.db.conn().await.unwrap();
+        sqlx::query("UPDATE owner_sessions SET expires_at = ?")
+            .bind(Timestamp::now().as_str())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(current_session(&state, &headers).await.is_none());
     }
 
     #[tokio::test]
     async fn sessions_are_stored_hashed_and_capped_oldest_first() {
         let (state, _dir) = state().await;
-        let first = create_session(&state);
-        assert!(!state.0.sessions.lock().unwrap().contains_key(&first));
+        let (first, _) = create_session(&state, false).await.unwrap();
+        assert_eq!(stored_hashes(&state).await, [sha256_hex(&first)]);
         for _ in 0..MAX_SESSIONS {
-            create_session(&state);
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            create_session(&state, false).await.unwrap();
         }
-        assert_eq!(state.0.sessions.lock().unwrap().len(), MAX_SESSIONS);
-        assert!(current_session(&state, &cookie_headers(&first)).is_none());
+        assert_eq!(stored_hashes(&state).await.len() as i64, MAX_SESSIONS);
+        assert!(
+            current_session(&state, &cookie_headers(&first))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_outlast_a_restart_and_remembered_ones_last_thirty_days() {
+        let (first, dir) = state().await;
+        let (short, short_age) = create_session(&first, false).await.unwrap();
+        let (long, long_age) = create_session(&first, true).await.unwrap();
+        assert_eq!(short_age, 7 * 24 * 3600);
+        assert_eq!(long_age, 30 * 24 * 3600);
+
+        let db = Db::open(dir.path()).await.unwrap();
+        let restarted = AuthState::new(
+            db,
+            AuthConfig {
+                public_base_url: BASE.to_owned(),
+                owner_passphrase_hash: first.0.passphrase_hash.lock().unwrap().clone(),
+                owner_passphrase_file: None,
+                trusted_proxy: None,
+                redirect_hosts: Vec::new(),
+            },
+        )
+        .unwrap();
+        for id in [&short, &long] {
+            assert!(
+                current_session(&restarted, &cookie_headers(id))
+                    .await
+                    .is_some()
+            );
+        }
+        let mut conn = restarted.0.db.conn().await.unwrap();
+        let expiries: Vec<(bool, String)> =
+            sqlx::query_as("SELECT remembered, expires_at FROM owner_sessions ORDER BY remembered")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        let days = |at: &str| {
+            (Timestamp::parse(at).unwrap().to_datetime() - chrono::Utc::now()).num_hours() / 24
+        };
+        assert_eq!((expiries[0].0, days(&expiries[0].1)), (false, 6));
+        assert_eq!((expiries[1].0, days(&expiries[1].1)), (true, 29));
     }
 }

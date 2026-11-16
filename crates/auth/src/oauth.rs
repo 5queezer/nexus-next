@@ -560,7 +560,7 @@ pub(crate) async fn authorize(
         ));
     }
 
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         let next: String =
             byte_serialize(format!("/api/mcp/authorize?{query}").as_bytes()).collect();
         return Ok(Redirect::to(&format!("/login?next={next}")).into_response());
@@ -651,7 +651,7 @@ pub(crate) async fn approve(
 ) -> Result<Response, Reject> {
     limit_authorize(&state, &source)?;
     const RESTART: &str = "Start the connection again from your client.";
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Err(consent_refused(
             StatusCode::UNAUTHORIZED,
             &format!("Your login has expired. {RESTART}"),

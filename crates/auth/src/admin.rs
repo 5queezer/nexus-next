@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use argon2::password_hash::{PasswordHasher, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use nexus_core::db::Db;
-use nexus_core::repo::{api_tokens, oauth};
+use nexus_core::repo::{api_tokens, oauth, owner_login};
 use url::Url;
 
 use crate::crypto::{generate_token, random_bytes, sha256_hex};
@@ -153,11 +153,12 @@ pub async fn revoke_grant(db: &Db, id: &str) -> Result<oauth::Revoked, RevokeErr
     Ok(revoked)
 }
 
-/// Changes the owner passphrase: revokes every OAuth code and token and every API token, then
+/// Changes the owner passphrase: revokes every OAuth code and token and every API token, and ends
+/// every login session (they are stored, so a restart no longer does that), then
 /// writes the hash to `path`, mode 600, replacing the file atomically. Credentials go first, so a
 /// failed write can't leave a suspected leak still working. Client registrations stay; each client
 /// authorizes again. Running servers read the hash at startup, so restart them for the new
-/// passphrase to apply, which also ends their sessions. Returns the hash, which the server's own
+/// passphrase to apply. Returns the hash, which the server's own
 /// change form takes up at once instead.
 pub async fn set_owner_passphrase(
     db: &Db,
@@ -169,13 +170,15 @@ pub async fn set_owner_passphrase(
     let mut tx = db.begin_write().await?;
     let revoked = oauth::revoke_all(&mut tx).await?;
     api_tokens::delete_all(&mut tx).await?;
+    let sessions = owner_login::delete_all_sessions(&mut tx).await?;
     tx.commit().await.map_err(nexus_core::error::Error::from)?;
     tracing::warn!(
         event = "grants_revoked",
+        sessions,
         reason = "passphrase_changed",
         access_tokens = revoked.access_tokens,
         refresh_tokens = revoked.refresh_tokens,
-        "owner passphrase is changing: revoked all OAuth grants and API tokens"
+        "owner passphrase is changing: revoked all OAuth grants and API tokens, ended all sessions"
     );
 
     let path = path.to_owned();

@@ -782,7 +782,11 @@ async fn restore_clears_credentials_and_skips_unreferenced_blobs_unless_told() {
            INSERT INTO oauth_refresh_tokens (token_hash, client_id, scopes, expires_at)
                VALUES ('r', 'forged', '[]', '2999-01-01T00:00:00.000Z');
            INSERT INTO oauth_auth_codes (code, client_id, redirect_uri, code_challenge, scopes, expires_at)
-               VALUES ('c', 'forged', 'x', 'y', '[]', '2999-01-01T00:00:00.000Z');"#,
+               VALUES ('c', 'forged', 'x', 'y', '[]', '2999-01-01T00:00:00.000Z');
+           INSERT INTO owner_sessions (id_hash, remembered, expires_at)
+               VALUES ('0000000000000000000000000000000000000000000000000000000000000000', 1,
+                       '2999-01-01T00:00:00.000Z');
+           INSERT INTO owner_passkeys (credential_id, name, passkey) VALUES ('k', 'forged', '{}');"#,
     )
     .execute(db.pool())
     .await
@@ -812,6 +816,8 @@ async fn restore_clears_credentials_and_skips_unreferenced_blobs_unless_told() {
             "SELECT count(*) FROM oauth_access_tokens",
             "SELECT count(*) FROM oauth_refresh_tokens",
             "SELECT count(*) FROM oauth_auth_codes",
+            "SELECT count(*) FROM owner_sessions",
+            "SELECT count(*) FROM owner_passkeys",
         ] {
             assert_eq!(scalar(&restored, sql).await, expected, "{sql}");
         }

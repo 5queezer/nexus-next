@@ -76,6 +76,7 @@ p { margin: 0 0 16px; }
 }
 
 label { display: block; margin: 0 0 6px; font-weight: 600; }
+label.check { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; font-weight: 400; }
 input[type="password"] {
   display: block;
   width: 100%;
