@@ -521,6 +521,7 @@ pub async fn run(
         calendar = config.calendar_token.is_some(),
         voice = config.voice.key.is_some()
             || config.data_dir.join(nexus_web::OPENAI_KEY_FILE).exists(),
+        cf_access = matches!(&config.access, Access::Owner(auth) if auth.cf_access.is_some()),
         "listening"
     );
     let result = serve(listener, app, shutdown, DRAIN_TIMEOUT).await;

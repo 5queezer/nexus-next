@@ -14,7 +14,9 @@ use axum::response::IntoResponse;
 use axum::routing::{any, get};
 use axum::{Extension, Json, Router};
 use http_body_util::BodyExt;
-use nexus_auth::{AuthConfig, AuthState, TrustedProxy, require_mcp_auth, require_owner_session};
+use nexus_auth::{
+    AuthConfig, AuthState, CfAccess, TrustedProxy, require_mcp_auth, require_owner_session,
+};
 use nexus_core::auth::{AuthContext, AuthType};
 use nexus_core::db::Db;
 use serde_json::{Value, json};
@@ -158,6 +160,14 @@ impl Harness {
     }
 
     pub async fn with_proxy(trusted_proxy: Option<TrustedProxy>) -> Self {
+        Self::with(trusted_proxy, None).await
+    }
+
+    pub async fn with_cf_access(cf_access: CfAccess) -> Self {
+        Self::with(None, Some(Box::new(cf_access))).await
+    }
+
+    async fn with(trusted_proxy: Option<TrustedProxy>, cf_access: Option<Box<CfAccess>>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).await.unwrap();
         let state = AuthState::new(
@@ -168,6 +178,7 @@ impl Harness {
                 owner_passphrase_file: Some(dir.path().join("owner-passphrase.argon2")),
                 trusted_proxy,
                 redirect_hosts: ALLOWED_HOSTS.map(str::to_owned).to_vec(),
+                cf_access,
             },
         )
         .unwrap();

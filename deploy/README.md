@@ -129,6 +129,38 @@ It needs at least 16 characters and can't be one short pattern repeated, and thi
 
 Backups do not contain the hash. After restoring onto a new board, run `set-passphrase` again.
 
+### Cloudflare Access instead of the passphrase (optional)
+
+With Cloudflare Access in front of `/login`, the owner logs in with Google on the public host and never types the passphrase there. Access signs each request it lets through (`Cf-Access-Jwt-Assertion`), and Nexus takes a valid one for an allowed email as a login: a normal session, then consent for each new MCP client as before. Nexus checks the RS256 signature against the team's keys, the audience tag, the issuer `https://<team>.cloudflareaccess.com`, `exp` and `nbf` (60 s leeway) and the email. A missing or invalid assertion shows the passphrase form, which stays the way in over the tailnet (no Access there, so the header proves nothing) and for recovery. Off unless all four settings are set; only some of them stops `serve`.
+
+| Setting | Value |
+|---|---|
+| `NEXUS_CF_ACCESS_AUD` | The Access application's Application Audience (AUD) tag |
+| `NEXUS_CF_ACCESS_TEAM` | The team name, as in `<team>.cloudflareaccess.com` |
+| `NEXUS_CF_ACCESS_EMAILS` | The owner's email, comma-separated if more than one |
+| `NEXUS_CF_ACCESS_CERTS_FILE` | `/var/lib/nexus/cf-access-certs.json` |
+
+The service has no network, so a timer fetches the keys once a day and at boot, checks them with `nexus check-access-certs`, and replaces the file in one rename; Nexus reads it again when it changes. Without a usable file every assertion is refused and the passphrase form shows (`cf_access_keys_unusable` in the log). It needs `curl`.
+
+```sh
+sudo install -m 0755 deploy/nexus-cf-access-certs /usr/local/libexec/nexus-cf-access-certs
+sudo install -m 0644 deploy/nexus-cf-access-certs.service deploy/nexus-cf-access-certs.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start nexus-cf-access-certs.service    # once now; then check the file exists
+sudo systemctl enable --now nexus-cf-access-certs.timer
+sudo systemctl restart nexus                          # `listening ... cf_access=true`
+```
+
+**In Cloudflare (the owner does this; Nexus changes nothing there):**
+
+1. Zero Trust, Settings, Authentication: add Google as a login method.
+2. Access, Applications, Add an application, Self-hosted. Public hostname: the host of `NEXUS_PUBLIC_BASE_URL`, path `login`. That covers `/login` and everything under it. Add no other path: the MCP clients call `/api/mcp`, `/api/mcp/token`, `/api/mcp/register`, `/.well-known/oauth-*` and `/api/uploads/<id>` without a browser, and must reach Nexus unhindered. `/api/mcp/authorize` needs no rule: without a session it sends the browser to `/login`.
+3. Policy: Action Allow, Include, Emails, the owner's email only. Identity providers: Google only. Session duration as you like; Nexus's own session lasts 7 days after.
+4. From the application's overview, copy the Application Audience (AUD) tag into `NEXUS_CF_ACCESS_AUD`, and the team name (Settings, Custom pages, Team domain) into `NEXUS_CF_ACCESS_TEAM`.
+5. The tunnel ingress already passes `/login`.
+
+Check: in a private window, open `<NEXUS_PUBLIC_BASE_URL>/login`. Google asks, then Nexus's dashboard opens without the passphrase form, and the log has `login_success ... method="cf_access"`. A refusal logs `cf_access_refused reason=...` (audience, issuer, expired, email, signature, unknown_key, no_keys, ...), never the token.
+
 ### API token
 
 ```sh

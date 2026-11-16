@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the Cloudflare Access keys for Nexus daily
+
+[Timer]
+OnBootSec=2min
+OnCalendar=*-*-* 04:15:00 UTC
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

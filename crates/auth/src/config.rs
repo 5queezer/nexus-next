@@ -7,6 +7,8 @@ use argon2::{ARGON2ID_IDENT, Params};
 use axum::http::HeaderName;
 use url::Url;
 
+use crate::cf_access::CfAccess;
+
 const PASSPHRASE_FILE: &str = "owner-passphrase.argon2";
 /// Where a client may be sent with an authorization code, besides loopback. Claude.ai's real
 /// callback host is unverified until the M1 gate: see `event=redirect_host_rejected` in the log.
@@ -40,6 +42,8 @@ pub enum ConfigError {
     InvalidRedirectHosts,
     #[error("reading {0}: {1}")]
     Io(PathBuf, #[source] std::io::Error),
+    #[error("{0}")]
+    CfAccess(&'static str),
 }
 
 /// A proxy allowed to name the client address. Rate limiting reads `header` only on connections
@@ -66,6 +70,8 @@ pub struct AuthConfig {
     pub trusted_proxy: Option<TrustedProxy>,
     /// Hosts an https redirect URI may name, matched exactly. Loopback is always allowed.
     pub redirect_hosts: Vec<String>,
+    /// Cloudflare Access in front of the login: off unless configured.
+    pub cf_access: Option<Box<CfAccess>>,
 }
 
 /// Where the owner passphrase's hash lives: `NEXUS_OWNER_PASSPHRASE_HASH_FILE`, else the data dir.
@@ -153,12 +159,16 @@ impl AuthConfig {
             Some(list) => parse_redirect_hosts(&list)?,
             None => DEFAULT_REDIRECT_HOSTS.map(str::to_owned).to_vec(),
         };
+        let cf_access = crate::cf_access::from_vars(&var)
+            .map_err(ConfigError::CfAccess)?
+            .map(Box::new);
         Ok(Self {
             public_base_url,
             owner_passphrase_hash,
             owner_passphrase_file,
             trusted_proxy,
             redirect_hosts,
+            cf_access,
         })
     }
 }
@@ -318,6 +328,44 @@ mod tests {
             config(&[ENV_HASH, header, bad], dir.path()),
             Err(ConfigError::InvalidTrustedPeers)
         ));
+    }
+
+    #[test]
+    fn cloudflare_access_is_all_four_settings_or_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let all = [
+            ENV_HASH,
+            ("NEXUS_CF_ACCESS_AUD", "aud-tag"),
+            ("NEXUS_CF_ACCESS_TEAM", "Owner-Team.cloudflareaccess.com"),
+            (
+                "NEXUS_CF_ACCESS_EMAILS",
+                " owner@example.net , not-an-address ",
+            ),
+            (
+                "NEXUS_CF_ACCESS_CERTS_FILE",
+                "/var/lib/nexus/cf-access-certs.json",
+            ),
+        ];
+        assert_eq!(config(&[ENV_HASH], dir.path()).unwrap().cf_access, None);
+        let access = config(&all, dir.path()).unwrap().cf_access.unwrap();
+        assert_eq!(access.team, "owner-team");
+        assert_eq!(access.emails, ["owner@example.net"]);
+        assert!(matches!(
+            config(&all[..4], dir.path()),
+            Err(ConfigError::CfAccess(_))
+        ));
+        for bad in [
+            ("NEXUS_CF_ACCESS_TEAM", "https://x.cloudflareaccess.com"),
+            ("NEXUS_CF_ACCESS_EMAILS", "nobody"),
+        ] {
+            let mut vars = all.to_vec();
+            vars.retain(|(name, _)| *name != bad.0);
+            vars.push(bad);
+            assert!(
+                matches!(config(&vars, dir.path()), Err(ConfigError::CfAccess(_))),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! The owner login that replaces better-auth: one passphrase, a server-side session, no accounts.
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::body::Bytes;
@@ -234,6 +234,7 @@ fn redirect_after_login(next: Option<&str>) -> Response {
 
 pub(crate) async fn login_page(
     State(state): State<AuthState>,
+    ClientKey(client): ClientKey,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
@@ -244,6 +245,9 @@ pub(crate) async fn login_page(
     if current_session(&state, &headers).is_some() {
         return redirect_after_login(next.as_deref());
     }
+    if let Some(response) = access_login(&state, &client, &headers, next.as_deref()) {
+        return response;
+    }
     login_form(
         &state,
         StatusCode::OK,
@@ -251,6 +255,37 @@ pub(crate) async fn login_page(
         next.as_deref(),
         cookie_value(&headers, LOGIN_CSRF_COOKIE),
     )
+}
+
+/// A login by Cloudflare Access: the request carries a valid assertion for an allowed owner email.
+/// `None` sends the browser on to the passphrase form, which is also the way in over the tailnet,
+/// where Access isn't in front and the header proves nothing.
+fn access_login(
+    state: &AuthState,
+    client: &str,
+    headers: &HeaderMap,
+    next: Option<&str>,
+) -> Option<Response> {
+    let verifier = state.0.cf_access.as_ref()?;
+    let token = headers.get(crate::cf_access::HEADER)?.to_str().ok()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs().cast_signed());
+    if let Err(refusal) = verifier.owner_email(token, now) {
+        tracing::warn!(event = "cf_access_refused", source = %client, reason = refusal.as_str(), "an Access assertion was not taken as a login");
+        return None;
+    }
+    tracing::info!(event = "login_success", source = %client, method = "cf_access", "owner logged in");
+    let session = create_session(state);
+    let response = redirect_after_login(next);
+    let response = with_cookie(response, SESSION_COOKIE, &session, SESSION_TTL.as_secs());
+    let response = with_cookie(
+        response,
+        DEVICE_COOKIE,
+        &device_token(state),
+        DEVICE_TTL_SECS,
+    );
+    Some(with_cookie(response, LOGIN_CSRF_COOKIE, "", 0))
 }
 
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
@@ -697,6 +732,7 @@ mod tests {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         };
         (AuthState::new(db, config).unwrap(), dir)
     }
@@ -720,6 +756,7 @@ mod tests {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         };
         let restarted =
             AuthState::new(db.clone(), config(&first.0.passphrase_hash.lock().unwrap())).unwrap();

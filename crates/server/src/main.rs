@@ -51,6 +51,12 @@ enum Command {
         #[arg(long, env = "NEXUS_DATA_DIR", default_value = "/var/lib/nexus")]
         data_dir: PathBuf,
     },
+    /// Check a Cloudflare Access key set before it replaces the one the server reads: exits non-zero
+    /// unless the file holds at least one RSA key with an id. The certs timer runs this.
+    CheckAccessCerts {
+        /// The JSON from https://<team>.cloudflareaccess.com/cdn-cgi/access/certs.
+        file: PathBuf,
+    },
     /// See or revoke what the owner has authorized, without touching other clients.
     Grants {
         #[arg(
@@ -583,6 +589,17 @@ async fn run() -> anyhow::Result<()> {
             let result = run_grants(&db, action).await;
             db.close().await;
             result?;
+        }
+        Command::CheckAccessCerts { file } => {
+            let json = std::fs::read_to_string(&file)
+                .with_context(|| format!("cannot read {}", file.display()))?;
+            match nexus_auth::parse_access_keys(&json) {
+                Ok(keys) => println!("{keys} usable keys"),
+                Err(reason) => anyhow::bail!(
+                    "{} is not a usable Access key set: {reason}",
+                    file.display()
+                ),
+            }
         }
         Command::IssueToken { data_dir, name } => {
             serve::init_logging(Level::INFO, std::io::stderr);

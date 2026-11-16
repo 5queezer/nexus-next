@@ -6,6 +6,7 @@
 //! `ConnectInfo<SocketAddr>`: without a peer address, every client shares one rate-limit bucket.
 
 mod admin;
+mod cf_access;
 mod config;
 mod crypto;
 mod limit;
@@ -21,6 +22,7 @@ pub use admin::{
     GrantLine, PassphraseError, RevokeError, hash_passphrase, issue_api_token, list_grants,
     revoke_grant, set_owner_passphrase, write_private,
 };
+pub use cf_access::{CfAccess, parse_keys as parse_access_keys};
 pub use config::{
     AuthConfig, ConfigError, TrustedProxy, normalize_base_url, owner_passphrase_file,
 };

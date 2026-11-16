@@ -30,6 +30,8 @@ rand = "0.10.3"
 rpassword = "7.5.4"
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }
+# Verifies Cloudflare Access assertions (RS256); already in the tree through rustls.
+ring = "0.17.14"
 png = "=0.18.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
