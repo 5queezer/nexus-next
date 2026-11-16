@@ -265,10 +265,11 @@ pub(crate) fn from_vars(
     let emails: Vec<String> = emails
         .split(',')
         .map(|email| email.trim().to_owned())
-        .filter(|email| email.contains('@'))
+        .filter(|email| !email.is_empty())
         .collect();
-    if emails.is_empty() {
-        return Err("NEXUS_CF_ACCESS_EMAILS must list at least one email address");
+    // A typo in one of two addresses must not vanish quietly.
+    if emails.is_empty() || emails.iter().any(|email| !email.contains('@')) {
+        return Err("NEXUS_CF_ACCESS_EMAILS must be email addresses, comma-separated");
     }
     Ok(Some(CfAccess {
         aud,

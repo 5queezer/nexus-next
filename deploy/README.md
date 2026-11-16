@@ -138,11 +138,13 @@ With Cloudflare Access in front of `/login`, the owner logs in with Google on th
 | `NEXUS_CF_ACCESS_AUD` | The Access application's Application Audience (AUD) tag |
 | `NEXUS_CF_ACCESS_TEAM` | The team name, as in `<team>.cloudflareaccess.com` |
 | `NEXUS_CF_ACCESS_EMAILS` | The owner's email, comma-separated if more than one |
-| `NEXUS_CF_ACCESS_CERTS_FILE` | `/var/lib/nexus/cf-access-certs.json` |
+| `NEXUS_CF_ACCESS_CERTS_FILE` | `/var/lib/nexus-cf-access/certs.json` |
 
-The service has no network, so a timer fetches the keys once a day and at boot, checks them with `nexus check-access-certs`, and replaces the file in one rename; Nexus reads it again when it changes. Without a usable file every assertion is refused and the passphrase form shows (`cf_access_keys_unusable` in the log). It needs `curl`.
+The service has no network, so a timer fetches the keys once a day and at boot, checks them with `nexus check-access-certs`, and replaces the file in one rename; Nexus reads it again when it changes. Without a usable file every assertion is refused and the passphrase form shows (`cf_access_keys_unusable` in the log). The fetcher runs as its own user, `nexus-cf-access` (in `nexus.sysusers`), with no access to Nexus's data, so the server itself still connects to nothing. It reads only `/etc/nexus/cf-access.env`, which holds `NEXUS_CF_ACCESS_TEAM=<team>`, and needs `curl`.
 
 ```sh
+sudo systemd-sysusers /etc/sysusers.d/nexus.conf    # after installing the updated nexus.sysusers
+echo 'NEXUS_CF_ACCESS_TEAM=<team>' | sudo tee /etc/nexus/cf-access.env
 sudo install -m 0755 deploy/nexus-cf-access-certs /usr/local/libexec/nexus-cf-access-certs
 sudo install -m 0644 deploy/nexus-cf-access-certs.service deploy/nexus-cf-access-certs.timer /etc/systemd/system/
 sudo systemctl daemon-reload

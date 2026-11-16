@@ -337,10 +337,7 @@ mod tests {
             ENV_HASH,
             ("NEXUS_CF_ACCESS_AUD", "aud-tag"),
             ("NEXUS_CF_ACCESS_TEAM", "Owner-Team.cloudflareaccess.com"),
-            (
-                "NEXUS_CF_ACCESS_EMAILS",
-                " owner@example.net , not-an-address ",
-            ),
+            ("NEXUS_CF_ACCESS_EMAILS", " owner@example.net , "),
             (
                 "NEXUS_CF_ACCESS_CERTS_FILE",
                 "/var/lib/nexus/cf-access-certs.json",
@@ -357,6 +354,10 @@ mod tests {
         for bad in [
             ("NEXUS_CF_ACCESS_TEAM", "https://x.cloudflareaccess.com"),
             ("NEXUS_CF_ACCESS_EMAILS", "nobody"),
+            (
+                "NEXUS_CF_ACCESS_EMAILS",
+                "owner@example.net, typo.example.net",
+            ),
         ] {
             let mut vars = all.to_vec();
             vars.retain(|(name, _)| *name != bad.0);
