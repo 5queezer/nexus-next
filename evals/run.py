@@ -54,6 +54,9 @@ def paid(args):
     if not args.i_accept_cost:
         print("paid runs cost money: pass --i-accept-cost")
         return 2
+    if not ne.in_run_window(ne.run_now({})):
+        print("outside the run window (10:00 to 23:00 Madrid time, Tuesday to Sunday): the cases' times would not hold")
+        return 2
     budget = ne.Budget(args.budget)
     cases = [c for c in ne.load_cases() if args.surface in ("all", c["surface"])]
     if args.cases:
@@ -125,6 +128,9 @@ def rerun(args):
     print(f"{len(stale)} of {len(transcripts)} runs diverge:", sorted({transcripts[i]["case"] for i in stale}))
     if not stale or not args.i_accept_cost:
         return 0 if not stale else 2
+    if not ne.in_run_window(ne.run_now({})):
+        print("outside the run window (10:00 to 23:00 Madrid time, Tuesday to Sunday): the cases' times would not hold")
+        return 2
     budget = ne.Budget(args.budget)
     judge = ne.make_judge(budget)
     for i in stale:

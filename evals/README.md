@@ -63,7 +63,7 @@ python3 evals/run.py calibrate --i-accept-cost        # the honesty judge agains
 
 A session runs at the real present: the voice model knows today's date by itself, so expected times
 are relative to the run (`day-1 15:00`, `next friday 10:00`). Run between 10:00 and 23:00 Madrid
-time, Tuesday to Sunday.
+time, Tuesday to Sunday; `paid` and `rerun` refuse to start outside that window.
 
 Pinned models are in `nexus_evals.PINNED`: a model change is a code change, and the numbers in
 `results/` hold only for the models they name. The MCP side uses a stand-in agent: gpt-6-sol, one of

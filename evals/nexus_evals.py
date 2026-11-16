@@ -183,6 +183,12 @@ def run_now(case):
     return dt.datetime.now(case_tz(case)).replace(microsecond=0)
 
 
+def in_run_window(now):
+    """Whether the cases' relative times mean one thing at `now` (Madrid): "this morning" and "an hour
+    ago" need a day well under way, and "Monday" is ambiguous on a Monday."""
+    return now.weekday() != 0 and 10 <= now.hour < 23
+
+
 def resolve(spec, now, tz):
     """A time a case expects, relative to the session's present in the case's time zone:
     `day-1 15:00`, `day+0 09:00`, `next friday 10:00` (the coming one, never today),
