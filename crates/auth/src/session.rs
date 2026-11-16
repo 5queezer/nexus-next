@@ -31,12 +31,12 @@ use crate::state::{AuthState, ClientKey};
 
 // `__Host-` makes browsers refuse these unless Secure, Path=/ and without Domain, so a sibling
 // subdomain can't plant them.
-const SESSION_COOKIE: &str = "__Host-nexus_session";
+pub(crate) const SESSION_COOKIE: &str = "__Host-nexus_session";
 const LOGIN_CSRF_COOKIE: &str = "__Host-nexus_login_csrf";
-const DEVICE_COOKIE: &str = "__Host-nexus_device";
+pub(crate) const DEVICE_COOKIE: &str = "__Host-nexus_device";
 const SESSION_TTL_DAYS: i64 = 7;
 /// A session from a login with "Remember this device" ticked.
-const REMEMBERED_TTL_DAYS: i64 = 30;
+pub(crate) const REMEMBERED_TTL_DAYS: i64 = 30;
 const LOGIN_CSRF_TTL_SECS: u64 = 3600;
 const DEVICE_TTL_SECS: u64 = 400 * 24 * 3600;
 /// Well above what one owner has open; the oldest session goes first.
@@ -56,7 +56,7 @@ const DEVICE_KEY: &str = "known-device";
 /// attempts count on a bucket of their own. It grants nothing else: the passphrase is still needed.
 /// Keyed by the stored hash, it survives restarts and dies when the passphrase changes, except in
 /// the browser that changed it, which gets the new one.
-fn device_token(state: &AuthState) -> String {
+pub(crate) fn device_token(state: &AuthState) -> String {
     let hash = state.0.passphrase_hash.lock().unwrap();
     sign(hash.as_bytes(), DEVICE_PURPOSE, "")
 }
@@ -83,10 +83,35 @@ pub(crate) fn html_page(
     body: &str,
     form_target: Option<&str>,
 ) -> Response {
+    page(status, title, body, form_target, false)
+}
+
+/// `html_page` for the pages that use passkeys: they load `/login/passkey.js` and may call back.
+pub(crate) fn html_page_with_passkeys(status: StatusCode, title: &str, body: &str) -> Response {
+    page(status, title, body, None, true)
+}
+
+fn page(
+    status: StatusCode,
+    title: &str,
+    body: &str,
+    form_target: Option<&str>,
+    passkeys: bool,
+) -> Response {
     let form_action = form_target.map_or("'self'".to_owned(), |origin| format!("'self' {origin}"));
+    let scripts = if passkeys {
+        "; script-src 'self'; connect-src 'self'"
+    } else {
+        ""
+    };
     let csp = format!(
-        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}"
+        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}{scripts}"
     );
+    let script = if passkeys {
+        r#"<script src="/login/passkey.js" defer></script>"#
+    } else {
+        ""
+    };
     let label = nexus_core::env_label().map(escape_html);
     let (prefix, tag) = label.map_or_else(Default::default, |label| {
         (
@@ -105,7 +130,7 @@ pub(crate) fn html_page(
         ],
         Html(format!(
             r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css"><title>{prefix}{}</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css">{script}<title>{prefix}{}</title></head>
 <body><main><p class="brand">Nexus{tag}</p>{body}</main></body></html>"#,
             escape_html(title)
         )),
@@ -113,7 +138,7 @@ pub(crate) fn html_page(
         .into_response()
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(COOKIE)
         .iter()
@@ -123,7 +148,12 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-fn with_cookie(mut response: Response, name: &str, value: &str, max_age: u64) -> Response {
+pub(crate) fn with_cookie(
+    mut response: Response,
+    name: &str,
+    value: &str,
+    max_age: u64,
+) -> Response {
     let cookie =
         format!("{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax");
     response.headers_mut().append(
@@ -178,7 +208,7 @@ pub(crate) async fn create_session(
 
 /// `next` as a same-origin path, or `None`. Printable ASCII only: browsers strip tabs and newlines
 /// before parsing a URL, which would turn `/\t/host` into `//host`, and treat `\` as `/`.
-fn safe_next(base_url: &str, next: &str) -> Option<String> {
+pub(crate) fn safe_next(base_url: &str, next: &str) -> Option<String> {
     if next.len() > MAX_NEXT_BYTES
         || !next.starts_with('/')
         || next.starts_with("//")
@@ -208,6 +238,7 @@ fn login_form(
     message: &str,
     next: Option<&str>,
     csrf_cookie: Option<&str>,
+    passkeys: bool,
 ) -> Response {
     let cookie = csrf_cookie
         .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -224,16 +255,41 @@ fn login_form(
     } else {
         format!(r#"<p role="alert">{}</p>"#, escape_html(message))
     };
-    let page = html_page(
-        status,
-        "Log in to Nexus",
-        &format!(
-            r#"<h1>Log in to Nexus</h1>{message}
-<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><label class="check"><input type="checkbox" name="remember" value="1" checked> Remember this device for {REMEMBERED_TTL_DAYS} days</label><button type="submit">Log in</button></form>"#
-        ),
-        None,
+    // Shown by the script, where the browser can use it.
+    let passkey = if passkeys {
+        format!(
+            r#"<div id="passkey-login" data-origin="{}" hidden><p class="or">or</p><button type="button" class="secondary">Log in with a passkey</button><p id="passkey-status" role="status"></p></div>"#,
+            escape_html(&origin_of(&state.0.base_url))
+        )
+    } else {
+        String::new()
+    };
+    let body = format!(
+        r#"<h1>Log in to Nexus</h1>{message}
+<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><label class="check"><input type="checkbox" name="remember" value="1" checked> Remember this device for {REMEMBERED_TTL_DAYS} days</label><button type="submit">Log in</button></form>{passkey}"#
     );
+    let page = if passkeys {
+        html_page_with_passkeys(status, "Log in to Nexus", &body)
+    } else {
+        html_page(status, "Log in to Nexus", &body, None)
+    };
     with_cookie(page, LOGIN_CSRF_COOKIE, &cookie, LOGIN_CSRF_TTL_SECS)
+}
+
+pub(crate) fn origin_of(base_url: &str) -> String {
+    Url::parse(base_url).map_or_else(
+        |_| base_url.to_owned(),
+        |url| url.origin().ascii_serialization(),
+    )
+}
+
+/// Whether any passkey is registered. A failed read hides the passkey button; the passphrase works.
+async fn have_passkeys(state: &AuthState) -> bool {
+    let found = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::passkeys(&mut conn).await
+    };
+    found.await.is_ok_and(|passkeys| !passkeys.is_empty())
 }
 
 fn redirect_after_login(next: Option<&str>) -> Response {
@@ -262,34 +318,20 @@ pub(crate) async fn login_page(
         "",
         next.as_deref(),
         cookie_value(&headers, LOGIN_CSRF_COOKIE),
+        have_passkeys(&state).await,
     )
 }
 
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
 /// a change can follow before anyone else's attempt is checked. `Err` carries the wait if the
 /// backoff refused the attempt, and `None` if the passphrase was wrong.
-async fn attempt(
+pub(crate) async fn attempt(
     state: &AuthState,
     client: &str,
     known_device: bool,
     passphrase: String,
 ) -> Result<OwnedSemaphorePermit, Option<u64>> {
-    let source = if known_device { DEVICE_KEY } else { client };
-    let keys: &[&str] = if known_device {
-        &[source]
-    } else {
-        &[source, GLOBAL_KEY]
-    };
-    if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
-        tracing::warn!(
-            event = "login_lockout",
-            source = %client,
-            known_device,
-            retry_after = retry,
-            "login refused by backoff"
-        );
-        return Err(Some(retry));
-    }
+    reserve_attempt(state, client, known_device).map_err(Some)?;
 
     let slot = state.0.hash_slot.clone().acquire_owned().await;
     let slot = slot.map_err(|_| None)?;
@@ -306,8 +348,63 @@ async fn attempt(
         );
         return Err(None);
     }
-    state.0.login_limit.succeed(source, !known_device);
+    attempt_succeeded(state, client, known_device);
     Ok(slot)
+}
+
+/// Counts a login attempt, by passphrase or passkey, on the backoff. `Err` is the wait.
+pub(crate) fn reserve_attempt(
+    state: &AuthState,
+    client: &str,
+    known_device: bool,
+) -> Result<(), u64> {
+    let source = if known_device { DEVICE_KEY } else { client };
+    let keys: &[&str] = if known_device {
+        &[source]
+    } else {
+        &[source, GLOBAL_KEY]
+    };
+    state
+        .0
+        .login_limit
+        .reserve(keys, Instant::now())
+        .inspect_err(|retry| {
+            tracing::warn!(
+                event = "login_lockout",
+                source = %client,
+                known_device,
+                retry_after = retry,
+                "login refused by backoff"
+            );
+        })
+}
+
+pub(crate) fn attempt_succeeded(state: &AuthState, client: &str, known_device: bool) {
+    let source = if known_device { DEVICE_KEY } else { client };
+    state.0.login_limit.succeed(source, !known_device);
+}
+
+pub(crate) fn known_device(state: &AuthState, headers: &HeaderMap) -> bool {
+    cookie_value(headers, DEVICE_COOKIE)
+        .is_some_and(|cookie| secret_eq(cookie, &device_token(state)))
+}
+
+/// The response of a successful login: the session, this browser marked as the owner's, and the
+/// login form's CSRF cookie gone.
+pub(crate) fn logged_in(
+    state: &AuthState,
+    response: Response,
+    session: &str,
+    max_age: u64,
+) -> Response {
+    let response = with_cookie(response, SESSION_COOKIE, session, max_age);
+    let response = with_cookie(
+        response,
+        DEVICE_COOKIE,
+        &device_token(state),
+        DEVICE_TTL_SECS,
+    );
+    with_cookie(response, LOGIN_CSRF_COOKIE, "", 0)
 }
 
 impl AuthState {
@@ -358,8 +455,17 @@ pub(crate) async fn login(
         .get("next")
         .and_then(|next| safe_next(&state.0.base_url, next));
     let csrf_cookie = cookie_value(&headers, LOGIN_CSRF_COOKIE);
-    let respond =
-        |status, message: &str| login_form(&state, status, message, next.as_deref(), csrf_cookie);
+    let passkeys = have_passkeys(&state).await;
+    let respond = |status, message: &str| {
+        login_form(
+            &state,
+            status,
+            message,
+            next.as_deref(),
+            csrf_cookie,
+            passkeys,
+        )
+    };
 
     // A forged POST never reaches the hash or the limiter, so it can't lock the owner out. A stale
     // form (the key changes on restart) lands here too, and gets a fresh one.
@@ -375,8 +481,7 @@ pub(crate) async fn login(
         );
     }
 
-    let known_device = cookie_value(&headers, DEVICE_COOKIE)
-        .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
+    let known_device = known_device(&state, &headers);
     let passphrase = form.get("passphrase").cloned().unwrap_or_default();
     match attempt(&state, &client, known_device, passphrase).await {
         Ok(_) => {}
@@ -397,16 +502,13 @@ pub(crate) async fn login(
             );
         }
     };
-    tracing::info!(event = "login_success", source = %client, known_device, remembered, "owner logged in");
-    let response = redirect_after_login(next.as_deref());
-    let response = with_cookie(response, SESSION_COOKIE, &session, max_age);
-    let response = with_cookie(
-        response,
-        DEVICE_COOKIE,
-        &device_token(&state),
-        DEVICE_TTL_SECS,
-    );
-    with_cookie(response, LOGIN_CSRF_COOKIE, "", 0)
+    tracing::info!(event = "login_success", source = %client, known_device, remembered, method = "passphrase", "owner logged in");
+    logged_in(
+        &state,
+        redirect_after_login(next.as_deref()),
+        &session,
+        max_age,
+    )
 }
 
 pub(crate) async fn logout_page(State(state): State<AuthState>, headers: HeaderMap) -> Response {
@@ -419,7 +521,8 @@ pub(crate) async fn logout_page(State(state): State<AuthState>, headers: HeaderM
         "Log out of Nexus",
         &format!(
             r#"<h1>Log out of Nexus?</h1>
-<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Log out</button></form>"#
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Log out</button></form>
+<p class="hint"><a href="/login/passkeys">Passkeys</a>: log in with a fingerprint or your phone instead of the passphrase.</p>"#
         ),
         None,
     )

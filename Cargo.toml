@@ -30,6 +30,9 @@ rand = "0.10.3"
 rpassword = "7.5.4"
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }
+# Passkeys. 0.6 dropped OpenSSL for RustCrypto, so the static musl build needs nothing new.
+webauthn-rs = { version = "=0.6.2", default-features = false }
+webauthn-authenticator-rs = { version = "=0.6.2", features = ["softpasskey"] }
 png = "=0.18.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

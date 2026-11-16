@@ -1,7 +1,7 @@
 //! OAuth 2.1 authorization server for MCP clients and the single-owner login that guards it.
 //!
-//! `router` serves discovery, registration, authorize, token, `/login`, `/logout` and
-//! `/passphrase`. `require_mcp_auth` and `require_owner_session` are middleware for the routes they
+//! `router` serves discovery, registration, authorize, token, `/login` (with passkeys under
+//! `/login/`), `/logout` and `/passphrase`. `require_mcp_auth` and `require_owner_session` are middleware for the routes they
 //! protect, used with `axum::middleware::from_fn_with_state`. Requests must carry
 //! `ConnectInfo<SocketAddr>`: without a peer address, every client shares one rate-limit bucket.
 
@@ -10,6 +10,7 @@ mod config;
 mod crypto;
 mod limit;
 mod oauth;
+mod passkey;
 mod session;
 mod state;
 
@@ -58,6 +59,19 @@ pub fn router(state: AuthState) -> Router {
         .route("/api/mcp/token", post(oauth::token))
         .route("/auth.css", get(session::stylesheet))
         .route("/login", get(session::login_page).post(session::login))
+        .route("/login/passkey.js", get(passkey::script))
+        .route("/login/passkey/start", post(passkey::login_start))
+        .route("/login/passkey/finish", post(passkey::login_finish))
+        .route("/login/passkeys", get(passkey::manage_page))
+        .route(
+            "/login/passkeys/register/start",
+            post(passkey::register_start),
+        )
+        .route(
+            "/login/passkeys/register/finish",
+            post(passkey::register_finish),
+        )
+        .route("/login/passkeys/delete", post(passkey::delete))
         .route("/logout", get(session::logout_page).post(session::logout))
         .route(
             "/passphrase",

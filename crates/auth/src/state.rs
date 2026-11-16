@@ -39,6 +39,7 @@ pub(crate) struct Inner {
     pub(crate) key: [u8; 32],
     /// Counts logouts, so that what stays open past its session check can end with it.
     pub(crate) logouts: watch::Sender<u64>,
+    pub(crate) passkeys: crate::passkey::Ceremonies,
     pub(crate) login_limit: Backoff,
     pub(crate) register_ip_limit: FixedWindow,
     pub(crate) register_global_limit: FixedWindow,
@@ -60,9 +61,11 @@ impl AuthState {
         validate_passphrase_hash(&config.owner_passphrase_hash)?;
         let base_url = normalize_base_url(&config.public_base_url)?;
         let hour = Duration::from_secs(3600);
+        let passkeys = crate::passkey::Ceremonies::new(&base_url);
         Ok(Self(Arc::new(Inner {
             db,
             base_url,
+            passkeys,
             passphrase_hash: Mutex::new(config.owner_passphrase_hash),
             passphrase_file: config.owner_passphrase_file,
             trusted_proxy: config.trusted_proxy,

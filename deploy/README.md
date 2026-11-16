@@ -20,6 +20,8 @@ Files here:
 | `/api/uploads/{token}` | The one-time token in its URL, from `create_document_upload` |
 | `/`, `/queue`, `/applications/*`, `/cv`, `/cv/*`, `/api/*` | The owner, logged in at `/login` |
 | `/.well-known/oauth-*`, `/api/mcp/{register,authorize,token}` | OAuth 2.1 for MCP clients |
+| `/login`, `/logout`, `/auth.css`, `/login/passkey.js`, `/login/passkey/{start,finish}` | Anyone: the owner's login, by passphrase or passkey |
+| `/login/passkeys`, `/login/passkeys/{delete,register/start,register/finish}` | The owner, logged in: see, add and remove passkeys |
 | `/api/mcp`, `/mcp` | MCP tools: an OAuth access token or the API token |
 
 `nexus serve` refuses to start without `NEXUS_PUBLIC_BASE_URL` and an owner passphrase (section 3). `--insecure-local-only` drops the login and the OAuth routes and forces a loopback bind. It exists for local parity runs and restore drills, and answers only to `localhost`, `127.0.0.1` and the bind address, so a web page can't reach the data through DNS rebinding or a cross-site POST. Never add it to the unit on the board.
@@ -126,6 +128,8 @@ It needs at least 16 characters and can't be one short pattern repeated, and thi
 **Changing it on the host**, for a lost passphrase, runs the same command, then `sudo systemctl restart nexus`. It revokes every OAuth grant and the API token at once and logs that, so Claude.ai and Hermes must each authorize again and any API token must be reissued. A running server keeps accepting the old passphrase until the restart, so do not skip it. It does not end login sessions: they are kept in the database. To end them, run `nexus sessions revoke-all` (below).
 
 **Locked out of the login?** Attempts are limited globally, so someone guessing from many addresses can keep the login closed. A browser that has logged in before has its own allowance and is unaffected, but a new phone or cleared cookies gets `Too many attempts`, for up to 5 minutes after the last guess. `sudo systemctl restart nexus` clears the limits at once. It also gives a guesser a fresh allowance, so look at `login_failure` in the log first.
+
+**Passkeys.** After a passphrase login, `/login/passkeys` adds a passkey (a fingerprint, face or phone), asking for the passphrase again so that a stolen session can't add one. The login page then offers "Log in with a passkey". A passkey belongs to the host it was made on, so add it at `NEXUS_PUBLIC_BASE_URL`, not at a tailnet name, and every path under `/login/` must reach the server through the public ingress: a tunnel rule that passes only `/login` exactly needs `^/login/passkey` added. The passphrase stays the fallback and the way back in: log in with it and remove a lost device's passkey on the same page. A restore without `--keep-credentials` removes all passkeys.
 
 **Login sessions** are kept in the database, so a restart or an upgrade does not log the owner out. The login form's "Remember this device for 30 days" box, ticked by default, makes a session last 30 days; without it a session lasts 7. Only a hash of the cookie is stored. Logout ends the browser's session, and a passphrase change ends them all. `sudo -u nexus nexus sessions list` shows the live ones, and `sudo -u nexus nexus sessions revoke-all` ends every one, also while the server runs: it checks the database on each request. A restore without `--keep-credentials` clears them.
 
