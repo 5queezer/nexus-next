@@ -47,8 +47,9 @@ const OWNER_HANDLE: Uuid = Uuid::from_u128(0x6e65_7875_735f_6f77_6e65_7200_0000_
 pub(crate) struct Ceremonies {
     /// `None` when the base URL can't be a WebAuthn origin; the routes then say so.
     webauthn: Option<Webauthn>,
-    /// By session hash: the name the owner gave and the state of the registration.
-    registrations: Mutex<HashMap<String, (Instant, String, PasskeyRegistration)>>,
+    /// By session hash: the name the owner gave, the tag of the passphrase given with it, and the
+    /// state of the registration.
+    registrations: Mutex<HashMap<String, (Instant, String, String, PasskeyRegistration)>>,
     /// By the hash of the `LOGIN_COOKIE` value.
     logins: Mutex<HashMap<String, (Instant, PasskeyAuthentication)>>,
 }
@@ -124,12 +125,15 @@ fn to_json(passkey: &Passkey) -> String {
     serde_json::to_string(passkey).expect("a derived struct with string keys always serializes")
 }
 
-/// The stored passkeys with their credentials. One that can't be read is logged and left out.
+/// The passkeys added under the current passphrase, with their credentials. One that can't be read
+/// is logged and left out.
 async fn stored(state: &AuthState) -> nexus_core::error::Result<Vec<(OwnerPasskey, Passkey)>> {
     let mut conn = state.0.db.conn().await?;
     let rows = owner_login::passkeys(&mut conn).await?;
+    let tag = current_passphrase_tag(state);
     Ok(rows
         .into_iter()
+        .filter(|row| row.passphrase_tag == tag)
         .filter_map(|row| match serde_json::from_str(&row.passkey) {
             Ok(passkey) => Some((row, passkey)),
             Err(error) => {
@@ -352,6 +356,7 @@ async fn manage(state: &AuthState, session: &str, status: StatusCode, message: &
             r#"<h1>Passkeys</h1>{message}
 <p>A passkey logs you in with a fingerprint, face or your phone instead of the passphrase. The passphrase keeps working, and is how you get back in without your passkeys.</p>
 {list}
+<p class="hint">Removing a passkey logs out every other browser, so a lost device is logged out however it logged in. A passphrase change removes every passkey.</p>
 <h2>Add a passkey</h2>
 <div id="passkey-add" data-csrf="{csrf}" data-origin="{origin}" hidden><label for="passkey-name">Name</label><input id="passkey-name" type="text" maxlength="{MAX_NAME_CHARS}" value="This device" required><label for="passkey-passphrase">Passphrase</label><input id="passkey-passphrase" type="password" autocomplete="current-password" required><button type="button">Add a passkey</button><p id="passkey-status" role="status"></p></div>
 <noscript><p>Adding a passkey needs JavaScript.</p></noscript>
@@ -391,12 +396,19 @@ pub(crate) async fn delete(
     }
     let id = form.get("id").cloned().unwrap_or_default();
     let removed = async {
-        let mut conn = state.0.db.conn().await?;
-        owner_login::delete_passkey(&mut conn, &id).await
+        let mut tx = state.0.db.begin_write().await?;
+        let removed = owner_login::delete_passkey(&mut tx, &id, &session).await?;
+        tx.commit().await?;
+        Ok::<_, nexus_core::error::Error>(removed)
     };
     match removed.await {
         Ok(true) => {
-            tracing::warn!(event = "passkey_removed", "owner removed a passkey");
+            // Open CV streams end too; this browser's reconnects.
+            state.0.logouts.send_modify(|count| *count += 1);
+            tracing::warn!(
+                event = "passkey_removed",
+                "owner removed a passkey and ended every other session"
+            );
             Redirect::to("/login/passkeys").into_response()
         }
         Ok(false) => {
@@ -465,7 +477,7 @@ pub(crate) async fn register_start(
             &format!("Give the passkey a name of 1 to {MAX_NAME_CHARS} characters."),
         );
     }
-    match attempt(
+    let tag = match attempt(
         &state,
         &client,
         known_device(&state, &headers),
@@ -473,7 +485,7 @@ pub(crate) async fn register_start(
     )
     .await
     {
-        Ok(_) => {}
+        Ok((_, tag)) => tag,
         Err(Some(retry)) => return too_many(retry),
         Err(None) => {
             return refused(
@@ -482,7 +494,7 @@ pub(crate) async fn register_start(
                 "The passphrase is not correct. No passkey was added.",
             );
         }
-    }
+    };
     let existing = match stored(&state).await {
         Ok(found) => found,
         Err(error) => return failed(error),
@@ -510,8 +522,8 @@ pub(crate) async fn register_start(
     {
         let now = Instant::now();
         let mut registrations = state.0.passkeys.registrations.lock().unwrap();
-        registrations.retain(|_, (at, _, _)| now.duration_since(*at) < CEREMONY_TTL);
-        registrations.insert(session, (now, name.to_owned(), ceremony));
+        registrations.retain(|_, (at, _, _, _)| now.duration_since(*at) < CEREMONY_TTL);
+        registrations.insert(session, (now, name.to_owned(), tag, ceremony));
     }
     reply(StatusCode::OK, json!(options))
 }
@@ -554,8 +566,8 @@ pub(crate) async fn register_finish(
         .lock()
         .unwrap()
         .remove(&session)
-        .filter(|(at, _, _)| at.elapsed() < CEREMONY_TTL);
-    let Some((_, name, ceremony)) = ceremony else {
+        .filter(|(at, _, _, _)| at.elapsed() < CEREMONY_TTL);
+    let Some((_, name, tag, ceremony)) = ceremony else {
         return refused(
             StatusCode::FORBIDDEN,
             "passkey_expired",
@@ -573,10 +585,24 @@ pub(crate) async fn register_finish(
             );
         }
     };
+    // The passphrase changed since it was given: the passkey would be dead at once.
+    if tag != current_passphrase_tag(&state) {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "passkey_expired",
+            "The passphrase changed. Log in again to add a passkey.",
+        );
+    }
     let saved = async {
         let mut tx = state.0.db.begin_write().await?;
-        owner_login::insert_passkey(&mut tx, &credential_id(&passkey), &name, &to_json(&passkey))
-            .await?;
+        owner_login::insert_passkey(
+            &mut tx,
+            &credential_id(&passkey),
+            &tag,
+            &name,
+            &to_json(&passkey),
+        )
+        .await?;
         tx.commit().await?;
         Ok::<_, nexus_core::error::Error>(())
     };

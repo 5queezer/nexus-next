@@ -14,9 +14,12 @@ CREATE TABLE owner_sessions (
 CREATE INDEX owner_sessions_expiry ON owner_sessions (expires_at);
 
 -- Passkeys the owner registered after a passphrase login. `passkey` is webauthn-rs's serialized
--- credential (public key, counter, backup state); it holds no secret.
+-- credential (public key, counter, backup state); it holds no secret. Like a session, a passkey
+-- counts only under the passphrase it was added with, and a passphrase change removes them all:
+-- whoever knew the old passphrase could have added one.
 CREATE TABLE owner_passkeys (
     credential_id TEXT PRIMARY KEY,
+    passphrase_tag TEXT NOT NULL CHECK (length(passphrase_tag) = 64),
     name TEXT NOT NULL,
     passkey TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (created_at GLOB '????-??-??T??:??:??.???Z'),

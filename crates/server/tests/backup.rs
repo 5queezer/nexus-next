@@ -787,7 +787,8 @@ async fn restore_clears_credentials_and_skips_unreferenced_blobs_unless_told() {
                VALUES ('0000000000000000000000000000000000000000000000000000000000000000',
                        '0000000000000000000000000000000000000000000000000000000000000000', 1,
                        '2999-01-01T00:00:00.000Z');
-           INSERT INTO owner_passkeys (credential_id, name, passkey) VALUES ('k', 'forged', '{}');"#,
+           INSERT INTO owner_passkeys (credential_id, passphrase_tag, name, passkey)
+               VALUES ('k', '0000000000000000000000000000000000000000000000000000000000000000', 'forged', '{}');"#,
     )
     .execute(db.pool())
     .await

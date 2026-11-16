@@ -330,3 +330,174 @@ async fn the_script_is_served_without_a_session_and_pages_stay_free_of_inline_co
             .contains("default-src 'none'")
     );
 }
+
+async fn change_passphrase_in(h: &Harness, browser: &mut Browser) {
+    let form = browser.send(h, get_req("/passphrase")).await;
+    let body = format!(
+        "csrf={}&current={}&new={}&repeat={}",
+        form.field("csrf"),
+        encode(PASSPHRASE),
+        encode("a different long passphrase"),
+        encode("a different long passphrase"),
+    );
+    let changed = browser.send(h, form_req("/passphrase", &body)).await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.body);
+}
+
+#[tokio::test]
+async fn a_passphrase_change_removes_every_passkey_a_leaked_passphrase_could_have_added() {
+    let h = Harness::new().await;
+    let mut intruder_key = SoftPasskey::new(true);
+    let mut intruder = Browser::default();
+    intruder.login(&h).await;
+    add_passkey(&h, &mut intruder, &mut intruder_key).await;
+
+    // The owner notices and changes the passphrase in the browser.
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    change_passphrase_in(&h, &mut owner).await;
+    assert_eq!(h.count("owner_passkeys").await, 0);
+    h.send(json_req("/login/passkey/start", &json!({})))
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "no_passkeys");
+
+    // On the host, the same: `nexus set-passphrase` runs this.
+    let mut key = SoftPasskey::new(true);
+    let mut again = Browser::default();
+    let form = again.send(&h, get_req("/login")).await;
+    let body = format!(
+        "csrf={}&passphrase={}",
+        form.field("csrf"),
+        encode("a different long passphrase")
+    );
+    assert_eq!(
+        again.send(&h, form_req("/login", &body)).await.status,
+        StatusCode::SEE_OTHER
+    );
+    let page = again.send(&h, get_req("/login/passkeys")).await;
+    let csrf = data_csrf(&page);
+    let start = again
+        .send(
+            &h,
+            json_req(
+                "/login/passkeys/register/start",
+                &json!({ "csrf": csrf, "passphrase": "a different long passphrase", "name": "n" }),
+            ),
+        )
+        .await;
+    let credential = key
+        .do_registration(origin(), serde_json::from_str(&start.body).unwrap())
+        .unwrap();
+    again
+        .send(
+            &h,
+            json_req(
+                "/login/passkeys/register/finish",
+                &json!({ "csrf": csrf, "credential": credential }),
+            ),
+        )
+        .await;
+    assert_eq!(h.count("owner_passkeys").await, 1);
+    nexus_auth::set_owner_passphrase(
+        &h.db,
+        &h.dir.path().join("host.argon2"),
+        "yet another long passphrase",
+    )
+    .await
+    .unwrap();
+    assert_eq!(h.count("owner_passkeys").await, 0);
+}
+
+#[tokio::test]
+async fn a_registration_started_before_a_passphrase_change_cannot_finish_after_it() {
+    let h = Harness::new().await;
+    let mut key = SoftPasskey::new(true);
+    let mut intruder = Browser::default();
+    intruder.login(&h).await;
+    let csrf = data_csrf(&intruder.send(&h, get_req("/login/passkeys")).await);
+    let start = intruder
+        .send(
+            &h,
+            json_req(
+                "/login/passkeys/register/start",
+                &json!({ "csrf": csrf, "passphrase": PASSPHRASE, "name": "n" }),
+            ),
+        )
+        .await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    let credential = key
+        .do_registration(origin(), serde_json::from_str(&start.body).unwrap())
+        .unwrap();
+
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    change_passphrase_in(&h, &mut owner).await;
+
+    // The intruder's session ended with the change, so the finish is refused either way.
+    let finish = intruder
+        .send(
+            &h,
+            json_req(
+                "/login/passkeys/register/finish",
+                &json!({ "csrf": csrf, "credential": credential }),
+            ),
+        )
+        .await;
+    assert!(finish.status.is_client_error(), "{}", finish.body);
+    assert_eq!(h.count("owner_passkeys").await, 0);
+}
+
+#[tokio::test]
+async fn removing_a_lost_devices_passkey_logs_out_every_other_browser() {
+    let h = Harness::new().await;
+    let mut key = SoftPasskey::new(true);
+    let mut owner = Browser::default();
+    owner.login(&h).await;
+    add_passkey(&h, &mut owner, &mut key).await;
+
+    let mut lost = Browser::default();
+    let credential = sign_in(&h, &mut lost, &mut key, origin()).await;
+    let done = lost
+        .send(
+            &h,
+            json_req(
+                "/login/passkey/finish",
+                &json!({ "credential": credential, "remember": true }),
+            ),
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.body);
+    assert_eq!(
+        lost.send(&h, get_req("/dashboard")).await.status,
+        StatusCode::OK
+    );
+    // The same lost device, also logged in with the passphrase in another browser.
+    let mut lost_too = Browser::default();
+    lost_too.login(&h).await;
+
+    let page = owner.send(&h, get_req("/login/passkeys")).await;
+    let removed = owner
+        .send(
+            &h,
+            form_req(
+                "/login/passkeys/delete",
+                &format!(
+                    "csrf={}&id={}",
+                    encode(&page.field("csrf")),
+                    encode(&page.field("id"))
+                ),
+            ),
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::SEE_OTHER);
+    for browser in [&mut lost, &mut lost_too] {
+        assert_eq!(
+            browser.send(&h, get_req("/dashboard")).await.status,
+            StatusCode::SEE_OTHER
+        );
+    }
+    assert_eq!(
+        owner.send(&h, get_req("/dashboard")).await.status,
+        StatusCode::OK
+    );
+}

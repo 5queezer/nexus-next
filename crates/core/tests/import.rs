@@ -721,8 +721,10 @@ async fn an_empty_database_is_replaced_but_a_foreign_file_is_not() {
     let env = Env::new();
     let db = env.db().await;
     sqlx::query(
-        "INSERT INTO owner_passkeys (credential_id, name, passkey) VALUES ('k', 'n', '{}')",
+        "INSERT INTO owner_passkeys (credential_id, passphrase_tag, name, passkey)
+         VALUES ('k', ?, 'n', '{}')",
     )
+    .bind("0".repeat(64))
     .execute(db.pool())
     .await
     .unwrap();

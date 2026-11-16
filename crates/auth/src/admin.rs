@@ -171,14 +171,17 @@ pub async fn set_owner_passphrase(
     let revoked = oauth::revoke_all(&mut tx).await?;
     api_tokens::delete_all(&mut tx).await?;
     let sessions = owner_login::delete_all_sessions(&mut tx).await?;
+    // Whoever knew the old passphrase could have added one.
+    let passkeys = owner_login::delete_all_passkeys(&mut tx).await?;
     tx.commit().await.map_err(nexus_core::error::Error::from)?;
     tracing::warn!(
         event = "grants_revoked",
         sessions,
+        passkeys,
         reason = "passphrase_changed",
         access_tokens = revoked.access_tokens,
         refresh_tokens = revoked.refresh_tokens,
-        "owner passphrase is changing: revoked all OAuth grants and API tokens, ended all sessions"
+        "owner passphrase is changing: revoked all OAuth grants and API tokens, ended all sessions, removed all passkeys"
     );
 
     let path = path.to_owned();

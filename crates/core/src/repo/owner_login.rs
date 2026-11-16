@@ -104,6 +104,8 @@ pub async fn delete_all_sessions(conn: &mut SqliteConnection) -> Result<u64> {
 #[serde(rename_all = "camelCase")]
 pub struct OwnerPasskey {
     pub credential_id: String,
+    #[serde(skip)]
+    pub passphrase_tag: String,
     pub name: String,
     #[serde(skip)]
     pub passkey: String,
@@ -119,18 +121,28 @@ pub async fn passkeys(conn: &mut SqliteConnection) -> Result<Vec<OwnerPasskey>> 
     )
 }
 
+/// Stores a passkey added under the passphrase `passphrase_tag`, removing any added under
+/// another. Run inside `Db::begin_write`.
 pub async fn insert_passkey(
     conn: &mut SqliteConnection,
     credential_id: &str,
+    passphrase_tag: &str,
     name: &str,
     passkey: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO owner_passkeys (credential_id, name, passkey) VALUES (?, ?, ?)")
-        .bind(credential_id)
-        .bind(name)
-        .bind(passkey)
-        .execute(conn)
+    sqlx::query("DELETE FROM owner_passkeys WHERE passphrase_tag != ?")
+        .bind(passphrase_tag)
+        .execute(&mut *conn)
         .await?;
+    sqlx::query(
+        "INSERT INTO owner_passkeys (credential_id, passphrase_tag, name, passkey) VALUES (?, ?, ?, ?)",
+    )
+    .bind(credential_id)
+    .bind(passphrase_tag)
+    .bind(name)
+    .bind(passkey)
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -152,8 +164,17 @@ pub async fn passkey_used(
     Ok(())
 }
 
-/// Returns whether a passkey with this id existed.
-pub async fn delete_passkey(conn: &mut SqliteConnection, credential_id: &str) -> Result<bool> {
+/// Removes a passkey and ends every session but `keep`, since a lost device may be logged in
+/// however it logged in. Returns whether the passkey existed. Run inside `Db::begin_write`.
+pub async fn delete_passkey(
+    conn: &mut SqliteConnection,
+    credential_id: &str,
+    keep: &str,
+) -> Result<bool> {
+    sqlx::query("DELETE FROM owner_sessions WHERE id_hash != ?")
+        .bind(keep)
+        .execute(&mut *conn)
+        .await?;
     Ok(
         sqlx::query("DELETE FROM owner_passkeys WHERE credential_id = ?")
             .bind(credential_id)
@@ -162,4 +183,12 @@ pub async fn delete_passkey(conn: &mut SqliteConnection, credential_id: &str) ->
             .rows_affected()
             == 1,
     )
+}
+
+/// Removes every passkey. Returns how many there were.
+pub async fn delete_all_passkeys(conn: &mut SqliteConnection) -> Result<u64> {
+    Ok(sqlx::query("DELETE FROM owner_passkeys")
+        .execute(conn)
+        .await?
+        .rows_affected())
 }

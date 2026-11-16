@@ -300,13 +300,17 @@ pub(crate) fn origin_of(base_url: &str) -> String {
     )
 }
 
-/// Whether any passkey is registered. A failed read hides the passkey button; the passphrase works.
+/// Whether any passkey of the current passphrase is registered. A failed read hides the passkey
+/// button; the passphrase works.
 async fn have_passkeys(state: &AuthState) -> bool {
     let found = async {
         let mut conn = state.0.db.conn().await?;
         owner_login::passkeys(&mut conn).await
     };
-    found.await.is_ok_and(|passkeys| !passkeys.is_empty())
+    let tag = current_passphrase_tag(state);
+    found
+        .await
+        .is_ok_and(|passkeys| passkeys.iter().any(|passkey| passkey.passphrase_tag == tag))
 }
 
 fn redirect_after_login(next: Option<&str>) -> Response {
@@ -615,7 +619,7 @@ fn passphrase_form(
         title,
         &format!(
             r#"<h1>Change the passphrase</h1>{message}
-<p>This signs out every connected client, such as Claude.ai and other MCP clients, and revokes the API token. Each client must be authorized again. Every browser session ends too, this one included, and you log in with the new passphrase.</p>
+<p>This signs out every connected client, such as Claude.ai and other MCP clients, and revokes the API token. Each client must be authorized again. Every browser session ends too, this one included, and you log in with the new passphrase. Every passkey is removed: add yours again afterwards.</p>
 <form method="post" action="/passphrase"><input type="hidden" name="csrf" value="{csrf}"><label for="current">Current passphrase</label><input id="current" type="password" name="current" autocomplete="current-password" required autofocus><label for="new">New passphrase</label><input id="new" type="password" name="new" autocomplete="new-password" minlength="{MIN_PASSPHRASE_CHARS}" required><label for="repeat">Repeat the new passphrase</label><input id="repeat" type="password" name="repeat" autocomplete="new-password" required><button type="submit">Change passphrase</button></form>
 <p class="hint">At least {MIN_PASSPHRASE_CHARS} characters. <a href="/">Cancel</a></p>"#
         ),
