@@ -40,6 +40,8 @@ pub(crate) struct Inner {
     /// Counts logouts, so that what stays open past its session check can end with it.
     pub(crate) logouts: watch::Sender<u64>,
     pub(crate) passkeys: crate::passkey::Ceremonies,
+    /// Cloudflare Access assertions taken as a login, when configured.
+    pub(crate) cf_access: Option<crate::cf_access::Verifier>,
     pub(crate) login_limit: Backoff,
     pub(crate) register_ip_limit: FixedWindow,
     pub(crate) register_global_limit: FixedWindow,
@@ -68,6 +70,9 @@ impl AuthState {
             passkeys,
             passphrase_hash: Mutex::new(config.owner_passphrase_hash),
             passphrase_file: config.owner_passphrase_file,
+            cf_access: config
+                .cf_access
+                .map(|access| crate::cf_access::Verifier::new(*access)),
             trusted_proxy: config.trusted_proxy,
             redirect_hosts: config.redirect_hosts,
             key: random_bytes(),

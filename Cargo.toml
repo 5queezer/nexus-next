@@ -33,6 +33,8 @@ uuid = { version = "1.29.0", features = ["v4"] }
 # Passkeys. 0.6 dropped OpenSSL for RustCrypto, so the static musl build needs nothing new.
 webauthn-rs = { version = "=0.6.2", default-features = false }
 webauthn-authenticator-rs = { version = "=0.6.2", features = ["softpasskey"] }
+# Verifies Cloudflare Access assertions (RS256); already in the tree through rustls.
+ring = "0.17.14"
 png = "=0.18.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }

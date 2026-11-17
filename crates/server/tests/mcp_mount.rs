@@ -75,6 +75,7 @@ fn owner() -> Access {
         owner_passphrase_file: None,
         trusted_proxy: None,
         redirect_hosts: Vec::new(),
+        cf_access: None,
     })
 }
 

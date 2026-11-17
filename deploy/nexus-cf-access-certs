@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run by nexus-cf-access-certs.service: fetch the Access team's keys, check them with the server's
+# own parser, and replace the file `nexus serve` reads in one rename.
+set -eu
+team=${NEXUS_CF_ACCESS_TEAM%.cloudflareaccess.com}
+target=$NEXUS_CF_ACCESS_CERTS_FILE
+new=$target.new
+curl --fail --silent --show-error --max-time 30 --proto =https --output "$new" \
+    "https://$team.cloudflareaccess.com/cdn-cgi/access/certs"
+/usr/local/bin/nexus check-access-certs "$new"
+mv -f "$new" "$target"

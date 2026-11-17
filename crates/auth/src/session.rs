@@ -1,6 +1,6 @@
 //! The owner login that replaces better-auth: one passphrase, a server-side session, no accounts.
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::body::Bytes;
@@ -323,6 +323,7 @@ fn redirect_after_login(next: Option<&str>) -> Response {
 
 pub(crate) async fn login_page(
     State(state): State<AuthState>,
+    ClientKey(client): ClientKey,
     headers: HeaderMap,
     uri: Uri,
 ) -> Response {
@@ -333,6 +334,9 @@ pub(crate) async fn login_page(
     if current_session(&state, &headers).await.is_some() {
         return redirect_after_login(next.as_deref());
     }
+    if let Some(response) = access_login(&state, &client, &headers, next.as_deref()).await {
+        return response;
+    }
     login_form(
         &state,
         StatusCode::OK,
@@ -341,6 +345,43 @@ pub(crate) async fn login_page(
         cookie_value(&headers, LOGIN_CSRF_COOKIE),
         have_passkeys(&state).await,
     )
+}
+
+/// A login by Cloudflare Access: the request carries a valid assertion for an allowed owner email.
+/// `None` sends the browser on to the passphrase form, which is also the way in over the tailnet,
+/// where Access isn't in front and the header proves nothing. The session is a remembered one,
+/// bound to the current passphrase like any other: Access has checked the owner at the edge, and a
+/// later visit through it logs in again without asking.
+async fn access_login(
+    state: &AuthState,
+    client: &str,
+    headers: &HeaderMap,
+    next: Option<&str>,
+) -> Option<Response> {
+    let verifier = state.0.cf_access.as_ref()?;
+    let token = headers.get(crate::cf_access::HEADER)?.to_str().ok()?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs().cast_signed());
+    if let Err(refusal) = verifier.owner_email(token, now) {
+        tracing::warn!(event = "cf_access_refused", source = %client, reason = refusal.as_str(), "an Access assertion was not taken as a login");
+        return None;
+    }
+    let (session, max_age) = match create_session(state, true, &current_passphrase_tag(state)).await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(event = "session_store_failed", %error, "could not store the owner's session");
+            return None;
+        }
+    };
+    tracing::info!(event = "login_success", source = %client, remembered = true, method = "cf_access", "owner logged in");
+    Some(logged_in(
+        state,
+        redirect_after_login(next),
+        &session,
+        max_age,
+    ))
 }
 
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
@@ -859,6 +900,7 @@ mod tests {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         };
         (AuthState::new(db, config).unwrap(), dir)
     }
@@ -882,6 +924,7 @@ mod tests {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         };
         let restarted =
             AuthState::new(db.clone(), config(&first.0.passphrase_hash.lock().unwrap())).unwrap();
@@ -962,6 +1005,7 @@ mod tests {
                 owner_passphrase_file: None,
                 trusted_proxy: None,
                 redirect_hosts: Vec::new(),
+                cf_access: None,
             },
         )
         .unwrap();
@@ -1013,6 +1057,7 @@ mod tests {
                 owner_passphrase_file: None,
                 trusted_proxy: None,
                 redirect_hosts: Vec::new(),
+                cf_access: None,
             },
         )
         .unwrap();

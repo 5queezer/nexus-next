@@ -1,0 +1,1 @@
+cf-access-test-key.der: a throwaway 2048-bit RSA key (PKCS#1 DER) made only to sign test assertions in ../cf_access.rs. It protects nothing and is trusted nowhere.

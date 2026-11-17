@@ -1899,6 +1899,7 @@ async fn auth_state_refuses_to_build_without_a_valid_hash_or_base_url() {
         owner_passphrase_file: None,
         trusted_proxy: None,
         redirect_hosts: Vec::new(),
+        cf_access: None,
     };
     for hash in ["", "plaintext passphrase", "$2b$12$abcdefghijklmnopqrstuv"] {
         assert!(matches!(
@@ -2008,6 +2009,7 @@ async fn set_owner_passphrase_writes_a_private_hash_that_logs_in() {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         },
     )
     .unwrap();
@@ -2315,6 +2317,7 @@ async fn a_passphrase_from_the_environment_cannot_be_changed_in_the_browser() {
             owner_passphrase_file: None,
             trusted_proxy: None,
             redirect_hosts: Vec::new(),
+            cf_access: None,
         },
     )
     .unwrap();

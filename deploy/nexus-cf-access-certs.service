@@ -1,0 +1,35 @@
+# Fetches the Cloudflare Access team's signing keys for `nexus serve`, which has no network of its
+# own (IPAddressDeny=any). Only needed with NEXUS_CF_ACCESS_*; see README, "Cloudflare Access".
+# It runs as a user of its own, with no access to Nexus's data: the keys are public, so their
+# directory is readable by all, and the server only reads the one file.
+# The download is checked by the parser the server uses before it replaces the old file, and the
+# server reads the file again when it changes. A failed fetch or check keeps the old file.
+[Unit]
+Description=Fetch the Cloudflare Access keys for Nexus
+Documentation=file:///usr/local/share/doc/nexus/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nexus-cf-access
+Group=nexus-cf-access
+StateDirectory=nexus-cf-access
+StateDirectoryMode=0755
+# Only the team name; the server's settings stay out of reach.
+EnvironmentFile=/etc/nexus/cf-access.env
+Environment=NEXUS_CF_ACCESS_CERTS_FILE=/var/lib/nexus-cf-access/certs.json
+ExecStart=/usr/local/libexec/nexus-cf-access-certs
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=-/var/lib/nexus -/var/lib/nexus-backups
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0022
