@@ -15,6 +15,7 @@ pub mod cv_revisions;
 pub mod documents;
 pub mod events;
 pub mod oauth;
+pub mod owner_login;
 pub mod submissions;
 
 use serde::{Serialize, Serializer};

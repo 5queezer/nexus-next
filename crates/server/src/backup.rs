@@ -341,6 +341,8 @@ async fn clear_credentials(path: &Path) -> anyhow::Result<()> {
          DELETE FROM oauth_refresh_tokens;
          DELETE FROM oauth_auth_codes;
          DELETE FROM oauth_clients;
+         DELETE FROM owner_sessions;
+         DELETE FROM owner_passkeys;
          COMMIT;",
     )
     .execute(&mut conn)
@@ -353,7 +355,8 @@ async fn clear_credentials(path: &Path) -> anyhow::Result<()> {
 /// Decrypts `from`, verifies it and installs it into `data_dir`. An existing database is only
 /// replaced with `force` and with the server stopped, and is kept as `nexus.db.before-restore`,
 /// with its WAL and SHM if it still has them. API
-/// tokens and OAuth clients and grants are cleared unless `keep_credentials`, and blobs no document
+/// tokens, OAuth clients and grants, and the owner's sessions and passkeys are cleared unless
+/// `keep_credentials`, and blobs no document
 /// references are not installed.
 pub async fn restore(
     from: &Path,

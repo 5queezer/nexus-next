@@ -764,6 +764,8 @@ async fn is_replaceable(path: &Path) -> std::result::Result<bool, sqlx::Error> {
             "cv_facts" => " WHERE version > 1",
             "cv_variants" => " WHERE name != 'default' OR head_revision_id IS NOT NULL",
             "sqlite_sequence" => " WHERE name != 'cv_variants'",
+            // A login is not data: the owner may log in before importing.
+            "owner_sessions" => " WHERE 0",
             _ => "",
         };
         rows += sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!(

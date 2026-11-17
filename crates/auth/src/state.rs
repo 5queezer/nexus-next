@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -38,11 +37,9 @@ pub(crate) struct Inner {
     /// Signs consent and CSRF tokens. These live for minutes, so a key per process is enough, and
     /// no secret has to be stored or configured.
     pub(crate) key: [u8; 32],
-    /// SHA-256 of each session id, with its expiry. In memory because a restart costing the owner
-    /// one login is cheaper than another stored credential; logout really does revoke.
-    pub(crate) sessions: Mutex<HashMap<String, Instant>>,
     /// Counts logouts, so that what stays open past its session check can end with it.
     pub(crate) logouts: watch::Sender<u64>,
+    pub(crate) passkeys: crate::passkey::Ceremonies,
     pub(crate) login_limit: Backoff,
     pub(crate) register_ip_limit: FixedWindow,
     pub(crate) register_global_limit: FixedWindow,
@@ -64,15 +61,16 @@ impl AuthState {
         validate_passphrase_hash(&config.owner_passphrase_hash)?;
         let base_url = normalize_base_url(&config.public_base_url)?;
         let hour = Duration::from_secs(3600);
+        let passkeys = crate::passkey::Ceremonies::new(&base_url);
         Ok(Self(Arc::new(Inner {
             db,
             base_url,
+            passkeys,
             passphrase_hash: Mutex::new(config.owner_passphrase_hash),
             passphrase_file: config.owner_passphrase_file,
             trusted_proxy: config.trusted_proxy,
             redirect_hosts: config.redirect_hosts,
             key: random_bytes(),
-            sessions: Mutex::default(),
             logouts: watch::Sender::new(0),
             login_limit: Backoff::new(
                 BackoffPolicy {

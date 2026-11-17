@@ -160,6 +160,17 @@ impl Harness {
     pub async fn with_proxy(trusted_proxy: Option<TrustedProxy>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(dir.path()).await.unwrap();
+        Self::build(db, dir, trusted_proxy)
+    }
+
+    /// The same data directory served by a new process: in-memory keys and limits start afresh.
+    pub async fn restart(self) -> Self {
+        self.db.close().await;
+        let db = Db::open(self.dir.path()).await.unwrap();
+        Self::build(db, self.dir, None)
+    }
+
+    fn build(db: Db, dir: TempDir, trusted_proxy: Option<TrustedProxy>) -> Self {
         let state = AuthState::new(
             db.clone(),
             AuthConfig {
@@ -372,6 +383,20 @@ impl Browser {
         );
         self.send(harness, with_ip(form_req("/login", &body), ip))
             .await
+    }
+
+    /// Logs in with "Remember this device" ticked, as the form has it by default.
+    pub async fn login_remembered(&mut self, harness: &Harness) -> Reply {
+        let form = self.send(harness, get_req("/login")).await;
+        assert!(form.body.contains(r#"name="remember" value="1" checked"#));
+        let body = format!(
+            "csrf={}&passphrase={}&remember=1",
+            form.field("csrf"),
+            encode(PASSPHRASE)
+        );
+        let reply = self.send(harness, form_req("/login", &body)).await;
+        assert_eq!(reply.status, StatusCode::SEE_OTHER, "{}", reply.body);
+        reply
     }
 
     pub async fn login(&mut self, harness: &Harness) {

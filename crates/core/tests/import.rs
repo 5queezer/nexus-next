@@ -705,6 +705,32 @@ async fn an_empty_database_is_replaced_but_a_foreign_file_is_not() {
     env.db().await.close().await;
     env.import().await.unwrap();
 
+    // A login before the import is not data; a registered passkey is.
+    let env = Env::new();
+    let db = env.db().await;
+    sqlx::query(
+        "INSERT INTO owner_sessions (id_hash, passphrase_tag, remembered, expires_at)
+         VALUES (?1, ?1, 1, '2999-01-01T00:00:00.000Z')",
+    )
+    .bind("0".repeat(64))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+    env.import().await.unwrap();
+    let env = Env::new();
+    let db = env.db().await;
+    sqlx::query(
+        "INSERT INTO owner_passkeys (credential_id, passphrase_tag, name, passkey)
+         VALUES ('k', ?, 'n', '{}')",
+    )
+    .bind("0".repeat(64))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.close().await;
+    assert!(matches!(env.import().await, Err(ImportError::Refused(_))));
+
     let env = Env::new();
     fs::create_dir_all(&env.data).unwrap();
     fs::write(db_path(&env.data), "not a database").unwrap();

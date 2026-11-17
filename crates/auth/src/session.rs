@@ -1,6 +1,6 @@
 //! The owner login that replaces better-auth: one passphrase, a server-side session, no accounts.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::Json;
 use axum::body::Bytes;
@@ -18,7 +18,8 @@ use url::Url;
 use url::form_urlencoded::byte_serialize;
 
 use nexus_core::auth::FormToken;
-use nexus_core::repo::oauth;
+use nexus_core::repo::{oauth, owner_login};
+use nexus_core::time::Timestamp;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::admin::{
@@ -30,14 +31,16 @@ use crate::state::{AuthState, ClientKey};
 
 // `__Host-` makes browsers refuse these unless Secure, Path=/ and without Domain, so a sibling
 // subdomain can't plant them.
-const SESSION_COOKIE: &str = "__Host-nexus_session";
+pub(crate) const SESSION_COOKIE: &str = "__Host-nexus_session";
 const LOGIN_CSRF_COOKIE: &str = "__Host-nexus_login_csrf";
-const DEVICE_COOKIE: &str = "__Host-nexus_device";
-const SESSION_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+pub(crate) const DEVICE_COOKIE: &str = "__Host-nexus_device";
+const SESSION_TTL_DAYS: i64 = 7;
+/// A session from a login with "Remember this device" ticked.
+pub(crate) const REMEMBERED_TTL_DAYS: i64 = 30;
 const LOGIN_CSRF_TTL_SECS: u64 = 3600;
 const DEVICE_TTL_SECS: u64 = 400 * 24 * 3600;
 /// Well above what one owner has open; the oldest session goes first.
-const MAX_SESSIONS: usize = 32;
+const MAX_SESSIONS: i64 = 32;
 pub(crate) const MAX_NEXT_BYTES: usize = 8192;
 
 const LOGIN_CSRF_PURPOSE: &str = "login-csrf";
@@ -45,6 +48,7 @@ const LOGOUT_CSRF_PURPOSE: &str = "logout-csrf";
 const FORM_CSRF_PURPOSE: &str = "form-csrf";
 const PASSPHRASE_CSRF_PURPOSE: &str = "passphrase-csrf";
 const DEVICE_PURPOSE: &str = "known-device";
+const SESSION_PASSPHRASE_PURPOSE: &str = "session-passphrase";
 /// The limiter bucket of browsers holding the device cookie.
 const DEVICE_KEY: &str = "known-device";
 
@@ -53,7 +57,7 @@ const DEVICE_KEY: &str = "known-device";
 /// attempts count on a bucket of their own. It grants nothing else: the passphrase is still needed.
 /// Keyed by the stored hash, it survives restarts and dies when the passphrase changes, except in
 /// the browser that changed it, which gets the new one.
-fn device_token(state: &AuthState) -> String {
+pub(crate) fn device_token(state: &AuthState) -> String {
     let hash = state.0.passphrase_hash.lock().unwrap();
     sign(hash.as_bytes(), DEVICE_PURPOSE, "")
 }
@@ -80,10 +84,35 @@ pub(crate) fn html_page(
     body: &str,
     form_target: Option<&str>,
 ) -> Response {
+    page(status, title, body, form_target, false)
+}
+
+/// `html_page` for the pages that use passkeys: they load `/login/passkey.js` and may call back.
+pub(crate) fn html_page_with_passkeys(status: StatusCode, title: &str, body: &str) -> Response {
+    page(status, title, body, None, true)
+}
+
+fn page(
+    status: StatusCode,
+    title: &str,
+    body: &str,
+    form_target: Option<&str>,
+    passkeys: bool,
+) -> Response {
     let form_action = form_target.map_or("'self'".to_owned(), |origin| format!("'self' {origin}"));
+    let scripts = if passkeys {
+        "; script-src 'self'; connect-src 'self'"
+    } else {
+        ""
+    };
     let csp = format!(
-        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}"
+        "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}{scripts}"
     );
+    let script = if passkeys {
+        r#"<script src="/login/passkey.js" defer></script>"#
+    } else {
+        ""
+    };
     let label = nexus_core::env_label().map(escape_html);
     let (prefix, tag) = label.map_or_else(Default::default, |label| {
         (
@@ -102,7 +131,7 @@ pub(crate) fn html_page(
         ],
         Html(format!(
             r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css"><title>{prefix}{}</title></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/auth.css">{script}<title>{prefix}{}</title></head>
 <body><main><p class="brand">Nexus{tag}</p>{body}</main></body></html>"#,
             escape_html(title)
         )),
@@ -110,7 +139,7 @@ pub(crate) fn html_page(
         .into_response()
 }
 
-fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(COOKIE)
         .iter()
@@ -120,7 +149,12 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-fn with_cookie(mut response: Response, name: &str, value: &str, max_age: u64) -> Response {
+pub(crate) fn with_cookie(
+    mut response: Response,
+    name: &str,
+    value: &str,
+    max_age: u64,
+) -> Response {
     let cookie =
         format!("{name}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax");
     response.headers_mut().append(
@@ -131,42 +165,67 @@ fn with_cookie(mut response: Response, name: &str, value: &str, max_age: u64) ->
 }
 
 /// The hash identifying the caller's live session, if any. Sessions are looked up by hash, so no
-/// comparison runs against the raw id.
-pub(crate) fn current_session(state: &AuthState, headers: &HeaderMap) -> Option<String> {
+/// comparison runs against the raw id. They live in the database, so they outlast a restart, and a
+/// revocation from the command line ends them at the next request.
+pub(crate) async fn current_session(state: &AuthState, headers: &HeaderMap) -> Option<String> {
     let hash = sha256_hex(cookie_value(headers, SESSION_COOKIE)?);
-    let now = Instant::now();
-    let mut sessions = state.0.sessions.lock().unwrap();
-    match sessions.get(&hash) {
-        Some(expiry) if now < *expiry => Some(hash),
-        Some(_) => {
-            sessions.remove(&hash);
+    let tag = current_passphrase_tag(state);
+    let found = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::live_session(&mut conn, &hash, &tag).await
+    };
+    match found.await {
+        Ok(session) => session.map(|_| hash),
+        Err(error) => {
+            tracing::error!(event = "session_lookup_failed", %error, "could not read the owner's sessions");
             None
         }
-        None => None,
     }
 }
 
-fn create_session(state: &AuthState) -> String {
+/// Names a passphrase hash without revealing it. A session carries the tag of the hash its login
+/// was checked against and counts only while the server's hash has that tag, so a session made
+/// with an old passphrase ends at the change, or at the restart after a change on the host,
+/// however the timing falls.
+pub fn passphrase_tag(hash: &str) -> String {
+    sign(hash.as_bytes(), SESSION_PASSPHRASE_PURPOSE, "")
+}
+
+pub(crate) fn current_passphrase_tag(state: &AuthState) -> String {
+    passphrase_tag(&state.0.passphrase_hash.lock().unwrap())
+}
+
+/// Starts a session under the passphrase `tag` and returns the cookie value and its lifetime in
+/// seconds.
+pub(crate) async fn create_session(
+    state: &AuthState,
+    remembered: bool,
+    tag: &str,
+) -> nexus_core::error::Result<(String, u64)> {
     let id = hex::encode(random_bytes());
-    let now = Instant::now();
-    let mut sessions = state.0.sessions.lock().unwrap();
-    sessions.retain(|_, expiry| now < *expiry);
-    if sessions.len() >= MAX_SESSIONS {
-        let oldest = sessions
-            .iter()
-            .min_by_key(|(_, expiry)| **expiry)
-            .map(|(hash, _)| hash.clone());
-        if let Some(oldest) = oldest {
-            sessions.remove(&oldest);
-        }
-    }
-    sessions.insert(sha256_hex(&id), now + SESSION_TTL);
-    id
+    let days = if remembered {
+        REMEMBERED_TTL_DAYS
+    } else {
+        SESSION_TTL_DAYS
+    };
+    let expires_at = Timestamp::now().plus(chrono::Duration::days(days));
+    let mut tx = state.0.db.begin_write().await?;
+    owner_login::insert_session(
+        &mut tx,
+        &sha256_hex(&id),
+        tag,
+        remembered,
+        &expires_at,
+        MAX_SESSIONS,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((id, days.unsigned_abs() * 24 * 3600))
 }
 
 /// `next` as a same-origin path, or `None`. Printable ASCII only: browsers strip tabs and newlines
 /// before parsing a URL, which would turn `/\t/host` into `//host`, and treat `\` as `/`.
-fn safe_next(base_url: &str, next: &str) -> Option<String> {
+pub(crate) fn safe_next(base_url: &str, next: &str) -> Option<String> {
     if next.len() > MAX_NEXT_BYTES
         || !next.starts_with('/')
         || next.starts_with("//")
@@ -196,6 +255,7 @@ fn login_form(
     message: &str,
     next: Option<&str>,
     csrf_cookie: Option<&str>,
+    passkeys: bool,
 ) -> Response {
     let cookie = csrf_cookie
         .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -212,16 +272,45 @@ fn login_form(
     } else {
         format!(r#"<p role="alert">{}</p>"#, escape_html(message))
     };
-    let page = html_page(
-        status,
-        "Log in to Nexus",
-        &format!(
-            r#"<h1>Log in to Nexus</h1>{message}
-<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><button type="submit">Log in</button></form>"#
-        ),
-        None,
+    // Shown by the script, where the browser can use it.
+    let passkey = if passkeys {
+        format!(
+            r#"<div id="passkey-login" data-origin="{}" hidden><p class="or">or</p><button type="button" class="secondary">Log in with a passkey</button><p id="passkey-status" role="status"></p></div>"#,
+            escape_html(&origin_of(&state.0.base_url))
+        )
+    } else {
+        String::new()
+    };
+    let body = format!(
+        r#"<h1>Log in to Nexus</h1>{message}
+<form method="post" action="/login"><input type="hidden" name="csrf" value="{csrf}">{next_field}<label for="passphrase">Passphrase</label><input id="passphrase" type="password" name="passphrase" autocomplete="current-password" required autofocus><label class="check"><input type="checkbox" name="remember" value="1" checked> Remember this device for {REMEMBERED_TTL_DAYS} days</label><button type="submit">Log in</button></form>{passkey}"#
     );
+    let page = if passkeys {
+        html_page_with_passkeys(status, "Log in to Nexus", &body)
+    } else {
+        html_page(status, "Log in to Nexus", &body, None)
+    };
     with_cookie(page, LOGIN_CSRF_COOKIE, &cookie, LOGIN_CSRF_TTL_SECS)
+}
+
+pub(crate) fn origin_of(base_url: &str) -> String {
+    Url::parse(base_url).map_or_else(
+        |_| base_url.to_owned(),
+        |url| url.origin().ascii_serialization(),
+    )
+}
+
+/// Whether any passkey of the current passphrase is registered. A failed read hides the passkey
+/// button; the passphrase works.
+async fn have_passkeys(state: &AuthState) -> bool {
+    let found = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::passkeys(&mut conn).await
+    };
+    let tag = current_passphrase_tag(state);
+    found
+        .await
+        .is_ok_and(|passkeys| passkeys.iter().any(|passkey| passkey.passphrase_tag == tag))
 }
 
 fn redirect_after_login(next: Option<&str>) -> Response {
@@ -241,7 +330,7 @@ pub(crate) async fn login_page(
     let next = params
         .get("next")
         .and_then(|next| safe_next(&state.0.base_url, next));
-    if current_session(&state, &headers).is_some() {
+    if current_session(&state, &headers).await.is_some() {
         return redirect_after_login(next.as_deref());
     }
     login_form(
@@ -250,38 +339,26 @@ pub(crate) async fn login_page(
         "",
         next.as_deref(),
         cookie_value(&headers, LOGIN_CSRF_COOKIE),
+        have_passkeys(&state).await,
     )
 }
 
 /// One attempt at the owner passphrase, counted by the login backoff. `Ok` holds the hash slot, so
-/// a change can follow before anyone else's attempt is checked. `Err` carries the wait if the
-/// backoff refused the attempt, and `None` if the passphrase was wrong.
-async fn attempt(
+/// a change can follow before anyone else's attempt is checked, and the tag of the hash the
+/// passphrase matched. `Err` carries the wait if the backoff refused the attempt, and `None` if the
+/// passphrase was wrong.
+pub(crate) async fn attempt(
     state: &AuthState,
     client: &str,
     known_device: bool,
     passphrase: String,
-) -> Result<OwnedSemaphorePermit, Option<u64>> {
-    let source = if known_device { DEVICE_KEY } else { client };
-    let keys: &[&str] = if known_device {
-        &[source]
-    } else {
-        &[source, GLOBAL_KEY]
-    };
-    if let Err(retry) = state.0.login_limit.reserve(keys, Instant::now()) {
-        tracing::warn!(
-            event = "login_lockout",
-            source = %client,
-            known_device,
-            retry_after = retry,
-            "login refused by backoff"
-        );
-        return Err(Some(retry));
-    }
+) -> Result<(OwnedSemaphorePermit, String), Option<u64>> {
+    reserve_attempt(state, client, known_device).map_err(Some)?;
 
     let slot = state.0.hash_slot.clone().acquire_owned().await;
     let slot = slot.map_err(|_| None)?;
     let hash = state.0.passphrase_hash.lock().unwrap().clone();
+    let tag = passphrase_tag(&hash);
     let verified = tokio::task::spawn_blocking(move || verify_passphrase(&hash, &passphrase))
         .await
         .unwrap_or(false);
@@ -294,8 +371,63 @@ async fn attempt(
         );
         return Err(None);
     }
+    attempt_succeeded(state, client, known_device);
+    Ok((slot, tag))
+}
+
+/// Counts a login attempt, by passphrase or passkey, on the backoff. `Err` is the wait.
+pub(crate) fn reserve_attempt(
+    state: &AuthState,
+    client: &str,
+    known_device: bool,
+) -> Result<(), u64> {
+    let source = if known_device { DEVICE_KEY } else { client };
+    let keys: &[&str] = if known_device {
+        &[source]
+    } else {
+        &[source, GLOBAL_KEY]
+    };
+    state
+        .0
+        .login_limit
+        .reserve(keys, Instant::now())
+        .inspect_err(|retry| {
+            tracing::warn!(
+                event = "login_lockout",
+                source = %client,
+                known_device,
+                retry_after = retry,
+                "login refused by backoff"
+            );
+        })
+}
+
+pub(crate) fn attempt_succeeded(state: &AuthState, client: &str, known_device: bool) {
+    let source = if known_device { DEVICE_KEY } else { client };
     state.0.login_limit.succeed(source, !known_device);
-    Ok(slot)
+}
+
+pub(crate) fn known_device(state: &AuthState, headers: &HeaderMap) -> bool {
+    cookie_value(headers, DEVICE_COOKIE)
+        .is_some_and(|cookie| secret_eq(cookie, &device_token(state)))
+}
+
+/// The response of a successful login: the session, this browser marked as the owner's, and the
+/// login form's CSRF cookie gone.
+pub(crate) fn logged_in(
+    state: &AuthState,
+    response: Response,
+    session: &str,
+    max_age: u64,
+) -> Response {
+    let response = with_cookie(response, SESSION_COOKIE, session, max_age);
+    let response = with_cookie(
+        response,
+        DEVICE_COOKIE,
+        &device_token(state),
+        DEVICE_TTL_SECS,
+    );
+    with_cookie(response, LOGIN_CSRF_COOKIE, "", 0)
 }
 
 impl AuthState {
@@ -346,8 +478,17 @@ pub(crate) async fn login(
         .get("next")
         .and_then(|next| safe_next(&state.0.base_url, next));
     let csrf_cookie = cookie_value(&headers, LOGIN_CSRF_COOKIE);
-    let respond =
-        |status, message: &str| login_form(&state, status, message, next.as_deref(), csrf_cookie);
+    let passkeys = have_passkeys(&state).await;
+    let respond = |status, message: &str| {
+        login_form(
+            &state,
+            status,
+            message,
+            next.as_deref(),
+            csrf_cookie,
+            passkeys,
+        )
+    };
 
     // A forged POST never reaches the hash or the limiter, so it can't lock the owner out. A stale
     // form (the key changes on restart) lands here too, and gets a fresh one.
@@ -363,32 +504,38 @@ pub(crate) async fn login(
         );
     }
 
-    let known_device = cookie_value(&headers, DEVICE_COOKIE)
-        .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
+    let known_device = known_device(&state, &headers);
     let passphrase = form.get("passphrase").cloned().unwrap_or_default();
-    match attempt(&state, &client, known_device, passphrase).await {
-        Ok(_) => {}
+    let tag = match attempt(&state, &client, known_device, passphrase).await {
+        Ok((_, tag)) => tag,
         Err(Some(retry)) => return locked_out(respond, retry),
         Err(None) => {
             return respond(StatusCode::UNAUTHORIZED, "That passphrase is not correct.");
         }
-    }
+    };
 
-    tracing::info!(event = "login_success", source = %client, known_device, "owner logged in");
-    let session = create_session(&state);
-    let response = redirect_after_login(next.as_deref());
-    let response = with_cookie(response, SESSION_COOKIE, &session, SESSION_TTL.as_secs());
-    let response = with_cookie(
-        response,
-        DEVICE_COOKIE,
-        &device_token(&state),
-        DEVICE_TTL_SECS,
-    );
-    with_cookie(response, LOGIN_CSRF_COOKIE, "", 0)
+    let remembered = form.get("remember").is_some_and(|value| value == "1");
+    let (session, max_age) = match create_session(&state, remembered, &tag).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::error!(event = "session_store_failed", %error, "could not store the owner's session");
+            return respond(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "You could not be logged in. The server log says why.",
+            );
+        }
+    };
+    tracing::info!(event = "login_success", source = %client, known_device, remembered, method = "passphrase", "owner logged in");
+    logged_in(
+        &state,
+        redirect_after_login(next.as_deref()),
+        &session,
+        max_age,
+    )
 }
 
 pub(crate) async fn logout_page(State(state): State<AuthState>, headers: HeaderMap) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let csrf = sign(&state.0.key, LOGOUT_CSRF_PURPOSE, &session);
@@ -397,7 +544,8 @@ pub(crate) async fn logout_page(State(state): State<AuthState>, headers: HeaderM
         "Log out of Nexus",
         &format!(
             r#"<h1>Log out of Nexus?</h1>
-<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Log out</button></form>"#
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">Log out</button></form>
+<p class="hint"><a href="/login/passkeys">Passkeys</a>: log in with a fingerprint or your phone instead of the passphrase.</p>"#
         ),
         None,
     )
@@ -408,7 +556,7 @@ pub(crate) async fn logout(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let form = parse_params(&body);
@@ -423,7 +571,19 @@ pub(crate) async fn logout(
             None,
         );
     }
-    state.0.sessions.lock().unwrap().remove(&session);
+    let ended = async {
+        let mut conn = state.0.db.conn().await?;
+        owner_login::delete_session(&mut conn, &session).await
+    };
+    if let Err(error) = ended.await {
+        tracing::error!(event = "logout_failed", %error, "could not end the owner's session");
+        return html_page(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Log out of Nexus",
+            r#"<h1>You are still logged in</h1><p>The session could not be ended. The server log says why. <a href="/logout">Try again</a></p>"#,
+            None,
+        );
+    }
     state.0.logouts.send_modify(|count| *count += 1);
     with_cookie(
         Redirect::to("/login").into_response(),
@@ -459,7 +619,7 @@ fn passphrase_form(
         title,
         &format!(
             r#"<h1>Change the passphrase</h1>{message}
-<p>This signs out every connected client, such as Claude.ai and other MCP clients, and revokes the API token. Each client must be authorized again. Every browser session ends too, this one included, and you log in with the new passphrase.</p>
+<p>This signs out every connected client, such as Claude.ai and other MCP clients, and revokes the API token. Each client must be authorized again. Every browser session ends too, this one included, and you log in with the new passphrase. Every passkey is removed: add yours again afterwards.</p>
 <form method="post" action="/passphrase"><input type="hidden" name="csrf" value="{csrf}"><label for="current">Current passphrase</label><input id="current" type="password" name="current" autocomplete="current-password" required autofocus><label for="new">New passphrase</label><input id="new" type="password" name="new" autocomplete="new-password" minlength="{MIN_PASSPHRASE_CHARS}" required><label for="repeat">Repeat the new passphrase</label><input id="repeat" type="password" name="repeat" autocomplete="new-password" required><button type="submit">Change passphrase</button></form>
 <p class="hint">At least {MIN_PASSPHRASE_CHARS} characters. <a href="/">Cancel</a></p>"#
         ),
@@ -471,7 +631,7 @@ pub(crate) async fn passphrase_page(
     State(state): State<AuthState>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login?next=/passphrase").into_response();
     };
     passphrase_form(&state, &session, StatusCode::OK, "")
@@ -486,7 +646,7 @@ pub(crate) async fn change_passphrase(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(session) = current_session(&state, &headers) else {
+    let Some(session) = current_session(&state, &headers).await else {
         return Redirect::to("/login").into_response();
     };
     let form = parse_params(&body);
@@ -515,7 +675,7 @@ pub(crate) async fn change_passphrase(
     let known_device = cookie_value(&headers, DEVICE_COOKIE)
         .is_some_and(|cookie| secret_eq(cookie, &device_token(&state)));
     let slot = match attempt(&state, &client, known_device, field("current")).await {
-        Ok(slot) => slot,
+        Ok((slot, _)) => slot,
         Err(Some(retry)) => return locked_out(respond, retry),
         Err(None) => {
             return respond(
@@ -532,7 +692,9 @@ pub(crate) async fn change_passphrase(
             let _slot = slot;
             let hash = set_owner_passphrase(&state.0.db, &path, &new).await?;
             *state.0.passphrase_hash.lock().unwrap() = hash;
-            state.0.sessions.lock().unwrap().clear();
+            let mut tx = state.0.db.begin_write().await?;
+            owner_login::delete_all_sessions(&mut tx).await?;
+            tx.commit().await.map_err(nexus_core::error::Error::from)?;
             state.0.logouts.send_modify(|count| *count += 1);
             tracing::warn!(
                 event = "passphrase_changed",
@@ -598,7 +760,7 @@ pub async fn require_owner_session(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if let Some(session) = current_session(&state, request.headers()) {
+    if let Some(session) = current_session(&state, request.headers()).await {
         let token = sign(&state.0.key, FORM_CSRF_PURPOSE, &session);
         request.extensions_mut().insert(FormToken(token));
         return next.run(request).await;
@@ -734,33 +896,143 @@ mod tests {
         assert_ne!(device_token(&first), device_token(&rotated));
     }
 
-    #[tokio::test]
-    async fn an_expired_session_is_refused_and_removed() {
-        let (state, _dir) = state().await;
-        let id = create_session(&state);
-        let headers = cookie_headers(&id);
-        assert!(current_session(&state, &headers).is_some());
-
-        let hash = sha256_hex(&id);
-        state
-            .0
-            .sessions
-            .lock()
+    async fn stored_hashes(state: &AuthState) -> Vec<String> {
+        let mut conn = state.0.db.conn().await.unwrap();
+        sqlx::query_scalar("SELECT id_hash FROM owner_sessions")
+            .fetch_all(&mut *conn)
+            .await
             .unwrap()
-            .insert(hash.clone(), Instant::now());
-        assert!(current_session(&state, &headers).is_none());
-        assert!(!state.0.sessions.lock().unwrap().contains_key(&hash));
+    }
+
+    #[tokio::test]
+    async fn an_expired_session_is_refused() {
+        let (state, _dir) = state().await;
+        let (id, _) = create_session(&state, false, &current_passphrase_tag(&state))
+            .await
+            .unwrap();
+        let headers = cookie_headers(&id);
+        assert!(current_session(&state, &headers).await.is_some());
+
+        let mut conn = state.0.db.conn().await.unwrap();
+        sqlx::query("UPDATE owner_sessions SET expires_at = ?")
+            .bind(Timestamp::now().as_str())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(current_session(&state, &headers).await.is_none());
     }
 
     #[tokio::test]
     async fn sessions_are_stored_hashed_and_capped_oldest_first() {
         let (state, _dir) = state().await;
-        let first = create_session(&state);
-        assert!(!state.0.sessions.lock().unwrap().contains_key(&first));
+        let (first, _) = create_session(&state, false, &current_passphrase_tag(&state))
+            .await
+            .unwrap();
+        assert_eq!(stored_hashes(&state).await, [sha256_hex(&first)]);
         for _ in 0..MAX_SESSIONS {
-            create_session(&state);
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            create_session(&state, false, &current_passphrase_tag(&state))
+                .await
+                .unwrap();
         }
-        assert_eq!(state.0.sessions.lock().unwrap().len(), MAX_SESSIONS);
-        assert!(current_session(&state, &cookie_headers(&first)).is_none());
+        assert_eq!(stored_hashes(&state).await.len() as i64, MAX_SESSIONS);
+        assert!(
+            current_session(&state, &cookie_headers(&first))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_ends_with_the_passphrase_it_was_made_under() {
+        let (first, dir) = state().await;
+        let old_tag = current_passphrase_tag(&first);
+        let (id, _) = create_session(&first, true, &old_tag).await.unwrap();
+        let headers = cookie_headers(&id);
+
+        // The host changed the passphrase; the server restarts with the new hash.
+        let db = Db::open(dir.path()).await.unwrap();
+        let restarted = AuthState::new(
+            db,
+            AuthConfig {
+                public_base_url: BASE.to_owned(),
+                owner_passphrase_hash:
+                    "$argon2id$v=19$m=8,t=1,p=1$b3RoZXJzYWx0$AAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                owner_passphrase_file: None,
+                trusted_proxy: None,
+                redirect_hosts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(current_session(&restarted, &headers).await.is_none());
+
+        // A login checked against the old hash that stores its session only after the change in
+        // this process (the race of a slow write) gets a dead session too.
+        *first.0.passphrase_hash.lock().unwrap() =
+            "$argon2id$v=19$m=8,t=1,p=1$dGhpcmRzYWx0$AAAAAAAAAAAAAAAAAAAAAA".to_owned();
+        let (late, _) = create_session(&first, true, &old_tag).await.unwrap();
+        assert!(
+            current_session(&first, &cookie_headers(&late))
+                .await
+                .is_none()
+        );
+        let (fresh, _) = create_session(&first, true, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
+        assert!(
+            current_session(&first, &cookie_headers(&fresh))
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            stored_hashes(&first).await,
+            [sha256_hex(&fresh)],
+            "old ones pruned"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_outlast_a_restart_and_remembered_ones_last_thirty_days() {
+        let (first, dir) = state().await;
+        let (short, short_age) = create_session(&first, false, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
+        let (long, long_age) = create_session(&first, true, &current_passphrase_tag(&first))
+            .await
+            .unwrap();
+        assert_eq!(short_age, 7 * 24 * 3600);
+        assert_eq!(long_age, 30 * 24 * 3600);
+
+        let db = Db::open(dir.path()).await.unwrap();
+        let restarted = AuthState::new(
+            db,
+            AuthConfig {
+                public_base_url: BASE.to_owned(),
+                owner_passphrase_hash: first.0.passphrase_hash.lock().unwrap().clone(),
+                owner_passphrase_file: None,
+                trusted_proxy: None,
+                redirect_hosts: Vec::new(),
+            },
+        )
+        .unwrap();
+        for id in [&short, &long] {
+            assert!(
+                current_session(&restarted, &cookie_headers(id))
+                    .await
+                    .is_some()
+            );
+        }
+        let mut conn = restarted.0.db.conn().await.unwrap();
+        let expiries: Vec<(bool, String)> =
+            sqlx::query_as("SELECT remembered, expires_at FROM owner_sessions ORDER BY remembered")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        let days = |at: &str| {
+            (Timestamp::parse(at).unwrap().to_datetime() - chrono::Utc::now()).num_hours() / 24
+        };
+        assert_eq!((expiries[0].0, days(&expiries[0].1)), (false, 6));
+        assert_eq!((expiries[1].0, days(&expiries[1].1)), (true, 29));
     }
 }
